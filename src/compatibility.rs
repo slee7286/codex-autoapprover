@@ -360,9 +360,15 @@ mod tests {
 
     #[test]
     fn verification_binding_is_exact_without_promoting_support() {
-        assert!(verification_version_matches("0.151.0", "0.151.0"));
-        assert!(!verification_version_matches("0.151.1", "0.151.0"));
-        assert!(verified_hook_support("0.151.0"));
+        if cfg!(unix) {
+            assert!(verification_version_matches("0.151.0", "0.151.0"));
+            assert!(!verification_version_matches("0.151.1", "0.151.0"));
+            assert!(verified_hook_support("0.151.0"));
+        } else {
+            assert!(verification_version_matches("0.152.1", "0.152.1"));
+            assert!(!verification_version_matches("0.152.0", "0.152.1"));
+            assert!(!verified_hook_support("0.152.1"));
+        }
     }
 
     #[test]

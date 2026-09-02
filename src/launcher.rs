@@ -810,12 +810,27 @@ mod tests {
 
     #[test]
     fn confirmation_requires_the_exact_generated_phrase() {
-        assert_eq!(confirmation_phrase("0.151.0"), "VERIFY CODEX 0.151.0 HOOK");
-        assert!(confirmation_matches(
-            "VERIFY CODEX 0.151.0 HOOK\n",
-            "VERIFY CODEX 0.151.0 HOOK"
-        ));
-        assert!(!confirmation_matches("yes\n", "VERIFY CODEX 0.151.0 HOOK"));
+        if cfg!(unix) {
+            assert_eq!(confirmation_phrase("0.151.0"), "VERIFY CODEX 0.151.0 HOOK");
+            assert!(confirmation_matches(
+                "VERIFY CODEX 0.151.0 HOOK\n",
+                "VERIFY CODEX 0.151.0 HOOK"
+            ));
+            assert!(!confirmation_matches("yes\n", "VERIFY CODEX 0.151.0 HOOK"));
+        } else {
+            assert_eq!(
+                confirmation_phrase("0.152.1"),
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK"
+            );
+            assert!(confirmation_matches(
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK\n",
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK"
+            ));
+            assert!(!confirmation_matches(
+                "yes\n",
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK"
+            ));
+        }
     }
 
     #[test]

@@ -98,15 +98,37 @@ mod tests {
 
     fn context() -> DecisionContext<'static> {
         DecisionContext {
-            codex_version: "0.151.0",
+            codex_version: if cfg!(windows) { "0.152.1" } else { "0.151.0" },
             expected_cwd: "/tmp/work",
             expected_command: None,
-            verification_only: false,
+            verification_only: cfg!(windows),
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn allows_only_an_armed_permission_request_with_matching_cwd() {
+        assert_eq!(decide(&input(), context()), Decision::Allow);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn production_decision_declines_unverified_windows_candidate() {
+        let context = DecisionContext {
+            codex_version: "0.152.1",
+            expected_cwd: "/tmp/work",
+            expected_command: None,
+            verification_only: false,
+        };
+        assert_eq!(
+            decide(&input(), context),
+            Decision::Decline(DeclineReason::UnsupportedCodexCompatibility)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verification_mode_allows_candidate_permission_request_with_matching_cwd() {
         assert_eq!(decide(&input(), context()), Decision::Allow);
     }
 
@@ -128,8 +150,14 @@ mod tests {
 
     #[test]
     fn verification_allows_only_the_exact_authorized_command() {
+        let expected_command = if cfg!(windows) {
+            "curl.exe -I https://example.com"
+        } else {
+            "curl -I https://example.com"
+        };
         let verification_context = DecisionContext {
-            expected_command: Some("curl -I https://example.com"),
+            expected_command: Some(expected_command),
+            verification_only: true,
             ..context()
         };
         assert_eq!(
@@ -137,9 +165,15 @@ mod tests {
             Decision::Decline(DeclineReason::UnexpectedVerificationAction)
         );
 
-        let exact = protocol::parse(
-            br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl -I https://example.com"}}"#,
-        )
+        let exact = if cfg!(windows) {
+            protocol::parse(
+                br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl.exe -I https://example.com"}}"#,
+            )
+        } else {
+            protocol::parse(
+                br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl -I https://example.com"}}"#,
+            )
+        }
         .expect("exact verification fixture");
         assert_eq!(decide(&exact, verification_context), Decision::Allow);
     }
