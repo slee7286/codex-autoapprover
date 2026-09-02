@@ -150,11 +150,7 @@ mod tests {
 
     #[test]
     fn verification_allows_only_the_exact_authorized_command() {
-        let expected_command = if cfg!(windows) {
-            "curl.exe -I https://example.com"
-        } else {
-            "curl -I https://example.com"
-        };
+        let expected_command = crate::compatibility::verification_probe_command();
         let verification_context = DecisionContext {
             expected_command: Some(expected_command),
             verification_only: true,
@@ -165,16 +161,42 @@ mod tests {
             Decision::Decline(DeclineReason::UnexpectedVerificationAction)
         );
 
-        let exact = if cfg!(windows) {
-            protocol::parse(
-                br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl.exe -I https://example.com"}}"#,
-            )
-        } else {
-            protocol::parse(
-                br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl -I https://example.com"}}"#,
-            )
-        }
-        .expect("exact verification fixture");
+        let exact = input_with_command(expected_command);
         assert_eq!(decide(&exact, verification_context), Decision::Allow);
+
+        let alternate_executable = if cfg!(windows) {
+            "curl -I https://example.com"
+        } else {
+            "curl.exe -I https://example.com"
+        };
+        for command in [
+            format!("{expected_command} "),
+            format!("{expected_command} --silent"),
+            format!("{expected_command} && echo extra"),
+            alternate_executable.to_string(),
+            "Invoke-WebRequest -Uri https://example.com".to_string(),
+        ] {
+            let candidate = input_with_command(&command);
+            assert_eq!(
+                decide(&candidate, verification_context),
+                Decision::Decline(DeclineReason::UnexpectedVerificationAction),
+                "unexpectedly authorized {command:?}"
+            );
+        }
+    }
+
+    fn input_with_command(command: &str) -> HookInput {
+        protocol::parse(
+            serde_json::to_vec(&serde_json::json!({
+                "session_id": "sess",
+                "cwd": "/tmp/work",
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+            }))
+            .expect("serialize verification fixture")
+            .as_slice(),
+        )
+        .expect("valid verification fixture")
     }
 }

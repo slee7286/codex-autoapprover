@@ -5,6 +5,16 @@ pub const WINDOWS_VERIFICATION_TARGET: &str = "0.152.1";
 pub const SUPPORTED_HOOK_PROTOCOL: &str = "permission-request-v1";
 pub const AUTOAPPROVER_RELEASE: &str = "0.1.0";
 
+#[cfg(windows)]
+pub(crate) const fn verification_probe_command() -> &'static str {
+    "curl.exe -I https://example.com"
+}
+
+#[cfg(not(windows))]
+pub(crate) const fn verification_probe_command() -> &'static str {
+    "curl -I https://example.com"
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub enum OperatingSystem {

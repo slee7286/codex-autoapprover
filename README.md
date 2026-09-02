@@ -70,7 +70,7 @@ Not implemented or not verified:
 - packages or a supported release; and
 - a direct App Server backend.
 
-The native Windows preflight used Rust/MSVC on Windows 11 with `codex-cli 0.152.1`. It exercised fake `.cmd`, `.ps1`, and `.exe` launchers, but observed no live `PermissionRequest`, returned no structured allow to real Codex, performed no compatibility promotion, and did not run live verification.
+The native Windows preflight used Rust/MSVC on Windows 11 with `codex-cli 0.152.1`. A first isolated live attempt then failed safely because its generated prompt used bare `curl`, which PowerShell resolved to `Invoke-WebRequest` instead of the authorized `curl.exe`; it produced zero hook invocations and zero allows, changed no persistent configuration, and supplied no positive compatibility evidence. Windows 0.152.1 remains candidate/unverified and was not promoted.
 
 The arming secret remains inherited by descendants as defense in depth. It is no longer sufficient for approval: the broker also requires kernel peer credentials and exact live ancestry. This is not perfect same-user isolation.
 

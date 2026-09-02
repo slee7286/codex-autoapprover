@@ -39,7 +39,7 @@ The native Windows preflight compiled and tested with MSVC Rust on Windows 11 an
 
 The secret remains defense in depth and is compared in a fixed-length byte loop. It is never sufficient by itself. Descendant processes can still inherit the socket location and secret, invoke the hook binary, or cause denial of service. This design meaningfully improves on inherited environment metadata alone but does not create a privilege boundary against malicious code already executing as the same user inside the exact authorized Codex descendant tree.
 
-The verification hook additionally restricts the synthetic test to a `tool_input.command` equal to `curl -I https://example.com`. This is project-side fail-closed policy, not a claim that every Codex tool schema uses that field. If the real request does not expose that exact shape, verification declines and must not retry with a broader rule.
+The verification hook additionally restricts the synthetic test to a `tool_input.command` equal to the platform-specific canonical probe: `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. This is project-side fail-closed policy, not a claim that every Codex tool schema uses that field. If the real request does not expose that exact shape, verification declines and must not retry with a broader rule.
 
 ## Reporting a vulnerability
 

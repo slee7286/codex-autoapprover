@@ -393,9 +393,11 @@ fn fake_codex_exe_cmd_and_ps1_preserve_arguments_stdio_and_exit_status() {
 fn windows_candidate_diagnose_and_print_config_gate_are_preserved() {
     let (_temp, directory, _result) = windows_fake_codex_fixture(".exe");
     let path = windows_fixture_path(&directory);
+    let codex_home = directory.join("codex-home");
     Command::cargo_bin("codex-autoapprover")
         .expect("binary built")
         .env("PATH", path.clone())
+        .env("CODEX_HOME", &codex_home)
         .args(["diagnose"])
         .assert()
         .success()
@@ -406,12 +408,14 @@ fn windows_candidate_diagnose_and_print_config_gate_are_preserved() {
     Command::cargo_bin("codex-autoapprover")
         .expect("binary built")
         .env("PATH", path)
+        .env("CODEX_HOME", &codex_home)
         .args(["print-hook-config"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "no locally verified PermissionRequest compatibility",
         ));
+    assert!(!codex_home.join("config.toml").exists());
 }
 
 #[cfg(unix)]

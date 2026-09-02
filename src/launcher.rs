@@ -18,8 +18,6 @@ use crate::{
     codex, compatibility, interrupt, process,
 };
 
-const VERIFICATION_COMMAND_LINUX: &str = "curl -I https://example.com";
-const VERIFICATION_COMMAND_WINDOWS: &str = "curl.exe -I https://example.com";
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const VERIFICATION_FIXTURE: &str = "codex-autoapprover-fixture.txt";
 const VERIFICATION_HOOKS_DIR: &str = ".codex-autoapprover-hooks";
@@ -229,7 +227,7 @@ pub fn verify_local_hook() -> Result<i32> {
     eprintln!("This starts the official Codex executable with a child-local hook override.");
     eprintln!("Automatic approval is armed only for this verification child.");
     eprintln!("No persistent Codex configuration will be written.");
-    eprintln!("The only authorized action is: {}", verification_command());
+    eprintln!("{}", verification_banner());
     eprintln!(
         "The test prompt forbids all other commands, file changes, Git changes, installs, and full access."
     );
@@ -273,7 +271,7 @@ pub fn verify_local_hook() -> Result<i32> {
         BrokerConfig {
             codex_version: expected_version.clone(),
             expected_cwd: repo_path.clone(),
-            expected_command: Some(verification_command().into()),
+            expected_command: Some(compatibility::verification_probe_command().into()),
             audit_path: Some(audit_path.clone()),
             verification_only: true,
         },
@@ -466,14 +464,6 @@ pub fn verify_local_hook() -> Result<i32> {
         "verification completed, but no production compatibility promotion was performed automatically"
     );
     Ok(0)
-}
-
-fn verification_command() -> &'static str {
-    if cfg!(windows) {
-        VERIFICATION_COMMAND_WINDOWS
-    } else {
-        VERIFICATION_COMMAND_LINUX
-    }
 }
 
 fn confirmation_phrase(version: &str) -> String {
@@ -792,8 +782,18 @@ fn format_repository_diagnostics(label: &str, status: &RepositoryStatus) -> Stri
     output
 }
 
-fn verification_prompt() -> &'static str {
-    "Run exactly `curl -I https://example.com` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion."
+fn verification_prompt() -> String {
+    format!(
+        "Run exactly `{}` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion.",
+        compatibility::verification_probe_command()
+    )
+}
+
+fn verification_banner() -> String {
+    format!(
+        "The only authorized action is: {}",
+        compatibility::verification_probe_command()
+    )
 }
 
 #[allow(dead_code)]
@@ -986,8 +986,29 @@ mod tests {
 
     #[test]
     fn verification_prompt_cannot_request_full_access() {
-        assert!(!verification_prompt().contains("--yolo"));
-        assert!(verification_prompt().contains("use full access"));
+        let prompt = verification_prompt();
+        assert!(!prompt.contains("--yolo"));
+        assert!(prompt.contains("use full access"));
+    }
+
+    #[test]
+    fn verification_probe_is_platform_specific_in_banner_and_prompt() {
+        let command = compatibility::verification_probe_command();
+        let expected = if cfg!(windows) {
+            "curl.exe -I https://example.com"
+        } else {
+            "curl -I https://example.com"
+        };
+        assert_eq!(command, expected);
+        assert_eq!(
+            verification_banner(),
+            format!("The only authorized action is: {expected}")
+        );
+        let prompt = verification_prompt();
+        assert!(prompt.contains(&format!("Run exactly `{expected}` and do nothing else.")));
+        if cfg!(windows) {
+            assert!(!prompt.contains("`curl -I https://example.com`"));
+        }
     }
 
     #[cfg(unix)]

@@ -217,19 +217,25 @@ pub fn allow_response() -> AllowResponse {
 mod tests {
     use super::*;
 
-    const INPUT: &str = r#"{
-        "session_id": "sess_test",
-        "cwd": "/tmp/example-workspace",
-        "hook_event_name": "PermissionRequest",
-        "tool_name": "Bash",
-        "tool_input": {"command": "curl -I https://example.com"},
-        "turn_id": "turn_test",
-        "permission_mode": "default"
-    }"#;
+    fn input() -> String {
+        format!(
+            r#"{{
+                "session_id": "sess_test",
+                "cwd": "/tmp/example-workspace",
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": {{"command": "{}"}},
+                "turn_id": "turn_test",
+                "permission_mode": "default"
+            }}"#,
+            crate::compatibility::verification_probe_command()
+        )
+    }
 
     #[test]
     fn parses_documented_permission_request_fields() {
-        let input = parse(INPUT.as_bytes()).expect("valid input");
+        let input = input();
+        let input = parse(input.as_bytes()).expect("valid input");
         assert_eq!(
             input.hook_event_name.as_deref(),
             Some(PERMISSION_REQUEST_EVENT)

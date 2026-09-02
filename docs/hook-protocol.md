@@ -56,7 +56,7 @@ The Rust handler currently:
 4. requires non-empty `session_id`, `cwd`, `tool_name`, and `tool_input`;
 5. requires the inherited socket location, the exact marker `CODEX_AUTOAPPROVER_HOOK_PROTOCOL=permission-request-v1`, and a valid random session secret only to connect to the broker;
 6. sends an internal `permission-binding-v1` framed request to the broker; the broker alone checks exact version/cwd, `Bash`, secret, `SO_PEERCRED`, and `/proc` ancestry;
-7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal `curl -I https://example.com`;
+7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal the platform-specific canonical probe: `curl -I https://example.com` on Linux or `curl.exe -I https://example.com` on native Windows;
 8. serializes only the documented allow response after broker allow; and
 9. returns exit 0 with empty stdout for every decline, parse failure, broker failure, or disconnected session.
 
