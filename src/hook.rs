@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 
 use anyhow::Result;
 
-use crate::{audit, decision::Decision, protocol};
+use crate::{broker, protocol};
 
 pub fn run() -> Result<i32> {
     let input = read_bounded_stdin()?;
@@ -14,26 +14,17 @@ pub fn run() -> Result<i32> {
         }
     };
 
-    if let Err(error) = audit::hook_invoked(
-        parsed.tool_name.as_deref(),
-        parsed.hook_event_name.as_deref(),
-    ) {
-        eprintln!("codex-autoapprover hook: no decision (audit failure: {error})");
-        return Ok(0);
-    }
-
-    if let Decision::Allow = crate::decision::decide(&parsed) {
-        if let Err(error) = audit::hook_allow(
-            parsed.tool_name.as_deref().unwrap_or("unknown"),
-            parsed.tool_input.as_ref(),
-        ) {
-            eprintln!("codex-autoapprover hook: no decision (audit failure: {error})");
-            return Ok(0);
+    match broker::request(&parsed) {
+        Ok(true) => {
+            let response = serde_json::to_vec(&protocol::allow_response())?;
+            io::stdout().write_all(&response)?;
+            io::stdout().write_all(b"\n")?;
+            io::stdout().flush()?;
         }
-        let response = serde_json::to_vec(&protocol::allow_response())?;
-        io::stdout().write_all(&response)?;
-        io::stdout().write_all(b"\n")?;
-        io::stdout().flush()?;
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("codex-autoapprover hook: no decision ({error})");
+        }
     }
 
     Ok(0)

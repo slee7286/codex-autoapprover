@@ -54,17 +54,17 @@ The Rust handler currently:
 2. requires a JSON object;
 3. requires `hook_event_name` exactly equal to `PermissionRequest`;
 4. requires non-empty `session_id`, `cwd`, `tool_name`, and `tool_input`;
-5. requires a valid random `CODEX_AUTOAPPROVER_SESSION_TOKEN`, the exact internal marker `CODEX_AUTOAPPROVER_HOOK_PROTOCOL=permission-request-v1`, the exact child-local Codex version, the local CLI surface marker, and a matching `CODEX_AUTOAPPROVER_EXPECTED_CWD`;
-6. requires the observed tool type `Bash`;
-7. in the isolated verification path, additionally requires `tool_input.command` to equal the authorized synthetic action `curl -I https://example.com`;
-8. serializes only the documented allow response on success; and
-9. returns exit 0 with empty stdout for every decline or parse failure.
+5. requires the inherited socket location, the exact marker `CODEX_AUTOAPPROVER_HOOK_PROTOCOL=permission-request-v1`, and a valid random session secret only to connect to the broker;
+6. sends an internal `permission-binding-v1` framed request to the broker; the broker alone checks exact version/cwd, `Bash`, secret, `SO_PEERCRED`, and `/proc` ancestry;
+7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal `curl -I https://example.com`;
+8. serializes only the documented allow response after broker allow; and
+9. returns exit 0 with empty stdout for every decline, parse failure, broker failure, or disconnected session.
 
 Unknown JSON fields are ignored by the parser but never broaden a decision. The project does not use numeric options, terminal text, ANSI sequences, or a PTY to make a hook decision.
 
-The environment-marker, exact-version, local-surface, and cwd checks are project policy, not official Codex fields. Unknown JSON fields are ignored for forward-compatible parsing, but they cannot satisfy or broaden required checks. Unsupported project protocol markers, versions, surfaces, events, and tool types receive no decision. The token is intentionally not printed. Descendant processes may inherit it; stronger process/session binding is an open security requirement.
+The marker, exact-version, local-surface, and cwd checks are project policy, not official Codex fields. Unknown hook fields are ignored for forward compatibility, but they cannot satisfy or broaden a decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
 
-The verifier sets an audit-path environment variable for its child. The hook records only an allow marker and short hashes of tool name and tool input in a separate temporary evidence directory outside the checked repository, then emits the protocol response. If the audit sink cannot be written, it declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
+The verifier gives the broker an audit path in its own temporary state. The broker records only an allow marker and short hashes of tool name and tool input; the hook does not own the allow decision or audit sink. If the audit sink cannot be written, the broker declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
 
 ## Decline and malformed behavior
 
@@ -74,7 +74,11 @@ The exact way Codex surfaces hook process errors, timeouts, termination, or malf
 
 ## Environment inheritance
 
-The official hooks page documents plugin-specific environment variables and says hook commands run with the session cwd. The second isolated verification demonstrated the required child environment reaching the real hook path for this target. The launcher still relies on ordinary child-process inheritance for the random token and metadata; descendants can inherit those values. This is a known limitation, not an independently strong process identity proof.
+The official hooks page documents plugin-specific environment variables and says hook commands run with the session cwd. The second isolated verification demonstrated the required child environment reaching the real hook path for this target. The launcher passes only the socket location, internal marker, and random secret needed by the hook. Descendants can inherit those values and may invoke the hook or cause denial of service, but the broker independently obtains peer identity from the kernel and checks live ancestry. This is not perfect same-user isolation.
+
+## Binding sequence
+
+The launcher creates a private broker and listener, launches the exact Codex child, records its PID/start-time/effective-UID tuple, and then permits decisions. Codex launches the hook; the hook connects and sends the bounded request. The kernel supplies peer PID/UID/GID, the broker validates the secret and bounded ancestry, and returns allow or no-decision. The hook returns structured allow or no output. When Codex exits or is interrupted, the broker stops, workers join, and the socket/private directory are removed.
 
 ## Schema versions and open questions
 

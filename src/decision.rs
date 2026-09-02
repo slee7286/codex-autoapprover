@@ -8,37 +8,39 @@ pub enum Decision {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeclineReason {
-    Unarmed,
     WrongEvent,
     MissingRequiredField,
     WorkingDirectoryMismatch,
-    UnsupportedHookProtocol,
     UnsupportedCodexCompatibility,
     UnsupportedToolType,
     UnexpectedVerificationAction,
 }
 
-pub fn decide(input: &HookInput) -> Decision {
-    if !arming::valid_token(std::env::var(arming::SESSION_TOKEN_ENV).ok().as_deref()) {
-        return Decision::Decline(DeclineReason::Unarmed);
-    }
+#[derive(Clone, Copy)]
+pub struct DecisionContext<'a> {
+    pub codex_version: &'a str,
+    pub expected_cwd: &'a str,
+    pub expected_command: Option<&'a str>,
+    pub verification_only: bool,
+}
 
-    if std::env::var(arming::PROTOCOL_ENV).ok().as_deref() != Some(arming::PROTOCOL_VERSION) {
-        return Decision::Decline(DeclineReason::UnsupportedHookProtocol);
-    }
-
-    let Some(version) = std::env::var(arming::CODEX_VERSION_ENV).ok() else {
-        return Decision::Decline(DeclineReason::UnsupportedCodexCompatibility);
-    };
-    if std::env::var(arming::SURFACE_ENV).ok().as_deref()
-        != Some(crate::compatibility::Surface::LocalCliLauncher.as_str())
-        || !crate::compatibility::verified_hook_support_for(
-            &version,
+pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
+    let supported = if context.verification_only {
+        crate::compatibility::verified_or_candidate_hook_support_for(
+            context.codex_version,
             crate::compatibility::OperatingSystem::current(),
             crate::compatibility::Surface::LocalCliLauncher,
             arming::PROTOCOL_VERSION,
         )
-    {
+    } else {
+        crate::compatibility::verified_hook_support_for(
+            context.codex_version,
+            crate::compatibility::OperatingSystem::current(),
+            crate::compatibility::Surface::LocalCliLauncher,
+            arming::PROTOCOL_VERSION,
+        )
+    };
+    if !supported {
         return Decision::Decline(DeclineReason::UnsupportedCodexCompatibility);
     }
 
@@ -55,7 +57,7 @@ pub fn decide(input: &HookInput) -> Decision {
     }
 
     if !crate::compatibility::observed_tool_supported(
-        &version,
+        context.codex_version,
         crate::compatibility::OperatingSystem::current(),
         crate::compatibility::Surface::LocalCliLauncher,
         arming::PROTOCOL_VERSION,
@@ -64,17 +66,17 @@ pub fn decide(input: &HookInput) -> Decision {
         return Decision::Decline(DeclineReason::UnsupportedToolType);
     }
 
-    if std::env::var(arming::EXPECTED_CWD_ENV).ok().as_deref() != input.cwd.as_deref() {
+    if input.cwd.as_deref() != Some(context.expected_cwd) {
         return Decision::Decline(DeclineReason::WorkingDirectoryMismatch);
     }
 
-    if let Ok(expected_command) = std::env::var(arming::VERIFICATION_COMMAND_ENV) {
+    if let Some(expected_command) = context.expected_command {
         let actual_command = input
             .tool_input
             .as_ref()
             .and_then(|value| value.get("command"))
             .and_then(serde_json::Value::as_str);
-        if actual_command != Some(expected_command.as_str()) {
+        if actual_command != Some(expected_command) {
             return Decision::Decline(DeclineReason::UnexpectedVerificationAction);
         }
     }
@@ -84,19 +86,8 @@ pub fn decide(input: &HookInput) -> Decision {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
-
     use super::*;
     use crate::protocol;
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock")
-    }
 
     fn input() -> HookInput {
         protocol::parse(
@@ -105,69 +96,44 @@ mod tests {
         .expect("valid fixture")
     }
 
-    fn set_armed() {
-        unsafe {
-            std::env::set_var(crate::arming::SESSION_TOKEN_ENV, "a".repeat(64));
-            std::env::set_var(crate::arming::PROTOCOL_ENV, crate::arming::PROTOCOL_VERSION);
-            std::env::set_var(crate::arming::CODEX_VERSION_ENV, "0.151.0");
-            std::env::set_var(
-                crate::arming::SURFACE_ENV,
-                crate::compatibility::Surface::LocalCliLauncher.as_str(),
-            );
-            std::env::set_var(crate::arming::EXPECTED_CWD_ENV, "/tmp/work");
-        }
-    }
-
-    fn clear_env() {
-        unsafe {
-            std::env::remove_var(crate::arming::SESSION_TOKEN_ENV);
-            std::env::remove_var(crate::arming::PROTOCOL_ENV);
-            std::env::remove_var(crate::arming::CODEX_VERSION_ENV);
-            std::env::remove_var(crate::arming::SURFACE_ENV);
-            std::env::remove_var(crate::arming::EXPECTED_CWD_ENV);
-            std::env::remove_var(crate::arming::VERIFICATION_COMMAND_ENV);
+    fn context() -> DecisionContext<'static> {
+        DecisionContext {
+            codex_version: "0.151.0",
+            expected_cwd: "/tmp/work",
+            expected_command: None,
+            verification_only: false,
         }
     }
 
     #[test]
     fn allows_only_an_armed_permission_request_with_matching_cwd() {
-        let _guard = env_lock();
-        set_armed();
-        assert_eq!(decide(&input()), Decision::Allow);
-        clear_env();
+        assert_eq!(decide(&input(), context()), Decision::Allow);
     }
 
     #[test]
     fn declines_wrong_event_and_wrong_cwd() {
-        let _guard = env_lock();
-        set_armed();
         let mut wrong_event = input();
         wrong_event.hook_event_name = Some("PreToolUse".into());
         assert_eq!(
-            decide(&wrong_event),
+            decide(&wrong_event, context()),
             Decision::Decline(DeclineReason::WrongEvent)
         );
         let mut wrong_cwd = input();
         wrong_cwd.cwd = Some("/tmp/other".into());
         assert_eq!(
-            decide(&wrong_cwd),
+            decide(&wrong_cwd, context()),
             Decision::Decline(DeclineReason::WorkingDirectoryMismatch)
         );
-        clear_env();
     }
 
     #[test]
     fn verification_allows_only_the_exact_authorized_command() {
-        let _guard = env_lock();
-        set_armed();
-        unsafe {
-            std::env::set_var(
-                crate::arming::VERIFICATION_COMMAND_ENV,
-                "curl -I https://example.com",
-            );
-        }
+        let verification_context = DecisionContext {
+            expected_command: Some("curl -I https://example.com"),
+            ..context()
+        };
         assert_eq!(
-            decide(&input()),
+            decide(&input(), verification_context),
             Decision::Decline(DeclineReason::UnexpectedVerificationAction)
         );
 
@@ -175,7 +141,6 @@ mod tests {
             br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"curl -I https://example.com"}}"#,
         )
         .expect("exact verification fixture");
-        assert_eq!(decide(&exact), Decision::Allow);
-        clear_env();
+        assert_eq!(decide(&exact, verification_context), Decision::Allow);
     }
 }

@@ -1,15 +1,15 @@
-use std::{env, fs, path::Path};
+use std::env;
+
+#[cfg(unix)]
+use std::{fs, path::Path, process::Stdio, thread, time::Duration};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 const SESSION_TOKEN_ENV: &str = "CODEX_AUTOAPPROVER_SESSION_TOKEN";
-const EXPECTED_CWD_ENV: &str = "CODEX_AUTOAPPROVER_EXPECTED_CWD";
+const SESSION_SOCKET_ENV: &str = "CODEX_AUTOAPPROVER_SESSION_SOCKET";
 const PROTOCOL_ENV: &str = "CODEX_AUTOAPPROVER_HOOK_PROTOCOL";
-const CODEX_VERSION_ENV: &str = "CODEX_AUTOAPPROVER_CODEX_VERSION";
-const SURFACE_ENV: &str = "CODEX_AUTOAPPROVER_SURFACE";
-const VERIFICATION_COMMAND_ENV: &str = "CODEX_AUTOAPPROVER_VERIFICATION_COMMAND";
 const PROTOCOL_VERSION: &str = "permission-request-v1";
 const LOCAL_CLI_SURFACE: &str = "local CLI launcher";
 
@@ -17,11 +17,8 @@ fn hook_command() -> Command {
     let mut command = Command::cargo_bin("codex-autoapprover").expect("binary built");
     command
         .env_remove(SESSION_TOKEN_ENV)
-        .env_remove(EXPECTED_CWD_ENV)
-        .env_remove(PROTOCOL_ENV)
-        .env_remove(CODEX_VERSION_ENV)
-        .env_remove(SURFACE_ENV)
-        .env_remove(VERIFICATION_COMMAND_ENV);
+        .env_remove(SESSION_SOCKET_ENV)
+        .env_remove(PROTOCOL_ENV);
     command
 }
 
@@ -42,22 +39,23 @@ fn unarmed_permission_request_receives_no_decision() {
 }
 
 #[test]
-fn armed_permission_request_returns_only_documented_allow() {
+fn inherited_environment_metadata_alone_cannot_authorize() {
     let cwd = env::current_dir().expect("current directory");
     let token = "a".repeat(64);
     hook_command()
         .args(["hook"])
         .env(SESSION_TOKEN_ENV, &token)
-        .env(EXPECTED_CWD_ENV, cwd.to_str().expect("utf-8 cwd"))
         .env(PROTOCOL_ENV, PROTOCOL_VERSION)
-        .env(CODEX_VERSION_ENV, "0.151.0")
-        .env(SURFACE_ENV, LOCAL_CLI_SURFACE)
+        .env(
+            "CODEX_AUTOAPPROVER_EXPECTED_CWD",
+            cwd.to_str().expect("utf-8 cwd"),
+        )
+        .env("CODEX_AUTOAPPROVER_CODEX_VERSION", "0.151.0")
+        .env("CODEX_AUTOAPPROVER_SURFACE", "local CLI launcher")
         .write_stdin(permission_request(cwd.to_str().expect("utf-8 cwd")))
         .assert()
         .success()
-        .stdout(predicate::eq(
-            "{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n",
-        ))
+        .stdout(predicate::eq(""))
         .stderr(predicate::str::contains("printf synthetic").not())
         .stderr(predicate::str::contains(&token).not());
 }
@@ -73,14 +71,17 @@ fn expanded_hook_fields_are_ignored_without_broadening_the_decision() {
     hook_command()
         .args(["hook"])
         .env(SESSION_TOKEN_ENV, &token)
-        .env(EXPECTED_CWD_ENV, cwd.to_str().expect("utf-8 cwd"))
         .env(PROTOCOL_ENV, PROTOCOL_VERSION)
-        .env(CODEX_VERSION_ENV, "0.151.0")
-        .env(SURFACE_ENV, LOCAL_CLI_SURFACE)
+        .env(
+            "CODEX_AUTOAPPROVER_EXPECTED_CWD",
+            cwd.to_str().expect("utf-8 cwd"),
+        )
+        .env("CODEX_AUTOAPPROVER_CODEX_VERSION", "0.151.0")
+        .env("CODEX_AUTOAPPROVER_SURFACE", "local CLI launcher")
         .write_stdin(input)
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"behavior\":\"allow\""));
+        .stdout(predicate::str::is_empty());
 }
 
 #[test]
@@ -107,10 +108,13 @@ fn unsupported_tool_type_version_surface_and_protocol_receive_no_decision() {
         hook_command()
             .args(["hook"])
             .env(SESSION_TOKEN_ENV, &token)
-            .env(EXPECTED_CWD_ENV, cwd.to_str().expect("utf-8 cwd"))
             .env(PROTOCOL_ENV, protocol)
-            .env(CODEX_VERSION_ENV, version)
-            .env(SURFACE_ENV, surface)
+            .env(
+                "CODEX_AUTOAPPROVER_EXPECTED_CWD",
+                cwd.to_str().expect("utf-8 cwd"),
+            )
+            .env("CODEX_AUTOAPPROVER_CODEX_VERSION", version)
+            .env("CODEX_AUTOAPPROVER_SURFACE", surface)
             .write_stdin(input)
             .assert()
             .success()
@@ -142,11 +146,13 @@ fn verification_action_restriction_is_fail_closed() {
     hook_command()
         .args(["hook"])
         .env(SESSION_TOKEN_ENV, &token)
-        .env(EXPECTED_CWD_ENV, cwd.to_str().expect("utf-8 cwd"))
         .env(PROTOCOL_ENV, PROTOCOL_VERSION)
-        .env(CODEX_VERSION_ENV, "0.151.0")
-        .env(SURFACE_ENV, LOCAL_CLI_SURFACE)
-        .env(VERIFICATION_COMMAND_ENV, "curl -I https://example.com")
+        .env(
+            "CODEX_AUTOAPPROVER_EXPECTED_CWD",
+            cwd.to_str().expect("utf-8 cwd"),
+        )
+        .env("CODEX_AUTOAPPROVER_CODEX_VERSION", "0.151.0")
+        .env("CODEX_AUTOAPPROVER_SURFACE", "local CLI launcher")
         .write_stdin(permission_request(cwd.to_str().expect("utf-8 cwd")))
         .assert()
         .success()
@@ -164,6 +170,7 @@ fn verification_mode_requires_a_real_interactive_confirmation() {
         .stderr(predicate::str::contains("requires an interactive terminal"));
 }
 
+#[cfg(unix)]
 #[test]
 fn production_configuration_is_refused_for_an_unverified_local_version() {
     use std::os::unix::fs::PermissionsExt;
@@ -218,7 +225,7 @@ fn production_run_arms_only_after_exact_compatibility_succeeds() {
     fs::create_dir(&home).expect("home directory");
     fs::write(
         &fake,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.151.0\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf 'protocol=%s\\n' \"$CODEX_AUTOAPPROVER_HOOK_PROTOCOL\"\nprintf 'version=%s\\n' \"$CODEX_AUTOAPPROVER_CODEX_VERSION\"\nprintf 'surface=%s\\n' \"$CODEX_AUTOAPPROVER_SURFACE\"\nprintf 'args=%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\nexit 17\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.151.0\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf 'socket=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_SOCKET:+yes}\"\nprintf 'args=%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\nprintf '{\"session_id\":\"fake\",\"cwd\":\"%s\",\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"printf synthetic\"}}\\n' \"$(pwd)\" | \"$FAKE_HOOK_BIN\" hook\nexit 17\n",
     )
     .expect("fake codex");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("executable fake codex");
@@ -227,13 +234,16 @@ fn production_run_arms_only_after_exact_compatibility_succeeds() {
         .expect("binary built")
         .env("PATH", temp.path())
         .env("HOME", &home)
+        .env(
+            "FAKE_HOOK_BIN",
+            env::var_os("CARGO_BIN_EXE_codex-autoapprover").expect("launcher path"),
+        )
         .args(["run", "--", "exec", "--model", "synthetic"])
         .assert()
         .code(17)
         .stdout(predicate::str::contains("armed=yes\n"))
-        .stdout(predicate::str::contains("protocol=permission-request-v1\n"))
-        .stdout(predicate::str::contains("version=0.151.0\n"))
-        .stdout(predicate::str::contains("surface=local CLI launcher\n"))
+        .stdout(predicate::str::contains("socket=yes\n"))
+        .stdout(predicate::str::contains("{\"hookSpecificOutput\":{"))
         .stdout(predicate::str::contains("args=-c|hooks.PermissionRequest="));
     assert!(!home.join(".codex/config.toml").exists());
 }
@@ -338,4 +348,101 @@ fn run_inherits_stdin_stdout_and_stderr() {
         .success()
         .stdout(predicate::str::contains("stdin=hello from stdin\n"))
         .stderr(predicate::str::contains("child stderr\n"));
+}
+
+#[cfg(unix)]
+#[test]
+fn unrelated_process_cannot_reuse_a_live_bound_session() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temporary directory");
+    let fake = temp.path().join("codex");
+    let binding = temp.path().join("binding");
+    fs::write(
+        &fake,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.151.0\\n'; exit 0; fi\nprintf '%s\\n%s\\n' \"$CODEX_AUTOAPPROVER_SESSION_SOCKET\" \"$CODEX_AUTOAPPROVER_SESSION_TOKEN\" > \"$BINDING_FILE\"\n/bin/sleep 2\n",
+    )
+    .expect("fake codex");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("fake executable");
+
+    let binary = env::var_os("CARGO_BIN_EXE_codex-autoapprover").expect("launcher path");
+    let child = std::process::Command::new(&binary)
+        .env("PATH", temp.path())
+        .env("BINDING_FILE", &binding)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .args(["run"])
+        .spawn()
+        .expect("spawn launcher");
+    for _ in 0..100 {
+        if binding.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let binding_data = fs::read_to_string(&binding).expect("live binding fixture");
+    let mut lines = binding_data.lines();
+    let socket = lines.next().expect("socket path");
+    let secret = lines.next().expect("session secret");
+    let cwd = env::current_dir().expect("cwd");
+    let result = Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .args(["hook"])
+        .env(SESSION_SOCKET_ENV, socket)
+        .env(SESSION_TOKEN_ENV, secret)
+        .env(PROTOCOL_ENV, PROTOCOL_VERSION)
+        .write_stdin(permission_request(cwd.to_str().expect("utf-8 cwd")))
+        .output()
+        .expect("run unrelated hook");
+    assert!(result.status.success());
+    assert!(result.stdout.is_empty());
+    let launcher_output = child.wait_with_output().expect("wait fake Codex");
+    assert!(
+        launcher_output.status.success(),
+        "launcher failed: {}",
+        String::from_utf8_lossy(&launcher_output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stale_session_secret_and_socket_cannot_authorize_after_shutdown() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temporary directory");
+    let fake = temp.path().join("codex");
+    let binding = temp.path().join("binding");
+    fs::write(
+        &fake,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.151.0\\n'; exit 0; fi\nprintf '%s\\n%s\\n' \"$CODEX_AUTOAPPROVER_SESSION_SOCKET\" \"$CODEX_AUTOAPPROVER_SESSION_TOKEN\" > \"$BINDING_FILE\"\n",
+    )
+    .expect("fake codex");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("fake executable");
+    let binary = env::var_os("CARGO_BIN_EXE_codex-autoapprover").expect("launcher path");
+    let status = std::process::Command::new(&binary)
+        .env("PATH", temp.path())
+        .env("BINDING_FILE", &binding)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .args(["run"])
+        .status()
+        .expect("run launcher");
+    assert!(status.success());
+    let binding_data = fs::read_to_string(&binding).expect("stale binding fixture");
+    let mut lines = binding_data.lines();
+    let socket = lines.next().expect("socket path");
+    let secret = lines.next().expect("session secret");
+    let cwd = env::current_dir().expect("cwd");
+    let result = Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .args(["hook"])
+        .env(SESSION_SOCKET_ENV, socket)
+        .env(SESSION_TOKEN_ENV, secret)
+        .env(PROTOCOL_ENV, PROTOCOL_VERSION)
+        .write_stdin(permission_request(cwd.to_str().expect("utf-8 cwd")))
+        .output()
+        .expect("run stale hook");
+    assert!(result.status.success());
+    assert!(result.stdout.is_empty());
+    assert!(!Path::new(socket).exists());
 }

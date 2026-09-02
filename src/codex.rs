@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
 };
 
@@ -9,12 +9,32 @@ use anyhow::{Context, Result, bail};
 pub struct Installation {
     pub path: PathBuf,
     pub version: String,
+    pub launcher_kind: LauncherKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum LauncherKind {
+    Executable,
+    Cmd,
+    Ps1,
+    Other,
+}
+
+#[allow(dead_code)]
 pub fn resolve() -> Result<PathBuf> {
-    let candidate = which::which("codex").context("resolve the official `codex` executable")?;
-    let resolved = fs::canonicalize(&candidate)
-        .with_context(|| format!("canonicalize resolved codex path {}", candidate.display()))?;
+    let installation = inspect()?;
+    Ok(installation.path)
+}
+
+pub fn inspect() -> Result<Installation> {
+    let candidate = resolve_codex_candidate()?;
+    let resolved = fs::canonicalize(&candidate.path).with_context(|| {
+        format!(
+            "canonicalize resolved codex path {}",
+            candidate.path.display()
+        )
+    })?;
     let launcher = fs::canonicalize(env::current_exe().context("resolve launcher path")?)
         .context("canonicalize launcher path")?;
 
@@ -28,13 +48,81 @@ pub fn resolve() -> Result<PathBuf> {
         )
     }
 
-    Ok(candidate)
+    Ok(Installation {
+        path: candidate.path.clone(),
+        version: version(&candidate.path)?,
+        launcher_kind: candidate.kind,
+    })
 }
 
-pub fn inspect() -> Result<Installation> {
-    let path = resolve()?;
-    let version = version(&path)?;
-    Ok(Installation { path, version })
+struct Candidate {
+    path: PathBuf,
+    kind: LauncherKind,
+}
+
+fn resolve_codex_candidate() -> Result<Candidate> {
+    #[cfg(windows)]
+    {
+        resolve_windows_codex()
+    }
+    #[cfg(not(windows))]
+    {
+        let path = which::which("codex").context("resolve the official `codex` executable")?;
+        Ok(Candidate {
+            path,
+            kind: LauncherKind::Executable,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_codex() -> Result<Candidate> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = which::which("codex") {
+        candidates.push(path);
+    }
+    if let Ok(output) = Command::new("where.exe").arg("codex").output()
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let path = PathBuf::from(line.trim());
+            if !path.as_os_str().is_empty() {
+                candidates.push(path);
+            }
+        }
+    }
+    if candidates.is_empty() {
+        bail!("resolve the official `codex` executable")
+    }
+    let launcher = fs::canonicalize(env::current_exe().context("resolve launcher path")?)
+        .context("canonicalize launcher path")?;
+    for path in candidates {
+        let kind = launcher_kind(&path);
+        let resolved = fs::canonicalize(&path).unwrap_or(path);
+        if resolved == launcher {
+            continue;
+        }
+        return Ok(Candidate {
+            path: resolved,
+            kind,
+        });
+    }
+    bail!("resolved `codex` points to codex-autoapprover; refusing recursive launch")
+}
+
+#[allow(dead_code)]
+fn launcher_kind(path: &Path) -> LauncherKind {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("exe") => LauncherKind::Executable,
+        Some("cmd") => LauncherKind::Cmd,
+        Some("ps1") => LauncherKind::Ps1,
+        _ => LauncherKind::Other,
+    }
 }
 
 pub fn version(path: &PathBuf) -> Result<String> {
@@ -82,25 +170,67 @@ pub fn status_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-pub fn hook_command_value(executable: &std::path::Path) -> String {
-    let command = format!("{} hook", shell_quote(executable));
-    format!(
-        "hooks.PermissionRequest=[{{hooks=[{{type=\"command\",command={}}}]}}]",
-        toml_quote(&command)
-    )
+pub fn hook_command_value(executable: &Path) -> String {
+    let hook = format!("{} hook", absolute_shell_quote(executable));
+    if cfg!(windows) {
+        format!(
+            "hooks.PermissionRequest=[{{hooks=[{{type=\"command\",command=\"\",commandWindows={}}}]}}]",
+            toml_quote(&hook)
+        )
+    } else {
+        format!(
+            "hooks.PermissionRequest=[{{hooks=[{{type=\"command\",command={}}}]}}]",
+            toml_quote(&hook)
+        )
+    }
 }
 
-pub fn hook_config_snippet(executable: &std::path::Path) -> String {
-    format!(
-        "[[hooks.PermissionRequest]]\n\n[[hooks.PermissionRequest.hooks]]\ntype = \"command\"\ncommand = {}\n",
-        toml_quote(&format!("{} hook", shell_quote(executable)))
-    )
+pub fn hook_config_snippet(executable: &Path) -> String {
+    let hook = format!("{} hook", absolute_shell_quote(executable));
+    if cfg!(windows) {
+        format!(
+            "[[hooks.PermissionRequest]]\n\n[[hooks.PermissionRequest.hooks]]\ntype = \"command\"\ncommandWindows = {}\n",
+            toml_quote(&hook)
+        )
+    } else {
+        format!(
+            "[[hooks.PermissionRequest]]\n\n[[hooks.PermissionRequest.hooks]]\ntype = \"command\"\ncommand = {}\n",
+            toml_quote(&hook)
+        )
+    }
 }
 
-fn shell_quote(path: &std::path::Path) -> String {
+pub fn build_codex_command(installation: &Installation) -> Command {
+    match installation.launcher_kind {
+        LauncherKind::Ps1 => {
+            let mut command = Command::new("powershell");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ]);
+            command.arg(&installation.path);
+            command
+        }
+        _ => Command::new(&installation.path),
+    }
+}
+
+fn absolute_shell_quote(path: &Path) -> String {
+    let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    shell_quote(&absolute)
+}
+
+fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
     if cfg!(windows) {
-        format!("\"{}\"", value.replace('"', "\\\""))
+        if value.contains(' ') || value.contains('"') {
+            format!("\"{}\"", value.replace('"', "\\\""))
+        } else {
+            value.into_owned()
+        }
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
@@ -140,5 +270,20 @@ mod tests {
         assert!(snippet.contains("hooks.PermissionRequest"));
         assert!(snippet.contains("type = \"command\""));
         assert!(!snippet.contains("option 1"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_config_uses_command_windows_field() {
+        let snippet =
+            hook_config_snippet(std::path::Path::new("C:\\tools\\codex-autoapprover.exe"));
+        assert!(snippet.contains("commandWindows"));
+    }
+
+    #[test]
+    fn windows_candidate_version_is_exact() {
+        assert_eq!(parse_version("codex-cli 0.152.1").unwrap(), "0.152.1");
+        assert!(parse_version("codex-cli 0.152.0").is_ok());
+        assert_ne!(parse_version("codex-cli 0.152.0").unwrap(), "0.152.1");
     }
 }

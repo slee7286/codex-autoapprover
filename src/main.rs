@@ -1,12 +1,15 @@
 mod arming;
 mod audit;
+mod broker;
 mod cli;
 mod codex;
 mod compatibility;
 mod decision;
 mod error;
 mod hook;
+mod interrupt;
 mod launcher;
+mod process;
 mod protocol;
 
 use clap::Parser;

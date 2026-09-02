@@ -15,31 +15,54 @@ pub fn json_hash(value: &serde_json::Value) -> String {
         .collect::<String>()
 }
 
+#[allow(dead_code)]
 pub fn hook_allow(tool_name: &str, tool_input: Option<&serde_json::Value>) -> io::Result<()> {
+    if let Some(path) = std::env::var_os(crate::arming::AUDIT_PATH_ENV) {
+        return hook_allow_at(Path::new(&path), tool_name, tool_input);
+    }
     let input_hash = tool_input.map(json_hash).unwrap_or_else(|| "none".into());
     let line = format!(
         "allowed one PermissionRequest tool_hash={} input_hash={}\n",
         short_hash(tool_name),
         input_hash
     );
-    if let Some(path) = std::env::var_os(crate::arming::AUDIT_PATH_ENV) {
-        append_private(Path::new(&path), line.as_bytes())
-    } else {
-        eprint!("codex-autoapprover: {line}");
-        Ok(())
-    }
+    eprint!("codex-autoapprover: {line}");
+    Ok(())
 }
 
+pub fn hook_allow_at(
+    path: &Path,
+    tool_name: &str,
+    tool_input: Option<&serde_json::Value>,
+) -> io::Result<()> {
+    let input_hash = tool_input.map(json_hash).unwrap_or_else(|| "none".into());
+    let line = format!(
+        "allowed one PermissionRequest tool_hash={} input_hash={}\n",
+        short_hash(tool_name),
+        input_hash
+    );
+    append_private(path, line.as_bytes())
+}
+
+#[allow(dead_code)]
 pub fn hook_invoked(tool_name: Option<&str>, event_name: Option<&str>) -> io::Result<()> {
     let Some(path) = std::env::var_os(crate::arming::AUDIT_PATH_ENV) else {
         return Ok(());
     };
+    hook_invoked_at(Path::new(&path), tool_name, event_name)
+}
+
+pub fn hook_invoked_at(
+    path: &Path,
+    tool_name: Option<&str>,
+    event_name: Option<&str>,
+) -> io::Result<()> {
     let line = format!(
         "invoked event={} tool_hash={}\n",
         event_name.unwrap_or("unknown"),
         short_hash(tool_name.unwrap_or("unknown"))
     );
-    append_private(Path::new(&path), line.as_bytes())
+    append_private(path, line.as_bytes())
 }
 
 pub fn initialize(path: &Path) -> io::Result<()> {

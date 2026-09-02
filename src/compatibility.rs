@@ -1,14 +1,12 @@
 //! Typed, exact compatibility metadata for combinations this launcher may arm.
-//!
-//! A version is supported only for the operating system, launcher surface, hook
-//! protocol, and observed tool type recorded by the reviewed evidence.
 
 pub const LOCAL_VERIFICATION_TARGET: &str = "0.151.0";
+pub const WINDOWS_VERIFICATION_TARGET: &str = "0.152.1";
 pub const SUPPORTED_HOOK_PROTOCOL: &str = "permission-request-v1";
 pub const AUTOAPPROVER_RELEASE: &str = "0.1.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Future entries intentionally model unsupported targets explicitly.
+#[allow(dead_code)]
 pub enum OperatingSystem {
     Linux,
     MacOs,
@@ -26,7 +24,7 @@ impl OperatingSystem {
         {
             Self::MacOs
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(windows)]
         {
             Self::Windows
         }
@@ -47,7 +45,7 @@ impl OperatingSystem {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Future entries intentionally model unsupported surfaces explicitly.
+#[allow(dead_code)]
 pub enum Surface {
     LocalCliLauncher,
     VsCodeIde,
@@ -87,9 +85,10 @@ pub enum ResponseBehavior {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Future registry entries may be experimental or unverified.
+#[allow(dead_code)]
 pub enum VerificationStatus {
     Verified,
+    Candidate,
     Experimental,
     Unverified,
 }
@@ -98,6 +97,7 @@ impl VerificationStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Verified => "verified",
+            Self::Candidate => "candidate/unverified",
             Self::Experimental => "experimental",
             Self::Unverified => "unverified",
         }
@@ -105,7 +105,7 @@ impl VerificationStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Retained as typed metadata for future registry entries.
+#[allow(dead_code)]
 pub enum VerificationMethod {
     IsolatedLiveEndToEndTest,
 }
@@ -125,20 +125,34 @@ pub struct CompatibilityEntry {
     pub evidence_summary: &'static str,
 }
 
-/// The reviewed production compatibility registry.
-pub const COMPATIBILITY_REGISTRY: &[CompatibilityEntry] = &[CompatibilityEntry {
-    codex_version: LOCAL_VERIFICATION_TARGET,
-    operating_system: OperatingSystem::Linux,
-    surface: Surface::LocalCliLauncher,
-    hook_event: crate::protocol::PERMISSION_REQUEST_EVENT,
-    hook_protocol: SUPPORTED_HOOK_PROTOCOL,
-    observed_tool_type: ObservedToolType::Bash,
-    response_behavior: ResponseBehavior::OneRequestAllow,
-    verification_status: VerificationStatus::Verified,
-    verification_method: VerificationMethod::IsolatedLiveEndToEndTest,
-    autoapprover_release: AUTOAPPROVER_RELEASE,
-    evidence_summary: "Second isolated live verification: one PermissionRequest, one structured allow, exact harmless curl completed with HTTP/2 200, no approval prompt, clean temporary repository, and complete temporary-state cleanup.",
-}];
+pub const COMPATIBILITY_REGISTRY: &[CompatibilityEntry] = &[
+    CompatibilityEntry {
+        codex_version: LOCAL_VERIFICATION_TARGET,
+        operating_system: OperatingSystem::Linux,
+        surface: Surface::LocalCliLauncher,
+        hook_event: crate::protocol::PERMISSION_REQUEST_EVENT,
+        hook_protocol: SUPPORTED_HOOK_PROTOCOL,
+        observed_tool_type: ObservedToolType::Bash,
+        response_behavior: ResponseBehavior::OneRequestAllow,
+        verification_status: VerificationStatus::Verified,
+        verification_method: VerificationMethod::IsolatedLiveEndToEndTest,
+        autoapprover_release: AUTOAPPROVER_RELEASE,
+        evidence_summary: "Second isolated live verification: one PermissionRequest, one structured allow, exact harmless curl completed with HTTP/2 200, no approval prompt, clean temporary repository, and complete temporary-state cleanup.",
+    },
+    CompatibilityEntry {
+        codex_version: WINDOWS_VERIFICATION_TARGET,
+        operating_system: OperatingSystem::Windows,
+        surface: Surface::LocalCliLauncher,
+        hook_event: crate::protocol::PERMISSION_REQUEST_EVENT,
+        hook_protocol: SUPPORTED_HOOK_PROTOCOL,
+        observed_tool_type: ObservedToolType::Bash,
+        response_behavior: ResponseBehavior::OneRequestAllow,
+        verification_status: VerificationStatus::Candidate,
+        verification_method: VerificationMethod::IsolatedLiveEndToEndTest,
+        autoapprover_release: AUTOAPPROVER_RELEASE,
+        evidence_summary: "Candidate only: native Windows Codex CLI 0.152.1 local launcher path pending isolated live verification and manual evidence review.",
+    },
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompatibilityRequest<'a> {
@@ -148,16 +162,25 @@ pub struct CompatibilityRequest<'a> {
     pub hook_protocol: &'a str,
 }
 
-pub fn verified_entry(request: CompatibilityRequest<'_>) -> Option<&'static CompatibilityEntry> {
+fn matching_entry(request: CompatibilityRequest<'_>) -> Option<&'static CompatibilityEntry> {
     COMPATIBILITY_REGISTRY.iter().find(|entry| {
-        entry.verification_status == VerificationStatus::Verified
-            && entry.autoapprover_release == AUTOAPPROVER_RELEASE
+        entry.autoapprover_release == AUTOAPPROVER_RELEASE
             && entry.codex_version == request.codex_version
             && entry.operating_system == request.operating_system
             && entry.surface == request.surface
             && entry.hook_event == crate::protocol::PERMISSION_REQUEST_EVENT
             && entry.hook_protocol == request.hook_protocol
     })
+}
+
+pub fn verified_entry(request: CompatibilityRequest<'_>) -> Option<&'static CompatibilityEntry> {
+    matching_entry(request)
+        .filter(|entry| entry.verification_status == VerificationStatus::Verified)
+}
+
+pub fn candidate_entry(request: CompatibilityRequest<'_>) -> Option<&'static CompatibilityEntry> {
+    matching_entry(request)
+        .filter(|entry| entry.verification_status == VerificationStatus::Candidate)
 }
 
 pub fn verified_hook_support_for(
@@ -175,6 +198,21 @@ pub fn verified_hook_support_for(
     .is_some()
 }
 
+pub fn verified_or_candidate_hook_support_for(
+    version: &str,
+    operating_system: OperatingSystem,
+    surface: Surface,
+    hook_protocol: &str,
+) -> bool {
+    let request = CompatibilityRequest {
+        codex_version: version,
+        operating_system,
+        surface,
+        hook_protocol,
+    };
+    verified_entry(request).is_some() || candidate_entry(request).is_some()
+}
+
 pub fn observed_tool_supported(
     version: &str,
     operating_system: OperatingSystem,
@@ -182,7 +220,7 @@ pub fn observed_tool_supported(
     hook_protocol: &str,
     tool_name: &str,
 ) -> bool {
-    verified_entry(CompatibilityRequest {
+    matching_entry(CompatibilityRequest {
         codex_version: version,
         operating_system,
         surface,
@@ -193,6 +231,7 @@ pub fn observed_tool_supported(
     })
 }
 
+#[allow(dead_code)]
 pub fn verified_hook_support(version: &str) -> bool {
     verified_hook_support_for(
         version,
@@ -203,17 +242,54 @@ pub fn verified_hook_support(version: &str) -> bool {
 }
 
 pub fn status_for_version(version: &str) -> &'static str {
-    if verified_hook_support(version) {
-        VerificationStatus::Verified.as_str()
+    let request = CompatibilityRequest {
+        codex_version: version,
+        operating_system: OperatingSystem::current(),
+        surface: Surface::LocalCliLauncher,
+        hook_protocol: SUPPORTED_HOOK_PROTOCOL,
+    };
+    if let Some(entry) = verified_entry(request) {
+        entry.verification_status.as_str()
+    } else if candidate_entry(request).is_some() {
+        VerificationStatus::Candidate.as_str()
     } else {
         "unverified"
     }
 }
 
-/// The verification path requires exact version equality and does not itself
-/// promote a production registry entry.
+pub fn verification_target_for_current_platform() -> &'static str {
+    if cfg!(windows) {
+        WINDOWS_VERIFICATION_TARGET
+    } else {
+        LOCAL_VERIFICATION_TARGET
+    }
+}
+
 pub fn verification_version_matches(actual: &str, expected: &str) -> bool {
-    !actual.is_empty() && actual == expected && actual == LOCAL_VERIFICATION_TARGET
+    !actual.is_empty()
+        && actual == expected
+        && ((cfg!(target_os = "linux") && expected == LOCAL_VERIFICATION_TARGET)
+            || (cfg!(windows) && expected == WINDOWS_VERIFICATION_TARGET))
+}
+
+pub fn is_native_windows_runtime() -> bool {
+    cfg!(windows) && !is_wsl_runtime()
+}
+
+pub fn is_wsl_runtime() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/version")
+            .map(|value| {
+                let lower = value.to_ascii_lowercase();
+                lower.contains("microsoft") || lower.contains("wsl")
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -221,17 +297,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_contains_exactly_the_reviewed_linux_cli_target() {
-        assert_eq!(COMPATIBILITY_REGISTRY.len(), 1);
-        let entry = &COMPATIBILITY_REGISTRY[0];
-        assert_eq!(entry.codex_version, "0.151.0");
-        assert_eq!(entry.operating_system, OperatingSystem::Linux);
-        assert_eq!(entry.surface, Surface::LocalCliLauncher);
-        assert_eq!(entry.hook_event, "PermissionRequest");
-        assert_eq!(entry.hook_protocol, SUPPORTED_HOOK_PROTOCOL);
-        assert_eq!(entry.observed_tool_type, ObservedToolType::Bash);
-        assert_eq!(entry.verification_status, VerificationStatus::Verified);
-        assert_eq!(entry.autoapprover_release, "0.1.0");
+    fn registry_contains_linux_verified_and_windows_candidate_entries() {
+        assert_eq!(COMPATIBILITY_REGISTRY.len(), 2);
+        assert_eq!(COMPATIBILITY_REGISTRY[0].codex_version, "0.151.0");
+        assert_eq!(
+            COMPATIBILITY_REGISTRY[0].verification_status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(COMPATIBILITY_REGISTRY[1].codex_version, "0.152.1");
+        assert_eq!(
+            COMPATIBILITY_REGISTRY[1].operating_system,
+            OperatingSystem::Windows
+        );
+        assert_eq!(
+            COMPATIBILITY_REGISTRY[1].verification_status,
+            VerificationStatus::Candidate
+        );
     }
 
     #[test]
@@ -251,26 +332,47 @@ mod tests {
                 SUPPORTED_HOOK_PROTOCOL
             ));
         }
+        for version in ["0.151.0", "0.152.0", "0.153.0"] {
+            assert!(!verified_hook_support_for(
+                version,
+                OperatingSystem::Windows,
+                Surface::LocalCliLauncher,
+                SUPPORTED_HOOK_PROTOCOL
+            ));
+        }
+    }
+
+    #[test]
+    fn windows_candidate_is_not_production_verified() {
+        assert!(!verified_hook_support_for(
+            "0.152.1",
+            OperatingSystem::Windows,
+            Surface::LocalCliLauncher,
+            SUPPORTED_HOOK_PROTOCOL
+        ));
+        assert!(verified_or_candidate_hook_support_for(
+            "0.152.1",
+            OperatingSystem::Windows,
+            Surface::LocalCliLauncher,
+            SUPPORTED_HOOK_PROTOCOL
+        ));
     }
 
     #[test]
     fn verification_binding_is_exact_without_promoting_support() {
         assert!(verification_version_matches("0.151.0", "0.151.0"));
         assert!(!verification_version_matches("0.151.1", "0.151.0"));
-        assert!(!verification_version_matches("1.2.3", "1.2.3"));
         assert!(verified_hook_support("0.151.0"));
     }
 
     #[test]
     fn unsupported_platforms_and_surfaces_are_unverified() {
-        for operating_system in [OperatingSystem::MacOs, OperatingSystem::Windows] {
-            assert!(!verified_hook_support_for(
-                "0.151.0",
-                operating_system,
-                Surface::LocalCliLauncher,
-                SUPPORTED_HOOK_PROTOCOL
-            ));
-        }
+        assert!(!verified_hook_support_for(
+            "0.151.0",
+            OperatingSystem::MacOs,
+            Surface::LocalCliLauncher,
+            SUPPORTED_HOOK_PROTOCOL
+        ));
         for surface in [
             Surface::VsCodeIde,
             Surface::DesktopApp,

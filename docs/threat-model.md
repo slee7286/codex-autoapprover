@@ -4,9 +4,9 @@ This threat model covers the hook-based architecture. Hooks provide a structured
 
 ## System and data flow
 
-`codex-autoapprover run` resolves an official Codex executable, creates a random child-session token, and starts Codex with inherited stdin/stdout/stderr. For a verified version, it supplies a child-only `-c` hook override. Codex invokes the hook synchronously before a PermissionRequest reaches the normal approval prompt. The hook reads one JSON request, validates event and arming bindings, and either writes the exact one-request `allow` response to stdout or writes no decision. Codex then proceeds according to its own hook and permission semantics.
+`codex-autoapprover run` resolves an official Codex executable, creates a random secret and launcher-owned private Unix-socket broker, and starts Codex with inherited stdin/stdout/stderr. For a verified version, it supplies a child-only `-c` hook override. After spawn, the launcher records `(PID, /proc/<pid>/stat start time, effective UID)`. Codex invokes the hook synchronously before a PermissionRequest reaches the normal approval prompt. The hook sends one bounded request to the broker. The broker obtains peer PID/UID/GID from `SO_PEERCRED`, checks the secret, validates exact bounded `/proc` ancestry, applies policy, and returns allow or no-decision. The hook writes the exact one-request `allow` response only after broker allow.
 
-The hook input may include `session_id`, `cwd`, `hook_event_name`, `permission_mode`, `turn_id`, `tool_name`, and `tool_input`. The launcher token and expected cwd are inherited environment values. Hook invocations for matching hooks may be concurrent.
+The hook input may include `session_id`, `cwd`, `hook_event_name`, `permission_mode`, `turn_id`, `tool_name`, and `tool_input`. Only the broker socket location, internal protocol marker, and secret are inherited for the hook. Hook invocations for matching hooks may be concurrent; each connection is independently bounded and authenticated.
 
 The experimental `verify-local-hook` path adds an exact local-version check, interactive confirmation, a temporary Git repository, `workspace-write` and `on-request` settings, a child-local hook override, and a redacted temporary audit sink. It does not isolate or replace the user's Codex authentication context, and the hook-trust bypass can allow other configured hooks to participate under Codex's documented composition rules.
 
@@ -42,17 +42,17 @@ Threats may originate from malicious repository content, prompt injection, model
 
 | Threat | Impact | Likelihood | Mitigation | Residual risk |
 | --- | --- | --- | --- | --- |
-| Forged `PermissionRequest` JSON from a descendant or hostile process | Unauthorized allow | Medium | Random per-child token, protocol marker, cwd binding, strict event/field checks, no global state | Descendants can inherit the token; parent-process binding is not implemented |
+| Forged `PermissionRequest` JSON from an unrelated or stale process | Unauthorized allow | Medium | Private unique socket, `SO_PEERCRED`, peer UID check, exact PID/start-time ancestry, random secret, strict protocol, fail-closed response | Same-user malicious code in the exact descendant tree remains in the threat boundary |
 | Verification child receives a different or repeated action | Unauthorized live side effect or invalid evidence | Medium | Exact target-version gate, exact `tool_input.command` guard, one recorded allow required, non-promotion on count mismatch | A malicious descendant can inherit the guard and invoke the hook with the same harmless string |
 | Malicious repository content or prompt injection influences a real request | Dangerous command authorized | Medium | Treat tool input as untrusted; authorize only the current Codex event; warn that allow is consequential | Hook cannot determine semantic intent or model honesty |
 | Malformed or oversized JSON | Parser crash, confused decision | Medium | Bounded read, strict JSON object parsing, no panics, empty decision on failure | Codex's handling of hook failures is release-dependent and must be tested |
 | Unsupported schema or wrong hook event | Wrong event authorized | High | Exact `PermissionRequest` check, explicit schema/version policy, fail closed | Official schemas may evolve without a stable version field |
 | Permanent/session-wide approval returned accidentally | Persistent over-authorization | High impact | Serialize only the documented `{behavior: "allow"}` one-request shape; no other approval fields | A future code defect or Codex semantic change could alter scope |
-| Concurrent sessions share authorization | Cross-session approval | Medium | Unique token per launcher, cwd/session binding, no shared mutable approval state | Environment inheritance and weak process identity leave residual confusion risk |
+| Concurrent sessions share authorization | Cross-session approval | Medium | Unique socket, secret, broker state, exact child identity, no shared mutable approval state | Same-user descendant code can cause denial of service or invoke its own session hook |
 | Multiple PermissionRequest hooks race | Unexpected allow/deny composition | Medium | Install only explicit hook when supported; document Codex's matching-hook concurrency and deny precedence | Other user, project, plugin, or managed hooks may still participate |
 | PATH substitution or malicious Codex executable | Launcher runs attacker-controlled code | Medium | Resolve and display path, reject recursive self-resolution, avoid live config changes | User-controlled PATH and binaries remain trusted inputs |
 | Hook configuration tampering or symlink attack | Arbitrary hook execution or wrong handler | Medium | No automatic installer yet; future installer must validate paths, permissions, hashes, and symlinks | Current child `-c` override does not protect a compromised host |
-| Arming token appears in logs or child output | Session authorization disclosure | Medium | Never print token; hash tool metadata only; document descendant inheritance | A child process with environment inspection can read the token |
+| Session secret appears in logs or child output | Session authorization disclosure | Medium | Never print secret; fixed-length comparison; hash tool metadata only; document descendant inheritance | A child process with environment inspection can read it, but secret alone cannot authorize |
 | Audit logs leak commands or secrets | Credential/source disclosure | Medium | No full command logging by default; hash/redact; protected paths and permissions | Hashes and metadata can still be sensitive |
 | Codex changes hook schema or behavior | False compatibility or missed safety boundary | High | Empty allowlist until local evidence; exact fixtures; compatibility review | No textual integration can guarantee future semantic compatibility |
 | Launcher or hook crashes | Terminal/process recovery issue | Low to medium | Ordinary inherited terminal avoids raw-mode management; propagate child status; test interruption and cleanup | Host failure or abrupt kill can still leave child/process state |
@@ -60,7 +60,7 @@ Threats may originate from malicious repository content, prompt injection, model
 
 ## Environment inheritance and malicious children
 
-The launcher sets arming variables on the Codex child rather than globally. Standard child environment inheritance means shell commands, plugins, MCP processes, and other descendants may receive them. A descendant that knows the hook protocol could potentially invoke the hook directly while the token remains available. The MVP documents this limitation and must add stronger parent/process/session binding before public release.
+The launcher sets only the socket location, protocol marker, and secret on the Codex child rather than globally. Standard child environment inheritance means shell commands, plugins, MCP processes, and other descendants may receive them. A descendant may invoke the hook binary or cause denial of service, but an allow requires the kernel-reported peer PID to descend from the exact recorded Codex PID and start time. This is meaningful process/session binding, not perfect same-user isolation: malicious code already executing inside that exact authorized descendant tree is not blocked by this design.
 
 ## Residual risks and assumptions
 

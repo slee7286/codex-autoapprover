@@ -22,7 +22,7 @@ The launcher MUST NOT modify Codex authentication, session data, sandbox setting
 
 The hook MUST read exactly one bounded JSON request from stdin and MUST identify the event as exactly `PermissionRequest`. It MUST reject malformed, oversized, non-object, unknown-event, unsupported-schema, and incomplete requests without an approval decision. Unknown fields may be ignored under the documented forward-compatible parsing policy; they MUST NOT broaden a decision.
 
-The hook MUST verify that the process has a valid random arming token, the internal protocol marker, and a matching expected cwd binding. It MUST NOT use a constant boolean as the only arming signal. Available Codex session identifiers, thread identifiers, and cwd values SHOULD be bound when the launcher can establish them safely.
+The hook MUST read bounded input and connect only to the launcher-owned session socket. The launcher-owned Linux broker MUST verify the random session secret, kernel `SO_PEERCRED` PID/UID/GID, and exact Codex process identity `(PID, /proc/<pid>/stat start time, effective UID)` before deciding. The peer UID MUST match the launcher's effective UID, and two stable ancestry walks from the kernel peer PID MUST contain the exact Codex identity. The hook MUST NOT make an allow decision from inherited environment metadata alone.
 
 When all checks succeed, the hook MUST return exactly one structured `allow` decision for the current PermissionRequest. The response MUST NOT contain a permanent rule, session-wide authority, updated permissions, or unrelated fields. The hook MUST never return a screen key, numeric option, cursor movement, or terminal input.
 
@@ -30,11 +30,11 @@ When the process is unarmed or any check fails, the hook MUST return no decision
 
 ## Session-scoped arming and concurrency
 
-Arming MUST apply only to the Codex child started by `run`. The launcher MUST NOT create global armed state or enable unrelated Codex processes. Each launcher invocation MUST generate a distinct random token, and concurrent sessions MUST NOT share it.
+Arming MUST apply only to the Codex child started by `run`. The launcher MUST NOT create global armed state or enable unrelated Codex processes. Each launcher invocation MUST generate a distinct random secret and private socket, and concurrent sessions MUST NOT share broker state.
 
 Codex may invoke matching command hooks concurrently. The hook MUST be stateless across invocations or use a session store with explicit per-session isolation. One hook invocation MUST authorize at most its one current request; it MUST NOT infer approval from another invocation. Repeated requests in an armed session remain individually consequential and MUST be visible in audit metadata.
 
-The child environment MAY be inherited by commands launched by Codex. This limitation MUST be documented and MUST be mitigated with stronger process/session binding before a public release.
+The child environment MAY be inherited by commands launched by Codex. The secret and socket are defense in depth, not a privilege boundary. A malicious process already running as the same user inside the exact authorized descendant tree remains in scope and may cause denial of service or invoke the hook binary.
 
 The experimental `verify-local-hook` command MUST remain separate from `run`. It MUST detect the local official executable and exact version, accept only the current milestone target `0.151.0`, require an interactive exact confirmation phrase generated from that detected version, and use a temporary Git repository as cwd. It MUST pass the user's existing authentication context through inheritance without copying, printing, or modifying authentication data. It MUST use only child-local `-c` hook configuration and MUST remove its temporary state after the child exits.
 
@@ -44,7 +44,7 @@ The verification prompt MUST authorize only `curl -I https://example.com`. The v
 
 The project MUST maintain a typed compatibility registry across Codex version, operating system, surface, hook event/protocol, observed tool type, response behavior, verification status/method, and autoapprover release. A Codex version MUST NOT be called supported because its UI resembles an earlier version, its generic feature flag is enabled, or a legacy option-numbering proof exists.
 
-Unsupported or unverified versions MUST run with automation disabled or fail with a clear error. Exactly Linux local CLI Codex 0.151.0 is verified. The hook repeats the version, surface, protocol, and observed `Bash` checks so a forged or stale arming environment receives no decision.
+Unsupported or unverified versions MUST run with automation disabled or fail with a clear error. Exactly Linux local CLI Codex 0.151.0 is verified. The broker applies the version, surface, protocol, and observed `Bash` checks independently of inherited environment metadata, so a forged or stale environment receives no decision.
 
 The verified entry records release `0.1.0`, hook event `PermissionRequest`, project protocol/schema marker `permission-request-v1`, response behavior one-request structured allow, and isolated live end-to-end verification. Compatibility with this release MUST NOT be inferred for 0.150.x, 0.152.x, any other version, macOS, Windows, VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, or Codex cloud.
 
