@@ -8,7 +8,7 @@ This project is not affiliated with, endorsed by, sponsored by, or maintained by
 
 ## Status
 
-The project is **pre-alpha**. Production automatic approval is verified only for Linux, the local CLI launcher surface, and Codex CLI 0.151.0. Native Windows with Codex CLI 0.152.1 is implemented as a **candidate/unverified** tuple pending isolated live verification and manual evidence review. No live Codex configuration is installed or modified.
+The project is **pre-alpha**. Production automatic approval is verified only for Linux, the local CLI launcher surface, and Codex CLI 0.151.0. Native Windows with Codex CLI 0.152.1 is implemented and natively compiled/tested as a **candidate/unverified** tuple pending isolated live verification and manual evidence review. No live Codex configuration is installed or modified.
 
 ### Evidence and compatibility
 
@@ -57,6 +57,9 @@ Implemented in this milestone:
 - a typed compatibility registry with one reviewed Linux/local-CLI/Codex-0.151.0 entry;
 - exact version, platform, surface, protocol, and `Bash` tool gating before child arming;
 - Linux process/session binding: a 0700 private runtime directory, 0600 Unix socket, kernel peer credentials, and exact Codex PID plus `/proc` start-time ancestry validation;
+- Windows process/session binding: a current-user-only named-pipe DACL, remote-client rejection, kernel peer PID, native binary SID equality, process creation time, and two stable bounded Toolhelp ancestry walks;
+- Windows overlapped named-pipe I/O with event waits, a two-second connection-decision deadline, `CancelIoEx` cancellation, and deterministic handle cleanup;
+- native Windows fake-Codex coverage for `.exe`, npm `.cmd`, and PowerShell `.ps1` launchers, including paths with spaces/non-ASCII characters and shell metacharacters;
 - bounded, versioned broker framing, timeouts, resource limits, and shutdown cleanup;
 
 Not implemented or not verified:
@@ -66,6 +69,8 @@ Not implemented or not verified:
 - a permanent configuration/rules mode;
 - packages or a supported release; and
 - a direct App Server backend.
+
+The native Windows preflight used Rust/MSVC on Windows 11 with `codex-cli 0.152.1`. It exercised fake `.cmd`, `.ps1`, and `.exe` launchers, but observed no live `PermissionRequest`, returned no structured allow to real Codex, performed no compatibility promotion, and did not run live verification.
 
 The arming secret remains inherited by descendants as defense in depth. It is no longer sufficient for approval: the broker also requires kernel peer credentials and exact live ancestry. This is not perfect same-user isolation.
 

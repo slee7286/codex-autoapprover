@@ -19,15 +19,20 @@ use anyhow::{Context, Result, bail};
 use getrandom::fill;
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
+    ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, OPEN_EXISTING, ReadFile, WriteFile,
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, OPEN_EXISTING,
+    ReadFile, WriteFile,
 };
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
+    WaitNamedPipeW,
 };
+use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 
 const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
 
@@ -95,7 +100,7 @@ struct SharedState {
     active_connections: AtomicUsize,
     config: BrokerConfig,
     session_secret: String,
-    launcher_sid: String,
+    launcher_sid: Vec<u8>,
     pipe_name: String,
 }
 
@@ -185,34 +190,29 @@ fn serve(
             thread::sleep(Duration::from_millis(10));
             continue;
         }
-        let connected = unsafe { ConnectNamedPipe(pipe_handle, ptr::null_mut()) };
-        let last_error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        if connected == 0
-            && last_error != ERROR_PIPE_CONNECTED
-            && shared.shutdown.load(Ordering::Acquire)
-        {
-            break;
-        }
-        if connected != 0 || last_error == ERROR_PIPE_CONNECTED {
-            if shared.active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_ACTIVE_CONNECTIONS {
-                shared.active_connections.fetch_sub(1, Ordering::AcqRel);
-                close_handle(pipe_handle);
-            } else {
-                let client_pipe = SendHandle(pipe_handle);
-                let worker_state = Arc::clone(&shared);
-                workers.push(thread::spawn(move || {
-                    handle_connection(client_pipe, &worker_state);
-                    worker_state
-                        .active_connections
-                        .fetch_sub(1, Ordering::AcqRel);
-                }));
+        match wait_for_connection(pipe_handle, &shared.shutdown) {
+            Ok(true) => {
+                if shared.active_connections.fetch_add(1, Ordering::AcqRel)
+                    >= MAX_ACTIVE_CONNECTIONS
+                {
+                    shared.active_connections.fetch_sub(1, Ordering::AcqRel);
+                    close_handle(pipe_handle);
+                } else {
+                    let client_pipe = SendHandle(pipe_handle);
+                    let worker_state = Arc::clone(&shared);
+                    workers.push(thread::spawn(move || {
+                        handle_connection(client_pipe, &worker_state);
+                        worker_state
+                            .active_connections
+                            .fetch_sub(1, Ordering::AcqRel);
+                    }));
+                }
+                pipe_handle = match create_server_pipe(&shared.pipe_name, &security) {
+                    Ok(handle) => handle,
+                    Err(_) => break,
+                };
             }
-            pipe_handle = match create_server_pipe(&shared.pipe_name, &security) {
-                Ok(handle) => handle,
-                Err(_) => break,
-            };
-        } else {
-            thread::sleep(Duration::from_millis(10));
+            Ok(false) | Err(_) => break,
         }
     }
     close_handle(pipe_handle);
@@ -229,7 +229,7 @@ fn create_server_pipe(
     let handle = unsafe {
         CreateNamedPipeW(
             wide.as_ptr(),
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             MAX_ACTIVE_CONNECTIONS as u32,
             MAX_BROKER_MESSAGE_BYTES as u32,
@@ -239,7 +239,10 @@ fn create_server_pipe(
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        bail!("create private broker named pipe")
+        bail!(
+            "create private broker named pipe: {}",
+            io::Error::last_os_error()
+        )
     }
     Ok(handle)
 }
@@ -253,22 +256,37 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
         return;
     }
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
-    let frame = match read_frame_until(pipe, MAX_BROKER_MESSAGE_BYTES, deadline) {
+    let frame = match read_frame_until(
+        pipe,
+        MAX_BROKER_MESSAGE_BYTES,
+        deadline,
+        Some(&shared.shutdown),
+    ) {
         Ok(frame) => frame,
         Err(_) => {
             close_handle(pipe);
             return;
         }
     };
-    if ensure_no_trailing_data(pipe, deadline).is_err() {
-        let _ = write_response_until(pipe, BrokerDecision::NoDecision, deadline);
+    if ensure_no_trailing_data(pipe).is_err() {
+        let _ = write_response_until(
+            pipe,
+            BrokerDecision::NoDecision,
+            deadline,
+            Some(&shared.shutdown),
+        );
         close_handle(pipe);
         return;
     }
     let request = match parse_request(&frame) {
         Ok(request) => request,
         Err(_) => {
-            let _ = write_response_until(pipe, BrokerDecision::NoDecision, deadline);
+            let _ = write_response_until(
+                pipe,
+                BrokerDecision::NoDecision,
+                deadline,
+                Some(&shared.shutdown),
+            );
             close_handle(pipe);
             return;
         }
@@ -291,13 +309,28 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
                 )
                 .is_err())
         {
-            let _ = write_response_until(pipe, BrokerDecision::NoDecision, deadline);
+            let _ = write_response_until(
+                pipe,
+                BrokerDecision::NoDecision,
+                deadline,
+                Some(&shared.shutdown),
+            );
             close_handle(pipe);
             return;
         }
-        let _ = write_response_until(pipe, BrokerDecision::Allow, deadline);
+        let _ = write_response_until(
+            pipe,
+            BrokerDecision::Allow,
+            deadline,
+            Some(&shared.shutdown),
+        );
     } else {
-        let _ = write_response_until(pipe, BrokerDecision::NoDecision, deadline);
+        let _ = write_response_until(
+            pipe,
+            BrokerDecision::NoDecision,
+            deadline,
+            Some(&shared.shutdown),
+        );
     }
     unsafe {
         DisconnectNamedPipe(pipe);
@@ -418,21 +451,8 @@ pub fn request(input: &HookInput) -> Result<bool> {
         bail!("invalid hook arming")
     }
     let wide = encode_wide(OsStr::new(&pipe_name));
-    let handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-            0,
-            ptr::null_mut(),
-            OPEN_EXISTING,
-            0,
-            ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        bail!("connect to broker")
-    }
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
+    let handle = connect_client(&wide, deadline).context("connect to broker")?;
     let request = serde_json::json!({
         "protocol_version": BROKER_PROTOCOL_VERSION,
         "message_type": "permission_request",
@@ -441,9 +461,9 @@ pub fn request(input: &HookInput) -> Result<bool> {
     });
     let bytes = serde_json::to_vec(&request)?;
     let result = (|| -> io::Result<bool> {
-        write_frame_until(handle, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline)?;
-        let response = read_frame_until(handle, MAX_BROKER_RESPONSE_BYTES, deadline)?;
-        ensure_no_trailing_data(handle, deadline)?;
+        write_frame_until(handle, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline, None)?;
+        let response = read_frame_until(handle, MAX_BROKER_RESPONSE_BYTES, deadline, None)?;
+        ensure_no_trailing_data(handle)?;
         parse_response(&response).map_err(io::Error::other)
     })();
     close_handle(handle);
@@ -461,9 +481,94 @@ pub fn constant_time_equal(left: &str, right: &str) -> bool {
         == 0
 }
 
-fn read_frame_until(handle: HANDLE, maximum: usize, deadline: Instant) -> io::Result<Vec<u8>> {
+fn wait_for_connection(handle: HANDLE, shutdown: &AtomicBool) -> io::Result<bool> {
+    let mut operation = OverlappedOperation::new()?;
+    let connected = unsafe { ConnectNamedPipe(handle, &mut operation.overlapped) };
+    if connected != 0 {
+        return Ok(true);
+    }
+    let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+    if error == ERROR_PIPE_CONNECTED {
+        return Ok(true);
+    }
+    if error != ERROR_IO_PENDING {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            operation.cancel(handle);
+            return Ok(false);
+        }
+        let result = unsafe { WaitForSingleObject(operation.event, 50) };
+        if result == WAIT_OBJECT_0 {
+            let mut transferred = 0_u32;
+            let ok =
+                unsafe { GetOverlappedResult(handle, &operation.overlapped, &mut transferred, 0) };
+            if ok != 0
+                || unsafe { windows_sys::Win32::Foundation::GetLastError() } == ERROR_PIPE_CONNECTED
+            {
+                return Ok(true);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        if result == WAIT_TIMEOUT {
+            continue;
+        }
+        if result == WAIT_FAILED {
+            operation.cancel(handle);
+            return Err(io::Error::last_os_error());
+        }
+        return Err(io::Error::other("unexpected named-pipe wait result"));
+    }
+}
+
+fn connect_client(pipe_name: &[u16], deadline: Instant) -> io::Result<HANDLE> {
+    loop {
+        let handle = unsafe {
+            CreateFileW(
+                pipe_name.as_ptr(),
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                0,
+                ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                ptr::null_mut(),
+            )
+        };
+        if handle != INVALID_HANDLE_VALUE {
+            return Ok(handle);
+        }
+        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if error != ERROR_PIPE_BUSY {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "broker connection timed out",
+            ));
+        }
+        let wait_ms = remaining.as_millis().min(u32::MAX as u128) as u32;
+        let ok = unsafe { WaitNamedPipeW(pipe_name.as_ptr(), wait_ms) };
+        if ok == 0 {
+            let wait_error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            if wait_error == ERROR_PIPE_BUSY {
+                continue;
+            }
+            return Err(io::Error::from_raw_os_error(wait_error as i32));
+        }
+    }
+}
+
+fn read_frame_until(
+    handle: HANDLE,
+    maximum: usize,
+    deadline: Instant,
+    shutdown: Option<&AtomicBool>,
+) -> io::Result<Vec<u8>> {
     let mut header = [0_u8; 4];
-    read_exact_until(handle, &mut header, deadline)?;
+    read_exact_until(handle, &mut header, deadline, shutdown)?;
     let length = u32::from_be_bytes(header) as usize;
     if length == 0 || length > maximum {
         return Err(io::Error::new(
@@ -472,7 +577,7 @@ fn read_frame_until(handle: HANDLE, maximum: usize, deadline: Instant) -> io::Re
         ));
     }
     let mut bytes = vec![0_u8; length];
-    read_exact_until(handle, &mut bytes, deadline)?;
+    read_exact_until(handle, &mut bytes, deadline, shutdown)?;
     Ok(bytes)
 }
 
@@ -481,6 +586,7 @@ fn write_frame_until(
     bytes: &[u8],
     maximum: usize,
     deadline: Instant,
+    shutdown: Option<&AtomicBool>,
 ) -> io::Result<()> {
     if bytes.is_empty() || bytes.len() > maximum {
         return Err(io::Error::new(
@@ -490,19 +596,36 @@ fn write_frame_until(
     }
     let length = u32::try_from(bytes.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
-    write_all_until(handle, &length.to_be_bytes(), deadline)?;
-    write_all_until(handle, bytes, deadline)
+    write_all_until(handle, &length.to_be_bytes(), deadline, shutdown)?;
+    write_all_until(handle, bytes, deadline, shutdown)
 }
 
-fn ensure_no_trailing_data(handle: HANDLE, deadline: Instant) -> io::Result<()> {
-    let mut byte = [0_u8; 1];
-    match read_exact_until(handle, &mut byte, deadline) {
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
-        Ok(()) => Err(io::Error::new(
+fn ensure_no_trailing_data(handle: HANDLE) -> io::Result<()> {
+    let mut available = 0_u32;
+    let ok = unsafe {
+        PeekNamedPipe(
+            handle,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            &mut available,
+            ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if error == ERROR_BROKEN_PIPE {
+            return Ok(());
+        }
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    if available > 0 {
+        Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "trailing broker data",
-        )),
-        Err(error) => Err(error),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -510,6 +633,7 @@ fn write_response_until(
     handle: HANDLE,
     decision: BrokerDecision,
     deadline: Instant,
+    shutdown: Option<&AtomicBool>,
 ) -> io::Result<()> {
     let response = BrokerResponse {
         protocol_version: BROKER_PROTOCOL_VERSION.into(),
@@ -521,87 +645,189 @@ fn write_response_until(
         .into(),
     };
     let bytes = serde_json::to_vec(&response).map_err(io::Error::other)?;
-    write_frame_until(handle, &bytes, MAX_BROKER_RESPONSE_BYTES, deadline)
+    write_frame_until(
+        handle,
+        &bytes,
+        MAX_BROKER_RESPONSE_BYTES,
+        deadline,
+        shutdown,
+    )
 }
 
-fn read_exact_until(handle: HANDLE, buffer: &mut [u8], deadline: Instant) -> io::Result<()> {
+fn read_exact_until(
+    handle: HANDLE,
+    buffer: &mut [u8],
+    deadline: Instant,
+    shutdown: Option<&AtomicBool>,
+) -> io::Result<()> {
     let mut offset = 0;
+    let mut operation = OverlappedOperation::new()?;
     while offset < buffer.len() {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "broker decision timed out",
-            ));
-        }
-        wait_for_readable(handle, deadline)?;
-        let mut read = 0_u32;
-        let ok = unsafe {
+        let mut transferred = 0_u32;
+        let read = unsafe {
+            ResetEvent(operation.event);
             ReadFile(
                 handle,
                 buffer[offset..].as_mut_ptr().cast(),
                 (buffer.len() - offset) as u32,
-                &mut read,
-                ptr::null_mut(),
+                &mut transferred,
+                &mut operation.overlapped,
             )
         };
-        if ok == 0 && read == 0 {
-            return Err(io::Error::last_os_error());
+        let read = if read != 0 {
+            transferred
+        } else {
+            let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            if error != ERROR_IO_PENDING {
+                return Err(if error == ERROR_BROKEN_PIPE {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "broker peer disconnected")
+                } else {
+                    io::Error::from_raw_os_error(error as i32)
+                });
+            }
+            operation.complete(handle, deadline, shutdown)?
+        };
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "broker peer returned an empty read",
+            ));
         }
         offset += read as usize;
     }
     Ok(())
 }
 
-fn write_all_until(handle: HANDLE, buffer: &[u8], deadline: Instant) -> io::Result<()> {
+fn write_all_until(
+    handle: HANDLE,
+    buffer: &[u8],
+    deadline: Instant,
+    shutdown: Option<&AtomicBool>,
+) -> io::Result<()> {
     let mut offset = 0;
+    let mut operation = OverlappedOperation::new()?;
     while offset < buffer.len() {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "broker decision timed out",
-            ));
-        }
-        let mut written = 0_u32;
-        let ok = unsafe {
+        let mut transferred = 0_u32;
+        let written = unsafe {
+            ResetEvent(operation.event);
             WriteFile(
                 handle,
                 buffer[offset..].as_ptr().cast(),
                 (buffer.len() - offset) as u32,
-                &mut written,
-                ptr::null_mut(),
+                &mut transferred,
+                &mut operation.overlapped,
             )
         };
-        if ok == 0 && written == 0 {
-            return Err(io::Error::last_os_error());
+        let written = if written != 0 {
+            transferred
+        } else {
+            let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            if error != ERROR_IO_PENDING {
+                return Err(if error == ERROR_BROKEN_PIPE {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "broker peer disconnected")
+                } else {
+                    io::Error::from_raw_os_error(error as i32)
+                });
+            }
+            operation.complete(handle, deadline, shutdown)?
+        };
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "broker write returned zero bytes",
+            ));
         }
         offset += written as usize;
     }
     Ok(())
 }
 
-fn wait_for_readable(handle: HANDLE, deadline: Instant) -> io::Result<()> {
-    loop {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "broker decision timed out",
-            ));
+struct OverlappedOperation {
+    event: HANDLE,
+    overlapped: OVERLAPPED,
+}
+
+impl OverlappedOperation {
+    fn new() -> io::Result<Self> {
+        let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
         }
-        let mut available = 0_u32;
-        let ok = unsafe {
-            PeekNamedPipe(
-                handle,
-                ptr::null_mut(),
-                0,
-                ptr::null_mut(),
-                &mut available,
-                ptr::null_mut(),
-            )
-        };
-        if ok != 0 && available > 0 {
-            return Ok(());
+        Ok(Self {
+            event,
+            overlapped: OVERLAPPED {
+                hEvent: event,
+                ..unsafe { std::mem::zeroed() }
+            },
+        })
+    }
+
+    fn complete(
+        &mut self,
+        handle: HANDLE,
+        deadline: Instant,
+        shutdown: Option<&AtomicBool>,
+    ) -> io::Result<u32> {
+        loop {
+            if shutdown.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                self.cancel(handle);
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "broker operation cancelled during shutdown",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.cancel(handle);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "broker decision timed out",
+                ));
+            }
+            let wait_ms = remaining.as_millis().clamp(1, 50) as u32;
+            let result = unsafe { WaitForSingleObject(self.event, wait_ms) };
+            if result == WAIT_OBJECT_0 {
+                let mut transferred = 0_u32;
+                let ok =
+                    unsafe { GetOverlappedResult(handle, &self.overlapped, &mut transferred, 0) };
+                if ok != 0 {
+                    return Ok(transferred);
+                }
+                let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                return Err(if error == ERROR_OPERATION_ABORTED {
+                    io::Error::new(io::ErrorKind::Interrupted, "broker operation cancelled")
+                } else if error == ERROR_BROKEN_PIPE {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "broker peer disconnected")
+                } else {
+                    io::Error::from_raw_os_error(error as i32)
+                });
+            }
+            if result == WAIT_TIMEOUT {
+                continue;
+            }
+            if result == WAIT_FAILED {
+                self.cancel(handle);
+                return Err(io::Error::last_os_error());
+            }
+            self.cancel(handle);
+            return Err(io::Error::other("unexpected overlapped I/O wait result"));
         }
-        thread::sleep(Duration::from_millis(5));
+    }
+
+    fn cancel(&mut self, handle: HANDLE) {
+        unsafe {
+            CancelIoEx(handle, &self.overlapped);
+            let mut transferred = 0_u32;
+            GetOverlappedResult(handle, &self.overlapped, &mut transferred, 1);
+        }
+    }
+}
+
+impl Drop for OverlappedOperation {
+    fn drop(&mut self) {
+        if !self.event.is_null() {
+            unsafe { CloseHandle(self.event) };
+        }
     }
 }
 
@@ -632,13 +858,11 @@ impl SendHandle {
 }
 
 mod security {
-    use super::encode_wide;
     use anyhow::Result;
     use std::ptr;
-    use windows_sys::Win32::Foundation::{GENERIC_ALL, LocalFree};
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSidToSidW, EXPLICIT_ACCESS_W, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID,
-        TRUSTEE_IS_USER,
+        EXPLICIT_ACCESS_W, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
     };
     use windows_sys::Win32::Security::{
         ACL, InitializeSecurityDescriptor, SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl,
@@ -646,57 +870,48 @@ mod security {
 
     const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
 
-    // `descriptor` and `acl` are kept alive while `attributes` references the descriptor.
+    // The boxed descriptor stays at a stable address while `attributes` references it.
     #[allow(dead_code)]
     pub struct PipeSecurityAttributes {
-        descriptor: SECURITY_DESCRIPTOR,
-        acl: Vec<u8>,
-        sid: *mut std::ffi::c_void,
+        descriptor: Box<SECURITY_DESCRIPTOR>,
+        acl: *mut ACL,
+        sid: Vec<u8>,
         attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
     }
 
     impl PipeSecurityAttributes {
-        pub fn new(launcher_sid: &str) -> Result<Self> {
-            let mut sid = ptr::null_mut();
-            let wide = encode_wide(launcher_sid);
-            let ok = unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) };
-            if ok == 0 || sid.is_null() {
-                anyhow::bail!("convert launcher SID for broker pipe DACL")
+        pub fn new(launcher_sid: &[u8]) -> Result<Self> {
+            if !crate::process::sid_is_valid(launcher_sid) {
+                anyhow::bail!("invalid launcher SID for broker pipe DACL")
             }
-            let mut descriptor = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
+            let mut descriptor = Box::new(unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() });
             let ok = unsafe {
                 InitializeSecurityDescriptor(
-                    &mut descriptor as *mut _ as *mut _,
+                    descriptor.as_mut() as *mut _ as *mut _,
                     SECURITY_DESCRIPTOR_REVISION,
                 )
             };
             if ok == 0 {
-                unsafe { LocalFree(sid.cast()) };
                 anyhow::bail!("initialize broker pipe security descriptor")
             }
-            let acl = build_dacl(sid)?;
+            let acl = build_dacl(launcher_sid)?;
             let ok = unsafe {
-                SetSecurityDescriptorDacl(
-                    &mut descriptor as *mut _ as *mut _,
-                    1,
-                    acl.as_ptr() as *mut ACL,
-                    0,
-                )
+                SetSecurityDescriptorDacl(descriptor.as_mut() as *mut _ as *mut _, 1, acl, 0)
             };
             if ok == 0 {
-                unsafe { LocalFree(sid.cast()) };
+                unsafe { LocalFree(acl.cast()) };
                 anyhow::bail!("set broker pipe security descriptor DACL")
             }
             let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                     as u32,
-                lpSecurityDescriptor: &mut descriptor as *mut _ as *mut _,
+                lpSecurityDescriptor: descriptor.as_mut() as *mut _ as *mut _,
                 bInheritHandle: 0,
             };
             Ok(Self {
                 descriptor,
                 acl,
-                sid,
+                sid: launcher_sid.to_vec(),
                 attributes,
             })
         }
@@ -708,15 +923,16 @@ mod security {
 
     impl Drop for PipeSecurityAttributes {
         fn drop(&mut self) {
-            if !self.sid.is_null() {
-                unsafe { LocalFree(self.sid.cast()) };
+            if !self.acl.is_null() {
+                unsafe { LocalFree(self.acl.cast()) };
             }
         }
     }
 
-    fn build_dacl(sid: *mut std::ffi::c_void) -> Result<Vec<u8>> {
+    fn build_dacl(sid: &[u8]) -> Result<*mut ACL> {
         let explicit = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: GENERIC_ALL,
+            grfAccessPermissions: windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                | windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
             grfAccessMode: SET_ACCESS,
             grfInheritance: windows_sys::Win32::Security::NO_INHERITANCE,
             Trustee: windows_sys::Win32::Security::Authorization::TRUSTEE_W {
@@ -725,7 +941,7 @@ mod security {
                     windows_sys::Win32::Security::Authorization::NO_MULTIPLE_TRUSTEE,
                 TrusteeForm: TRUSTEE_IS_SID,
                 TrusteeType: TRUSTEE_IS_USER,
-                ptstrName: sid.cast(),
+                ptstrName: sid.as_ptr().cast_mut().cast(),
             },
         };
         let mut acl = ptr::null_mut();
@@ -733,13 +949,7 @@ mod security {
         if ok != 0 || acl.is_null() {
             anyhow::bail!("build broker pipe ACL")
         }
-        let acl_size = unsafe { (*(acl as *const ACL)).AclSize } as usize;
-        let mut bytes = vec![0_u8; acl_size];
-        unsafe {
-            ptr::copy_nonoverlapping(acl as *const u8, bytes.as_mut_ptr(), acl_size);
-            LocalFree(acl.cast());
-        }
-        Ok(bytes)
+        Ok(acl)
     }
 }
 
@@ -751,5 +961,88 @@ mod tests {
     fn constant_time_comparison_requires_equal_secret() {
         assert!(constant_time_equal("abcd", "abcd"));
         assert!(!constant_time_equal("abcd", "abce"));
+    }
+
+    #[test]
+    fn pipe_security_rejects_malformed_sid_and_accepts_current_user_sid() {
+        assert!(security::PipeSecurityAttributes::new(&[]).is_err());
+        let sid = process::launcher_user_sid().expect("current user SID");
+        let attributes = security::PipeSecurityAttributes::new(&sid).expect("current-user DACL");
+        assert!(!attributes.as_ptr().is_null());
+    }
+
+    fn test_broker() -> (Session, Broker) {
+        let session = Session::create().expect("session");
+        let broker = Broker::start(
+            &session,
+            BrokerConfig {
+                codex_version: "0.152.1".into(),
+                expected_cwd: std::env::current_dir().expect("cwd"),
+                expected_command: None,
+                audit_path: None,
+                verification_only: true,
+            },
+        )
+        .expect("broker");
+        (session, broker)
+    }
+
+    #[test]
+    fn broker_shutdown_cancels_an_idle_overlapped_accept() {
+        let (session, broker) = test_broker();
+        let started = Instant::now();
+        broker.shutdown().expect("shutdown broker");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn blocked_named_pipe_read_is_cancelled_during_shutdown() {
+        let (session, broker) = test_broker();
+        let wide = encode_wide(OsStr::new(session.pipe_name()));
+        let client = connect_client(&wide, Instant::now() + CONNECTION_TIMEOUT).expect("client");
+        thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        broker.shutdown().expect("shutdown broker");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        close_handle(client);
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn client_disconnect_does_not_leave_a_broker_worker_blocked() {
+        let (session, broker) = test_broker();
+        let wide = encode_wide(OsStr::new(session.pipe_name()));
+        let client = connect_client(&wide, Instant::now() + CONNECTION_TIMEOUT).expect("client");
+        thread::sleep(Duration::from_millis(50));
+        close_handle(client);
+        thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        broker.shutdown().expect("shutdown broker");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn partial_frame_read_has_a_bounded_deadline() {
+        let (session, broker) = test_broker();
+        let wide = encode_wide(OsStr::new(session.pipe_name()));
+        let client = connect_client(&wide, Instant::now() + CONNECTION_TIMEOUT).expect("client");
+        thread::sleep(Duration::from_millis(50));
+        write_all_until(client, &[0_u8], Instant::now() + CONNECTION_TIMEOUT, None)
+            .expect("write partial frame");
+        let started = Instant::now();
+        let error = read_frame_until(
+            client,
+            MAX_BROKER_MESSAGE_BYTES,
+            Instant::now() + Duration::from_millis(100),
+            None,
+        )
+        .expect_err("partial frame must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        close_handle(client);
+        broker.shutdown().expect("shutdown broker");
+        session.cleanup().expect("cleanup session");
     }
 }

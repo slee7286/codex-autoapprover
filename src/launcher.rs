@@ -22,6 +22,7 @@ const VERIFICATION_COMMAND_LINUX: &str = "curl -I https://example.com";
 const VERIFICATION_COMMAND_WINDOWS: &str = "curl.exe -I https://example.com";
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const VERIFICATION_FIXTURE: &str = "codex-autoapprover-fixture.txt";
+const VERIFICATION_HOOKS_DIR: &str = ".codex-autoapprover-hooks";
 const VERIFICATION_COMMIT_MESSAGE: &str = "verification baseline";
 const VERIFICATION_GIT_NAME: &str = "codex-autoapprover verification";
 const VERIFICATION_GIT_EMAIL: &str = "codex-autoapprover-verification@localhost";
@@ -42,7 +43,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
             "codex-autoapprover: Codex {} has no locally verified PermissionRequest compatibility; automatic approval is DISABLED",
             installation.version
         );
-        let mut command = Command::new(&installation.path);
+        let mut command = codex::build_codex_command(&installation);
         command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -659,6 +660,9 @@ fn initialize_temporary_repository(path: &Path) -> Result<()> {
         )
     }
 
+    fs::create_dir(path.join(VERIFICATION_HOOKS_DIR))
+        .context("create temporary Git hooks directory")?;
+
     fs::write(
         path.join(VERIFICATION_FIXTURE),
         b"harmless verification fixture\n",
@@ -685,7 +689,10 @@ fn initialize_temporary_repository(path: &Path) -> Result<()> {
             "-c",
             "commit.gpgSign=false",
             "-c",
-            "core.hooksPath=/dev/null",
+            &format!(
+                "core.hooksPath={}",
+                path.join(VERIFICATION_HOOKS_DIR).display()
+            ),
             "commit",
             "--quiet",
             "--no-gpg-sign",
@@ -710,12 +717,22 @@ fn git_command(path: &Path) -> Command {
     command
         .current_dir(path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", null_device_path())
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+#[cfg(windows)]
+fn null_device_path() -> &'static str {
+    "NUL"
+}
+
+#[cfg(not(windows))]
+fn null_device_path() -> &'static str {
+    "/dev/null"
 }
 
 fn temporary_repository_status(path: &Path) -> Result<RepositoryStatus> {

@@ -1,7 +1,9 @@
 use std::env;
 
+#[cfg(any(unix, windows))]
+use std::{fs, path::Path};
 #[cfg(unix)]
-use std::{fs, path::Path, process::Stdio, thread, time::Duration};
+use std::{process::Stdio, thread, time::Duration};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -315,6 +317,100 @@ fn run_reports_a_missing_codex_without_starting_a_child() {
         .failure()
         .stderr(predicate::str::contains(
             "resolve the official `codex` executable",
+        ));
+}
+
+#[cfg(windows)]
+fn windows_fake_codex_fixture(form: &str) -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let temp = TempDir::new().expect("temporary directory");
+    let directory = temp.path().join("space & unicode-测试");
+    fs::create_dir(&directory).expect("fixture directory");
+    let helper = env::var_os("CARGO_BIN_EXE_fake_codex").expect("fake Codex helper");
+    let helper_copy = directory.join("fake_codex.exe");
+    fs::copy(helper, &helper_copy).expect("copy fake Codex helper");
+    let codex = directory.join(format!("codex{form}"));
+    match form {
+        ".exe" => {
+            fs::copy(&helper_copy, &codex).expect("copy executable shim");
+        }
+        ".cmd" => fs::write(
+            &codex,
+            "@echo off\r\n\"%~dp0fake_codex.exe\" %*\r\nexit /b %ERRORLEVEL%\r\n",
+        )
+        .expect("write cmd shim"),
+        ".ps1" => fs::write(
+            &codex,
+            "if ($args -contains '--version') { Write-Output 'codex-cli 0.152.1'; exit 0 }\r\n& (Join-Path $PSScriptRoot 'fake_codex.exe') @args\r\nexit $LASTEXITCODE\r\n",
+        )
+        .expect("write PowerShell shim"),
+        _ => panic!("unsupported fake Codex form"),
+    }
+    let result = directory.join("result.txt");
+    (temp, directory, result)
+}
+
+#[cfg(windows)]
+fn windows_fixture_path(directory: &Path) -> std::ffi::OsString {
+    let mut paths = vec![directory.to_path_buf()];
+    if let Some(original) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&original));
+    }
+    env::join_paths(paths).expect("fixture PATH")
+}
+
+#[cfg(windows)]
+#[test]
+fn fake_codex_exe_cmd_and_ps1_preserve_arguments_stdio_and_exit_status() {
+    for form in [".exe", ".cmd", ".ps1"] {
+        let (_temp, directory, result) = windows_fake_codex_fixture(form);
+        let path = windows_fixture_path(&directory);
+        let codex_home = directory.join("codex-home");
+        let argument = "space & pipe | $()";
+        Command::cargo_bin("codex-autoapprover")
+            .expect("binary built")
+            .env("PATH", path)
+            .env("CODEX_HOME", &codex_home)
+            .env("FAKE_CODEX_RESULT_FILE", &result)
+            .env("FAKE_CODEX_EXIT_CODE", "37")
+            .args(["run", "--", "prompt", argument])
+            .write_stdin("input from stdin\n")
+            .assert()
+            .code(37)
+            .stdout(predicate::str::contains("fake-codex-stdout\n"))
+            .stderr(predicate::str::contains("fake-codex-stderr\n"))
+            .stderr(predicate::str::contains("automatic approval is DISABLED"));
+        let recorded = fs::read_to_string(&result).expect("fake Codex result");
+        assert_eq!(
+            recorded,
+            format!("prompt\n{argument}\n--stdin--\ninput from stdin\n")
+        );
+        assert!(!codex_home.join("config.toml").exists());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_candidate_diagnose_and_print_config_gate_are_preserved() {
+    let (_temp, directory, _result) = windows_fake_codex_fixture(".exe");
+    let path = windows_fixture_path(&directory);
+    Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", path.clone())
+        .args(["diagnose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("platform: windows"))
+        .stdout(predicate::str::contains("installed Codex version: 0.152.1"))
+        .stdout(predicate::str::contains("candidate/unverified"))
+        .stdout(predicate::str::contains("current process armed: no"));
+    Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", path)
+        .args(["print-hook-config"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no locally verified PermissionRequest compatibility",
         ));
 }
 

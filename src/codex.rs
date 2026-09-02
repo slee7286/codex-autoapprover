@@ -29,14 +29,17 @@ pub fn resolve() -> Result<PathBuf> {
 
 pub fn inspect() -> Result<Installation> {
     let candidate = resolve_codex_candidate()?;
-    let resolved = fs::canonicalize(&candidate.path).with_context(|| {
-        format!(
-            "canonicalize resolved codex path {}",
-            candidate.path.display()
-        )
-    })?;
-    let launcher = fs::canonicalize(env::current_exe().context("resolve launcher path")?)
-        .context("canonicalize launcher path")?;
+    let resolved =
+        normalize_windows_path(fs::canonicalize(&candidate.path).with_context(|| {
+            format!(
+                "canonicalize resolved codex path {}",
+                candidate.path.display()
+            )
+        })?);
+    let launcher = normalize_windows_path(
+        fs::canonicalize(env::current_exe().context("resolve launcher path")?)
+            .context("canonicalize launcher path")?,
+    );
 
     if resolved == launcher {
         bail!("resolved `codex` points to codex-autoapprover; refusing recursive launch")
@@ -78,27 +81,28 @@ fn resolve_codex_candidate() -> Result<Candidate> {
 #[cfg(windows)]
 fn resolve_windows_codex() -> Result<Candidate> {
     let mut candidates = Vec::new();
-    if let Ok(path) = which::which("codex") {
-        candidates.push(path);
-    }
-    if let Ok(output) = Command::new("where.exe").arg("codex").output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let path = PathBuf::from(line.trim());
-            if !path.as_os_str().is_empty() {
-                candidates.push(path);
+    if let Some(path_value) = env::var_os("PATH") {
+        for directory in env::split_paths(&path_value) {
+            for suffix in [".exe", ".cmd", ".ps1", ""] {
+                let mut name = std::ffi::OsString::from("codex");
+                name.push(suffix);
+                let path = directory.join(name);
+                if path.is_file() {
+                    candidates.push(path);
+                }
             }
         }
     }
     if candidates.is_empty() {
         bail!("resolve the official `codex` executable")
     }
-    let launcher = fs::canonicalize(env::current_exe().context("resolve launcher path")?)
-        .context("canonicalize launcher path")?;
+    let launcher = normalize_windows_path(
+        fs::canonicalize(env::current_exe().context("resolve launcher path")?)
+            .context("canonicalize launcher path")?,
+    );
     for path in candidates {
         let kind = launcher_kind(&path);
-        let resolved = fs::canonicalize(&path).unwrap_or(path);
+        let resolved = normalize_windows_path(fs::canonicalize(&path).unwrap_or(path));
         if resolved == launcher {
             continue;
         }
@@ -125,8 +129,13 @@ fn launcher_kind(path: &Path) -> LauncherKind {
     }
 }
 
-pub fn version(path: &PathBuf) -> Result<String> {
-    let output = Command::new(path)
+pub fn version(path: &Path) -> Result<String> {
+    let installation = Installation {
+        path: path.to_path_buf(),
+        version: String::new(),
+        launcher_kind: launcher_kind(path),
+    };
+    let output = build_codex_command(&installation)
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -219,18 +228,32 @@ pub fn build_codex_command(installation: &Installation) -> Command {
 }
 
 fn absolute_shell_quote(path: &Path) -> String {
-    let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let absolute =
+        normalize_windows_path(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
     shell_quote(&absolute)
+}
+
+#[cfg(windows)]
+fn normalize_windows_path(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_windows_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
     if cfg!(windows) {
-        if value.contains(' ') || value.contains('"') {
-            format!("\"{}\"", value.replace('"', "\\\""))
-        } else {
-            value.into_owned()
-        }
+        format!("\"{}\"", value.replace('"', "\\\""))
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
@@ -278,6 +301,38 @@ mod tests {
         let snippet =
             hook_config_snippet(std::path::Path::new("C:\\tools\\codex-autoapprover.exe"));
         assert!(snippet.contains("commandWindows"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_command_quotes_paths_with_shell_metacharacters() {
+        let snippet = hook_config_snippet(std::path::Path::new(
+            "C:\\space & unicode-测试\\codex-autoapprover.exe",
+        ));
+        assert!(
+            snippet.contains("\\\"C:\\\\space & unicode-测试\\\\codex-autoapprover.exe\\\" hook")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launcher_kind_recognizes_supported_shims() {
+        assert_eq!(
+            launcher_kind(std::path::Path::new("codex.exe")),
+            LauncherKind::Executable
+        );
+        assert_eq!(
+            launcher_kind(std::path::Path::new("codex.cmd")),
+            LauncherKind::Cmd
+        );
+        assert_eq!(
+            launcher_kind(std::path::Path::new("codex.ps1")),
+            LauncherKind::Ps1
+        );
+        assert_eq!(
+            launcher_kind(std::path::Path::new("codex")),
+            LauncherKind::Other
+        );
     }
 
     #[test]

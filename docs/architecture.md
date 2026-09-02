@@ -156,7 +156,7 @@ Future registry entries must first demonstrate one harmless, authenticated `Perm
 
 ## Unsupported platforms and future IDE integration
 
-macOS and Windows require independent validation of executable resolution, inherited terminal behavior, environment inheritance, interruption, signing, packaging, process creation, console/pseudoconsole behavior, quoting, environment scope, exit codes, and configuration paths. Neither platform inherits Linux hook or launcher support claims. VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud surfaces are also unsupported and unverified.
+Windows native compilation and fake-runtime validation now cover executable resolution, inherited terminal behavior, environment inheritance, interruption/cancellation, process creation, quoting, exit codes, and configuration-path nonmutation. Windows Codex 0.152.1 remains candidate/unverified: no live `PermissionRequest` has been observed and no structured allow has been returned to real Codex. macOS still requires independent validation, and neither platform inherits Linux hook compatibility claims. VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud surfaces are also unsupported and unverified.
 
 IDE-extension integration is planned separately. It needs a persistent-hook composition design and secure arming/process binding that can distinguish the intended IDE session; the current child-local CLI design and evidence cannot be reused as that guarantee.
 
