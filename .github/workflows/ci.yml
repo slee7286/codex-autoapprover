@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/cross-platform-session-binding-v1]
   pull_request:
 
 permissions:
