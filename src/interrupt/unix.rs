@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::AtomicBool,
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use anyhow::{Context, Result};
 use signal_hook::{
