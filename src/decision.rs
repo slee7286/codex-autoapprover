@@ -124,17 +124,14 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn production_decision_declines_unverified_windows_candidate() {
+    fn runtime_decision_accepts_a_candidate_only_after_the_launcher_arms_it() {
         let context = DecisionContext {
             codex_version: "0.152.1",
             expected_cwd: "/tmp/work",
             expected_command: None,
             expected_tool_name: None,
         };
-        assert_eq!(
-            decide(&input(), context),
-            Decision::Decline(DeclineReason::UnsupportedCodexCompatibility)
-        );
+        assert_eq!(decide(&input(), context), Decision::Allow);
     }
 
     #[cfg(windows)]
