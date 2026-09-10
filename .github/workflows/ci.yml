@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/cross-platform-session-binding-v1]
+    branches: [main, feat/cross-platform-session-binding-v1, feat/auto-compatibility-reconciled]
   pull_request:
 
 permissions:
@@ -18,7 +18,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --check
-      - run: cargo test
+      - run: cargo test --all-targets
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo build
       - run: cargo run -- diagnose
@@ -33,7 +33,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --check
-      - run: cargo test
+      - run: cargo test --all-targets
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo build
       - run: cargo run -- diagnose

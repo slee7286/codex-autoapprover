@@ -1,6 +1,6 @@
 # Hook protocol
 
-This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to Linux, the local CLI launcher, and Codex CLI 0.151.0.
+This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI tuple Codex 0.151.0. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets are attempted only under the automatic compatibility policy and a passing non-live capability probe.
 
 ## Officially documented facts
 
@@ -38,13 +38,13 @@ The documentation also states that matching hooks from multiple files run and mu
 
 ## Local Codex observations
 
-The reviewed local target was Linux with the locally resolved official command reporting `codex-cli 0.151.0`. Its help exposed `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. `codex features list` reported:
+The current local observation is Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposes `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposes stable hooks in `codex features list`. The reviewed Linux 0.151.0 live evidence is the repository-recorded evidence from commit `4206097`; it is retained as the only verified compatibility entry.
 
 ```text
 hooks  stable  true
 ```
 
-The generated child-only inline `-c` hook override was accepted by the target. The reviewed second isolated live verification produced one real `PermissionRequest`, one structured allow response, and an HTTP/2 200 result for the exact harmless curl request without an observed interactive approval prompt. The temporary repository was clean immediately before and after the child, and temporary state cleanup completed. No live hook configuration was changed. This evidence supports only the typed registry entry; it does not imply compatibility with later versions or other surfaces.
+The generated child-only inline `-c` hook override was accepted by the inspected local 0.153.0 target, and its `features list` reported stable, enabled hooks. This is now also the shape checked by the bounded non-live capability probe (`--help -c <child-local hook override>` followed by `features list`); it establishes only that an automatic attempt is possible, not that a live PermissionRequest exchange works. No independently identifiable reviewed live 0.153.0 evidence is retained in this checkout, so this observation does not support verified status, promotion, or a claim that a real PermissionRequest occurred. No live hook configuration was changed.
 
 ## Project handler contract
 
@@ -55,14 +55,14 @@ The Rust handler currently:
 3. requires `hook_event_name` exactly equal to `PermissionRequest`;
 4. requires non-empty `session_id`, `cwd`, `tool_name`, and `tool_input`;
 5. requires the inherited socket location, the exact marker `CODEX_AUTOAPPROVER_HOOK_PROTOCOL=permission-request-v1`, and a valid random session secret only to connect to the broker;
-6. sends an internal `permission-binding-v1` framed request to the broker; the broker alone checks exact version/cwd, `Bash`, secret, `SO_PEERCRED`, and `/proc` ancestry;
-7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal the platform-specific canonical probe: `curl -I https://example.com` on Linux or `curl.exe -I https://example.com` on native Windows;
+6. sends an internal `permission-binding-v1` framed request to the broker; the broker alone checks the version bound to the launched child, cwd, `Bash`, secret, `SO_PEERCRED`, and `/proc` ancestry;
+7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal the exact platform-resolved probe;
 8. serializes only the documented allow response after broker allow; and
 9. returns exit 0 with empty stdout for every decline, parse failure, broker failure, or disconnected session.
 
 Unknown JSON fields are ignored by the parser but never broaden a decision. The project does not use numeric options, terminal text, ANSI sequences, or a PTY to make a hook decision.
 
-The marker, exact-version, local-surface, and cwd checks are project policy, not official Codex fields. Unknown hook fields are ignored for forward compatibility, but they cannot satisfy or broaden a decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
+The marker, version/platform eligibility, local-surface, and cwd checks are project policy, not official Codex fields. Unknown hook fields are ignored for forward compatibility, but they cannot satisfy or broaden a decision. Optional documented fields may be absent; unknown schema variants and malformed required fields receive no decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
 
 The verifier gives the broker an audit path in its own temporary state. The broker records only an allow marker and short hashes of tool name and tool input; the hook does not own the allow decision or audit sink. If the audit sink cannot be written, the broker declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
 
@@ -80,9 +80,15 @@ The official hooks page documents plugin-specific environment variables and says
 
 The launcher creates a private broker and listener, launches the exact Codex child, records its PID/start-time/effective-UID tuple, and then permits decisions. Codex launches the hook; the hook connects and sends the bounded request. The kernel supplies peer PID/UID/GID, the broker validates the secret and bounded ancestry, and returns allow or no-decision. The hook returns structured allow or no output. When Codex exits or is interrupted, the broker stops, workers join, and the socket/private directory are removed.
 
+## Compatibility and no-decision policy
+
+The launcher distinguishes version/platform eligibility, detected hook/configuration capability, runtime request-schema support, reviewed live-verification status, and active session arming. Automatic mode permits stable native Linux/Windows local-CLI versions at or above the inspected baselines (Linux 0.153.0; Windows 0.152.1) only after the non-live capability probe. The requested Linux 0.153.4 and Windows 0.154.0 entries remain experimental/unverified. `--compatibility strict`, or `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` when the flag is absent, arms only exact reviewed tuples. Ineligible targets, inconclusive capability checks, unsupported surfaces, and runtime-invalid requests produce no decision, preserving normal Codex approval behavior.
+
+The exact verification probes are `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. The verifier resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. A successful network command with zero observed PermissionRequest invocations is inconclusive. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
+
 ## Schema versions and open questions
 
-The official page refers to generated schemas but warns that a main-branch schema may include fields absent from the current release. The documented PermissionRequest input has no project-consumable schema-version field. This repository therefore treats the installed Codex version plus the project protocol marker as separate compatibility gates and rejects unknown Codex versions before arming.
+The official page refers to generated schemas but warns that a main-branch schema may include fields absent from the current release. The documented PermissionRequest input has no project-consumable schema-version field. This repository therefore treats the installed Codex version plus the project protocol marker as separate compatibility gates. An unknown version string never arms. A recognized newer stable version can be attempted only when the platform baseline and non-live capability check permit it; it remains experimental until manually live-verified and reviewed.
 
 Still open:
 

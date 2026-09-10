@@ -21,29 +21,10 @@ pub struct DecisionContext<'a> {
     pub codex_version: &'a str,
     pub expected_cwd: &'a str,
     pub expected_command: Option<&'a str>,
-    pub verification_only: bool,
+    pub expected_tool_name: Option<&'a str>,
 }
 
 pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
-    let supported = if context.verification_only {
-        crate::compatibility::verified_or_candidate_hook_support_for(
-            context.codex_version,
-            crate::compatibility::OperatingSystem::current(),
-            crate::compatibility::Surface::LocalCliLauncher,
-            arming::PROTOCOL_VERSION,
-        )
-    } else {
-        crate::compatibility::verified_hook_support_for(
-            context.codex_version,
-            crate::compatibility::OperatingSystem::current(),
-            crate::compatibility::Surface::LocalCliLauncher,
-            arming::PROTOCOL_VERSION,
-        )
-    };
-    if !supported {
-        return Decision::Decline(DeclineReason::UnsupportedCodexCompatibility);
-    }
-
     if input.hook_event_name.as_deref() != Some(crate::protocol::PERMISSION_REQUEST_EVENT) {
         return Decision::Decline(DeclineReason::WrongEvent);
     }
@@ -56,13 +37,47 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         return Decision::Decline(DeclineReason::MissingRequiredField);
     }
 
-    if !crate::compatibility::observed_tool_supported(
+    if context
+        .expected_tool_name
+        .is_some_and(|expected| input.tool_name.as_deref() != Some(expected))
+    {
+        return Decision::Decline(DeclineReason::UnsupportedToolType);
+    }
+
+    match crate::compatibility::runtime_request_schema(
         context.codex_version,
         crate::compatibility::OperatingSystem::current(),
         crate::compatibility::Surface::LocalCliLauncher,
         arming::PROTOCOL_VERSION,
         input.tool_name.as_deref().unwrap_or_default(),
     ) {
+        crate::compatibility::RuntimeSchemaStatus::Supported => {}
+        crate::compatibility::RuntimeSchemaStatus::UnsupportedTool => {
+            return Decision::Decline(DeclineReason::UnsupportedToolType);
+        }
+        crate::compatibility::RuntimeSchemaStatus::UnsupportedPlatform
+        | crate::compatibility::RuntimeSchemaStatus::UnsupportedSurface
+        | crate::compatibility::RuntimeSchemaStatus::UnsupportedProtocol
+        | crate::compatibility::RuntimeSchemaStatus::UnsupportedVersion => {
+            return Decision::Decline(DeclineReason::UnsupportedCodexCompatibility);
+        }
+    }
+
+    let Some(tool_input) = input
+        .tool_input
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Decision::Decline(DeclineReason::UnsupportedToolType);
+    };
+    let command_is_string = tool_input
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_some();
+    let nested_fields_are_supported = tool_input.iter().all(|(key, value)| {
+        (key == "command" && value.is_string()) || (key == "description" && value.is_string())
+    });
+    if !command_is_string || !nested_fields_are_supported {
         return Decision::Decline(DeclineReason::UnsupportedToolType);
     }
 
@@ -71,12 +86,8 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
     }
 
     if let Some(expected_command) = context.expected_command {
-        let actual_command = input
-            .tool_input
-            .as_ref()
-            .and_then(|value| value.get("command"))
-            .and_then(serde_json::Value::as_str);
-        if actual_command != Some(expected_command) {
+        let expected_input = serde_json::json!({"command": expected_command});
+        if input.tool_input.as_ref() != Some(&expected_input) {
             return Decision::Decline(DeclineReason::UnexpectedVerificationAction);
         }
     }
@@ -101,7 +112,7 @@ mod tests {
             codex_version: if cfg!(windows) { "0.152.1" } else { "0.151.0" },
             expected_cwd: "/tmp/work",
             expected_command: None,
-            verification_only: cfg!(windows),
+            expected_tool_name: None,
         }
     }
 
@@ -118,7 +129,7 @@ mod tests {
             codex_version: "0.152.1",
             expected_cwd: "/tmp/work",
             expected_command: None,
-            verification_only: false,
+            expected_tool_name: None,
         };
         assert_eq!(
             decide(&input(), context),
@@ -149,11 +160,31 @@ mod tests {
     }
 
     #[test]
+    fn accepts_only_documented_optional_bash_input_fields() {
+        let mut optional = input();
+        optional.tool_input = Some(serde_json::json!({
+            "command": "true",
+            "description": "harmless fixture",
+        }));
+        assert_eq!(decide(&optional, context()), Decision::Allow);
+
+        let mut unknown = input();
+        unknown.tool_input = Some(serde_json::json!({
+            "command": "true",
+            "future_control": true,
+        }));
+        assert_eq!(
+            decide(&unknown, context()),
+            Decision::Decline(DeclineReason::UnsupportedToolType)
+        );
+    }
+
+    #[test]
     fn verification_allows_only_the_exact_authorized_command() {
         let expected_command = crate::compatibility::verification_probe_command();
         let verification_context = DecisionContext {
             expected_command: Some(expected_command),
-            verification_only: true,
+            expected_tool_name: None,
             ..context()
         };
         assert_eq!(

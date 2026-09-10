@@ -65,6 +65,36 @@ pub fn hook_invoked_at(
     append_private(path, line.as_bytes())
 }
 
+pub fn hook_request_at(
+    path: &Path,
+    tool_name: Option<&str>,
+    event_name: Option<&str>,
+    tool_input: Option<&serde_json::Value>,
+) -> io::Result<()> {
+    let input_hash = tool_input.map(json_hash).unwrap_or_else(|| "none".into());
+    let line = format!(
+        "request event={} tool_hash={} input_hash={}\n",
+        event_name.unwrap_or("unknown"),
+        short_hash(tool_name.unwrap_or("unknown")),
+        input_hash
+    );
+    append_private(path, line.as_bytes())
+}
+
+pub fn hook_allow_emitted_at(
+    path: &Path,
+    tool_name: &str,
+    tool_input: Option<&serde_json::Value>,
+) -> io::Result<()> {
+    let input_hash = tool_input.map(json_hash).unwrap_or_else(|| "none".into());
+    let line = format!(
+        "emitted one PermissionRequest tool_hash={} input_hash={}\n",
+        short_hash(tool_name),
+        input_hash
+    );
+    append_private(path, line.as_bytes())
+}
+
 pub fn initialize(path: &Path) -> io::Result<()> {
     append_private(path, b"")
 }
@@ -104,8 +134,40 @@ pub fn invocation_count(path: &Path) -> io::Result<usize> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(contents
             .lines()
-            .filter(|line| line.starts_with("invoked event="))
+            .filter(|line| line.starts_with("invoked event=") || line.starts_with("request event="))
             .count()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn exact_request_count(
+    path: &Path,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) -> io::Result<usize> {
+    count_matching_lines(path, |line| {
+        line.starts_with("request event=PermissionRequest ")
+            && line.contains(&format!("tool_hash={} ", short_hash(tool_name)))
+            && line.contains(&format!("input_hash={}", json_hash(tool_input)))
+    })
+}
+
+pub fn emitted_allow_count(
+    path: &Path,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) -> io::Result<usize> {
+    count_matching_lines(path, |line| {
+        line.starts_with("emitted one PermissionRequest ")
+            && line.contains(&format!("tool_hash={} ", short_hash(tool_name)))
+            && line.contains(&format!("input_hash={}", json_hash(tool_input)))
+    })
+}
+
+fn count_matching_lines(path: &Path, predicate: impl Fn(&str) -> bool) -> io::Result<usize> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents.lines().filter(|line| predicate(line)).count()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error),
     }
@@ -183,5 +245,20 @@ mod tests {
         let contents = std::fs::read_to_string(path).expect("read audit");
         assert!(contents.contains("event=PermissionRequest"));
         assert!(!contents.contains("Bash"));
+    }
+
+    #[test]
+    fn verification_records_hashes_without_recording_request_content() {
+        let directory = TempDir::new().expect("temporary audit directory");
+        let path = directory.path().join("audit.log");
+        initialize(&path).expect("initialize audit");
+        let input = serde_json::json!({"command": "curl -I https://example.com"});
+        hook_request_at(&path, Some("Bash"), Some("PermissionRequest"), Some(&input))
+            .expect("write request record");
+        hook_allow_emitted_at(&path, "Bash", Some(&input)).expect("write emission record");
+        assert_eq!(exact_request_count(&path, "Bash", &input).unwrap(), 1);
+        assert_eq!(emitted_allow_count(&path, "Bash", &input).unwrap(), 1);
+        let contents = std::fs::read_to_string(path).expect("read audit");
+        assert!(!contents.contains("curl -I"));
     }
 }

@@ -54,8 +54,8 @@ pub struct BrokerConfig {
     pub codex_version: String,
     pub expected_cwd: PathBuf,
     pub expected_command: Option<String>,
+    pub expected_tool_name: Option<String>,
     pub audit_path: Option<PathBuf>,
-    pub verification_only: bool,
 }
 
 #[derive(Debug)]
@@ -296,10 +296,11 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
     let allowed = verify_request(shared, client_pid, &request, &reader, peer_user_matches);
     if allowed {
         if let Some(path) = shared.config.audit_path.as_deref()
-            && (audit::hook_invoked_at(
+            && (audit::hook_request_at(
                 path,
                 request.hook_input.tool_name.as_deref(),
                 request.hook_input.hook_event_name.as_deref(),
+                request.hook_input.tool_input.as_ref(),
             )
             .is_err()
                 || audit::hook_allow_at(
@@ -318,12 +319,21 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
             close_handle(pipe);
             return;
         }
-        let _ = write_response_until(
+        if write_response_until(
             pipe,
             BrokerDecision::Allow,
             deadline,
             Some(&shared.shutdown),
-        );
+        )
+        .is_ok()
+            && let Some(path) = shared.config.audit_path.as_deref()
+        {
+            let _ = audit::hook_allow_emitted_at(
+                path,
+                request.hook_input.tool_name.as_deref().unwrap_or("unknown"),
+                request.hook_input.tool_input.as_ref(),
+            );
+        }
     } else {
         let _ = write_response_until(
             pipe,
@@ -382,7 +392,7 @@ fn verify_request(
         codex_version: &shared.config.codex_version,
         expected_cwd: expected_cwd.as_ref(),
         expected_command: shared.config.expected_command.as_deref(),
-        verification_only: shared.config.verification_only,
+        expected_tool_name: shared.config.expected_tool_name.as_deref(),
     };
     matches!(
         decision::decide(&request.hook_input, context),
@@ -979,8 +989,8 @@ mod tests {
                 codex_version: "0.152.1".into(),
                 expected_cwd: std::env::current_dir().expect("cwd"),
                 expected_command: None,
+                expected_tool_name: None,
                 audit_path: None,
-                verification_only: true,
             },
         )
         .expect("broker");
@@ -1043,6 +1053,39 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         close_handle(client);
         broker.shutdown().expect("shutdown broker");
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn response_delivery_writes_a_complete_structured_frame() {
+        use std::sync::mpsc;
+
+        let session = Session::create().expect("test pipe name");
+        let sid = process::launcher_user_sid().expect("current user SID");
+        let security = security::PipeSecurityAttributes::new(&sid).expect("pipe security");
+        let server = create_server_pipe(session.pipe_name(), &security).expect("server pipe");
+        let (sender, receiver) = mpsc::channel();
+        let name = session.pipe_name().to_owned();
+        let client = thread::spawn(move || {
+            let wide = encode_wide(name);
+            let handle = connect_client(&wide, Instant::now() + CONNECTION_TIMEOUT)
+                .expect("client connects to named pipe");
+            sender.send(handle as usize).expect("send client handle");
+        });
+        let shutdown = AtomicBool::new(false);
+        assert!(wait_for_connection(server, &shutdown).expect("accept client"));
+        let client_handle = receiver
+            .recv_timeout(CONNECTION_TIMEOUT)
+            .expect("connected client") as HANDLE;
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
+        write_response_until(server, BrokerDecision::Allow, deadline, None)
+            .expect("write response");
+        let response = read_frame_until(client_handle, MAX_BROKER_RESPONSE_BYTES, deadline, None)
+            .expect("read complete response");
+        assert!(parse_response(&response).expect("parse response"));
+        close_handle(client_handle);
+        close_handle(server);
+        client.join().expect("client thread");
         session.cleanup().expect("cleanup session");
     }
 }

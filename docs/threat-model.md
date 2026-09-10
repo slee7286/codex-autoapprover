@@ -1,6 +1,6 @@
 # Threat model
 
-This threat model covers the hook-based architecture. Hooks provide a structured event boundary, but they do not make unconditional approval safe and they do not replace Codex's sandbox or authentication. The only verified production target is Linux, the local CLI launcher, and Codex CLI 0.151.0; all other versions and surfaces remain outside this model's compatibility claim.
+This threat model covers the hook-based architecture. Hooks provide a structured event boundary, but they do not make unconditional approval safe and they do not replace Codex's sandbox or authentication. The verified production target is Linux, the local CLI launcher, and Codex CLI 0.151.0. Linux 0.153.0 has only inspected non-live capability evidence and remains experimental/unverified; Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets. Automatic compatibility attempts do not expand the verified claim.
 
 ## System and data flow
 

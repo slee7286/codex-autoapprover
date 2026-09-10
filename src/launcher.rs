@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use crate::{
     arming, audit,
     broker::{self, Broker, BrokerConfig, Session},
-    cli::RunArgs,
+    cli::{COMPATIBILITY_ENV, CompatibilityMode, RunArgs},
     codex, compatibility, interrupt, process,
 };
 
@@ -29,28 +29,82 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     let installation = codex::inspect()?;
     let launcher = env::current_exe().context("resolve current launcher executable")?;
     let cwd = env::current_dir().context("read current working directory")?;
-    let hook_supported = compatibility::verified_hook_support_for(
-        &installation.version,
-        compatibility::OperatingSystem::current(),
-        compatibility::Surface::LocalCliLauncher,
-        arming::PROTOCOL_VERSION,
+    let compatibility_mode = resolve_compatibility_mode(args)?;
+    let request = compatibility::CompatibilityRequest {
+        codex_version: &installation.version,
+        operating_system: compatibility::OperatingSystem::current(),
+        surface: compatibility::Surface::LocalCliLauncher,
+        hook_protocol: arming::PROTOCOL_VERSION,
+    };
+    let eligibility = compatibility::version_eligibility(
+        request,
+        compatibility_mode == CompatibilityMode::Strict,
     );
-
-    if !hook_supported {
-        eprintln!(
-            "codex-autoapprover: Codex {} has no locally verified PermissionRequest compatibility; automatic approval is DISABLED",
-            installation.version
+    let is_experimental = matches!(
+        eligibility,
+        compatibility::VersionEligibility::Experimental { .. }
+    );
+    if !eligibility.is_eligible() {
+        return launch_unarmed(
+            &installation,
+            args,
+            &format!(
+                "{}; compatibility policy is {}",
+                eligibility.status(),
+                compatibility_mode.as_str()
+            ),
         );
-        let mut command = codex::build_codex_command(&installation);
-        command
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .args(&args.codex_args);
-        let status = command
-            .status()
-            .with_context(|| format!("launch official Codex at {}", installation.path.display()))?;
-        return Ok(codex::status_code(status));
+    }
+
+    let capability = codex::detect_hook_capability(&installation, &launcher);
+    if !matches!(
+        capability,
+        codex::HookCapability::ReviewedLiveEvidence
+            | codex::HookCapability::SupportedByConfigurationProbe
+    ) {
+        let reason = capability
+            .reason()
+            .unwrap_or("the hook capability check did not pass");
+        return launch_unarmed(
+            &installation,
+            args,
+            &format!(
+                "eligible version, but hook/configuration capability is {} ({reason})",
+                capability.as_str()
+            ),
+        );
+    }
+
+    let launch_version = match codex::version(&installation.path) {
+        Ok(version) => version,
+        Err(error) => {
+            return launch_unarmed(
+                &installation,
+                args,
+                &format!("Codex version recheck was inconclusive ({error:#})"),
+            );
+        }
+    };
+    if launch_version != installation.version {
+        return launch_unarmed(
+            &installation,
+            args,
+            &format!(
+                "Codex version changed between capability check and launch (detected {}, found {})",
+                installation.version, launch_version
+            ),
+        );
+    }
+
+    if is_experimental {
+        eprintln!(
+            "Experimental automatic approvals: Codex {} on {} has not been live-verified. Eligible permission requests will be approved automatically; incompatible requests fall back to normal approval.",
+            installation.version,
+            compatibility::OperatingSystem::current().as_str()
+        );
+        eprintln!(
+            "codex-autoapprover: enabling automatic approval on an unverified Codex version carries compatibility and command-execution risk; runtime validation remains fail-closed."
+        );
     }
 
     let session = Session::create()?;
@@ -60,8 +114,8 @@ pub fn run(args: &RunArgs) -> Result<i32> {
             codex_version: installation.version.clone(),
             expected_cwd: cwd,
             expected_command: None,
+            expected_tool_name: None,
             audit_path: None,
-            verification_only: false,
         },
     )?;
     let mut command = codex::build_codex_command(&installation);
@@ -136,6 +190,39 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     Ok(codex::status_code(status))
 }
 
+fn resolve_compatibility_mode(args: &RunArgs) -> Result<CompatibilityMode> {
+    if let Some(mode) = args.compatibility {
+        return Ok(mode);
+    }
+    match env::var(COMPATIBILITY_ENV) {
+        Ok(value) if value.eq_ignore_ascii_case("automatic") => Ok(CompatibilityMode::Automatic),
+        Ok(value) if value.eq_ignore_ascii_case("strict") => Ok(CompatibilityMode::Strict),
+        Ok(value) => {
+            bail!("invalid {COMPATIBILITY_ENV} value `{value}`; expected `automatic` or `strict`")
+        }
+        Err(env::VarError::NotPresent) => Ok(CompatibilityMode::Automatic),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("{COMPATIBILITY_ENV} is not valid Unicode; refusing to arm")
+        }
+    }
+}
+
+fn launch_unarmed(installation: &codex::Installation, args: &RunArgs, reason: &str) -> Result<i32> {
+    eprintln!(
+        "codex-autoapprover: automatic approval is DISABLED; running Codex normally ({reason})"
+    );
+    let mut command = codex::build_codex_command(installation);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .args(&args.codex_args);
+    let status = command
+        .status()
+        .with_context(|| format!("launch official Codex at {}", installation.path.display()))?;
+    Ok(codex::status_code(status))
+}
+
 pub fn diagnose() -> Result<i32> {
     println!("codex-autoapprover version: {}", env!("CARGO_PKG_VERSION"));
     println!("platform: {}", std::env::consts::OS);
@@ -152,6 +239,14 @@ pub fn diagnose() -> Result<i32> {
         "current process armed: {}",
         if arming::is_armed() { "yes" } else { "no" }
     );
+    let configured_mode = resolve_compatibility_mode(&RunArgs {
+        compatibility: None,
+        codex_args: Vec::new(),
+    });
+    match &configured_mode {
+        Ok(mode) => println!("compatibility policy: {}", mode.as_str()),
+        Err(error) => println!("compatibility policy: invalid ({error})"),
+    }
     println!(
         "hook configuration installed: not checked; this milestone never installs live configuration"
     );
@@ -160,6 +255,55 @@ pub fn diagnose() -> Result<i32> {
         Ok(installation) => {
             println!("resolved codex path: {}", installation.path.display());
             println!("installed Codex version: {}", installation.version);
+            println!(
+                "version probe: {}",
+                if installation.version_diagnostic.is_some() {
+                    "inconclusive; version is treated as unknown"
+                } else {
+                    "recognized stable version"
+                }
+            );
+            let request = compatibility::CompatibilityRequest {
+                codex_version: &installation.version,
+                operating_system: compatibility::OperatingSystem::current(),
+                surface: compatibility::Surface::LocalCliLauncher,
+                hook_protocol: arming::PROTOCOL_VERSION,
+            };
+            let strict = configured_mode
+                .as_ref()
+                .is_ok_and(|mode| *mode == CompatibilityMode::Strict);
+            let eligibility = compatibility::version_eligibility(request, strict);
+            println!("version eligibility: {}", eligibility.status());
+            println!(
+                "reviewed live-verification status: {}",
+                compatibility::status_for_version(&installation.version)
+            );
+            println!(
+                "runtime request schema (Bash): {}",
+                compatibility::runtime_request_schema(
+                    &installation.version,
+                    request.operating_system,
+                    request.surface,
+                    request.hook_protocol,
+                    "Bash"
+                )
+                .as_str()
+            );
+            if eligibility.is_eligible() {
+                let launcher = env::current_exe().context("resolve current launcher executable")?;
+                let capability = codex::detect_hook_capability(&installation, &launcher);
+                println!(
+                    "detected hook/configuration capability: {}",
+                    capability.as_str()
+                );
+                if let Some(reason) = capability.reason() {
+                    println!("capability detail: {reason}");
+                }
+            } else {
+                println!(
+                    "detected hook/configuration capability: not checked (version is not eligible)"
+                );
+            }
             println!(
                 "PermissionRequest compatibility: {}",
                 compatibility::status_for_version(&installation.version)
@@ -199,9 +343,7 @@ pub fn verify_local_hook() -> Result<i32> {
         bail!("verify-local-hook requires native Windows, not WSL")
     }
     if !(cfg!(target_os = "linux") || cfg!(windows)) {
-        bail!(
-            "verify-local-hook is limited to the verified Linux path or the Windows candidate path"
-        )
+        bail!("verify-local-hook is limited to eligible native Linux/Windows local-CLI targets")
     }
     if cfg!(windows) && !compatibility::is_native_windows_runtime() {
         bail!("verify-local-hook requires native Windows, not WSL or another hosted runtime")
@@ -211,23 +353,24 @@ pub fn verify_local_hook() -> Result<i32> {
     }
 
     let installation = codex::inspect()?;
-    let expected_version = installation.version.clone();
-    if expected_version.is_empty() {
-        bail!("the installed Codex version is empty; refusing verification")
-    }
-    let verification_target = compatibility::verification_target_for_current_platform();
-    if expected_version != verification_target {
+    let verification_target = compatibility::resolved_verification_target(&installation.version)
+        .context("the installed Codex version is not an eligible verification target")?;
+    if installation.version != verification_target.version {
         bail!(
-            "verify-local-hook is limited to Codex {verification_target}; found {expected_version}; refusing verification"
+            "verify-local-hook target changed while resolving the installed version; refusing verification"
         )
     }
+    let expected_version = verification_target.version.clone();
 
     eprintln!();
     eprintln!("!!! ISOLATED LOCAL HOOK VERIFICATION !!!");
     eprintln!("This starts the official Codex executable with a child-local hook override.");
     eprintln!("Automatic approval is armed only for this verification child.");
     eprintln!("No persistent Codex configuration will be written.");
-    eprintln!("{}", verification_banner());
+    eprintln!(
+        "The only authorized action is: {}",
+        verification_target.command
+    );
     eprintln!(
         "The test prompt forbids all other commands, file changes, Git changes, installs, and full access."
     );
@@ -237,17 +380,17 @@ pub fn verify_local_hook() -> Result<i32> {
     eprintln!();
     eprint!(
         "Type exactly `{} ` followed by Enter to continue: ",
-        confirmation_phrase(&expected_version)
+        confirmation_phrase(&verification_target)
     );
     io::stderr()
         .flush()
         .context("flush verification confirmation prompt")?;
 
     let confirmation_interrupt = interrupt::register_interrupt_flag()?;
-    confirm_with_timeout(&expected_version, &confirmation_interrupt.flag)?;
+    confirm_with_timeout(&verification_target, &confirmation_interrupt.flag)?;
 
     let current_version = codex::version(&installation.path)?;
-    if !compatibility::verification_version_matches(&current_version, &expected_version) {
+    if !compatibility::verification_version_matches(&current_version, &verification_target) {
         bail!(
             "Codex version changed during verification (expected {expected_version}, found {current_version}); refusing to start"
         )
@@ -271,9 +414,9 @@ pub fn verify_local_hook() -> Result<i32> {
         BrokerConfig {
             codex_version: expected_version.clone(),
             expected_cwd: repo_path.clone(),
-            expected_command: Some(compatibility::verification_probe_command().into()),
+            expected_command: Some(verification_target.command.into()),
+            expected_tool_name: Some(verification_target.observed_tool_type.into()),
             audit_path: Some(audit_path.clone()),
-            verification_only: true,
         },
     ) {
         Ok(broker) => broker,
@@ -292,7 +435,7 @@ pub fn verify_local_hook() -> Result<i32> {
         .arg("--dangerously-bypass-hook-trust")
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
-        .arg(verification_prompt())
+        .arg(verification_prompt(&verification_target))
         .current_dir(&repo_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -402,6 +545,33 @@ pub fn verify_local_hook() -> Result<i32> {
             return Err(with_cleanup_error(error, cleanup));
         }
     };
+    let expected_input = serde_json::json!({"command": verification_target.command});
+    let exact_request_count = match audit::exact_request_count(
+        &audit_path,
+        verification_target.observed_tool_type,
+        &expected_input,
+    )
+    .context("read exact redacted PermissionRequest evidence")
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let emitted_allow_count = match audit::emitted_allow_count(
+        &audit_path,
+        verification_target.observed_tool_type,
+        &expected_input,
+    )
+    .context("read structured allow emission evidence")
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
     let post_status = match temporary_repository_status(&repo_path) {
         Ok(status) => status,
         Err(error) => {
@@ -415,9 +585,13 @@ pub fn verify_local_hook() -> Result<i32> {
     let repository_clean = post_status.is_clean();
 
     eprintln!("verification evidence: hook invocation count: {invocation_count}");
-    eprintln!("verification evidence: allowed PermissionRequest count: {allow_count}");
     eprintln!(
-        "verification evidence: Codex exit status: {}",
+        "verification evidence: exact authorized request hash match count: {exact_request_count}"
+    );
+    eprintln!("verification evidence: allowed PermissionRequest count: {allow_count}");
+    eprintln!("verification evidence: structured allow emission count: {emitted_allow_count}");
+    eprintln!(
+        "verification evidence: exact command result via Codex child exit status: {}",
         codex::status_code(status)
     );
     eprintln!(
@@ -448,9 +622,13 @@ pub fn verify_local_hook() -> Result<i32> {
     if !baseline_clean {
         bail!("temporary repository baseline was dirty; compatibility was not promoted")
     }
-    if invocation_count != 1 || allow_count != 1 {
+    if invocation_count != 1
+        || exact_request_count != 1
+        || allow_count != 1
+        || emitted_allow_count != 1
+    {
         bail!(
-            "expected exactly one hook invocation and exactly one allow, recorded {invocation_count} invocation(s) and {allow_count} allow(s); compatibility was not promoted"
+            "expected exactly one exact hook request, allow record, and structured allow emission, recorded {invocation_count} invocation(s), {exact_request_count} exact request(s), {allow_count} allow record(s), and {emitted_allow_count} emission(s); compatibility was not promoted"
         )
     }
     if !repository_clean {
@@ -466,16 +644,19 @@ pub fn verify_local_hook() -> Result<i32> {
     Ok(0)
 }
 
-fn confirmation_phrase(version: &str) -> String {
-    if cfg!(windows) {
-        format!("VERIFY CODEX {version} WINDOWS HOOK")
+fn confirmation_phrase(target: &compatibility::VerificationTarget) -> String {
+    if target.operating_system == compatibility::OperatingSystem::Windows {
+        format!("VERIFY CODEX {} WINDOWS HOOK", target.version)
     } else {
-        format!("VERIFY CODEX {version} HOOK")
+        format!("VERIFY CODEX {} HOOK", target.version)
     }
 }
 
-fn confirm_with_timeout(version: &str, interrupted: &AtomicBool) -> Result<()> {
-    let expected = confirmation_phrase(version);
+fn confirm_with_timeout(
+    target: &compatibility::VerificationTarget,
+    interrupted: &AtomicBool,
+) -> Result<()> {
+    let expected = confirmation_phrase(target);
     let (sender, receiver) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
@@ -782,17 +963,10 @@ fn format_repository_diagnostics(label: &str, status: &RepositoryStatus) -> Stri
     output
 }
 
-fn verification_prompt() -> String {
+fn verification_prompt(target: &compatibility::VerificationTarget) -> String {
     format!(
         "Run exactly `{}` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion.",
-        compatibility::verification_probe_command()
-    )
-}
-
-fn verification_banner() -> String {
-    format!(
-        "The only authorized action is: {}",
-        compatibility::verification_probe_command()
+        target.command
     )
 }
 
@@ -828,15 +1002,19 @@ mod tests {
     #[test]
     fn confirmation_requires_the_exact_generated_phrase() {
         if cfg!(unix) {
-            assert_eq!(confirmation_phrase("0.151.0"), "VERIFY CODEX 0.151.0 HOOK");
+            let target = compatibility::resolved_verification_target("0.151.0")
+                .expect("Linux verification target");
+            assert_eq!(confirmation_phrase(&target), "VERIFY CODEX 0.151.0 HOOK");
             assert!(confirmation_matches(
                 "VERIFY CODEX 0.151.0 HOOK\n",
                 "VERIFY CODEX 0.151.0 HOOK"
             ));
             assert!(!confirmation_matches("yes\n", "VERIFY CODEX 0.151.0 HOOK"));
         } else {
+            let target = compatibility::resolved_verification_target("0.152.1")
+                .expect("Windows verification target");
             assert_eq!(
-                confirmation_phrase("0.152.1"),
+                confirmation_phrase(&target),
                 "VERIFY CODEX 0.152.1 WINDOWS HOOK"
             );
             assert!(confirmation_matches(
@@ -986,29 +1164,12 @@ mod tests {
 
     #[test]
     fn verification_prompt_cannot_request_full_access() {
-        let prompt = verification_prompt();
+        let version = if cfg!(windows) { "0.152.1" } else { "0.151.0" };
+        let target =
+            compatibility::resolved_verification_target(version).expect("verification target");
+        let prompt = verification_prompt(&target);
         assert!(!prompt.contains("--yolo"));
         assert!(prompt.contains("use full access"));
-    }
-
-    #[test]
-    fn verification_probe_is_platform_specific_in_banner_and_prompt() {
-        let command = compatibility::verification_probe_command();
-        let expected = if cfg!(windows) {
-            "curl.exe -I https://example.com"
-        } else {
-            "curl -I https://example.com"
-        };
-        assert_eq!(command, expected);
-        assert_eq!(
-            verification_banner(),
-            format!("The only authorized action is: {expected}")
-        );
-        let prompt = verification_prompt();
-        assert!(prompt.contains(&format!("Run exactly `{expected}` and do nothing else.")));
-        if cfg!(windows) {
-            assert!(!prompt.contains("`curl -I https://example.com`"));
-        }
     }
 
     #[cfg(unix)]

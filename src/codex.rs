@@ -1,7 +1,10 @@
 use std::{
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
+    process::{Command, ExitStatus, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -9,8 +12,13 @@ use anyhow::{Context, Result, bail};
 pub struct Installation {
     pub path: PathBuf,
     pub version: String,
+    pub version_diagnostic: Option<String>,
     pub launcher_kind: LauncherKind,
 }
+
+pub const UNKNOWN_VERSION: &str = "unknown";
+const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+const CAPABILITY_OUTPUT_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -51,9 +59,15 @@ pub fn inspect() -> Result<Installation> {
         )
     }
 
+    let (version, version_diagnostic) = match version(&candidate.path) {
+        Ok(version) => (version, None),
+        Err(error) => (UNKNOWN_VERSION.to_owned(), Some(format!("{error:#}"))),
+    };
+
     Ok(Installation {
         path: candidate.path.clone(),
-        version: version(&candidate.path)?,
+        version,
+        version_diagnostic,
         launcher_kind: candidate.kind,
     })
 }
@@ -133,13 +147,20 @@ pub fn version(path: &Path) -> Result<String> {
     let installation = Installation {
         path: path.to_path_buf(),
         version: String::new(),
+        version_diagnostic: None,
         launcher_kind: launcher_kind(path),
     };
-    let output = build_codex_command(&installation)
+    let mut command = build_codex_command(&installation);
+    command
         .arg("--version")
         .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("run {} --version", path.display()))?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output =
+        bounded_output(command).with_context(|| format!("run {} --version", path.display()))?;
+    if output_size(&output) > CAPABILITY_OUTPUT_LIMIT {
+        bail!("{} --version output was too large", path.display())
+    }
     if !output.status.success() {
         bail!(
             "{} --version exited with {}",
@@ -156,16 +177,179 @@ pub fn parse_version(output: &str) -> Result<String> {
     for token in output.split_whitespace() {
         let candidate = token.strip_prefix("codex-cli").unwrap_or(token);
         let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
-        if candidate.chars().next().is_some_and(|c| c.is_ascii_digit())
-            && candidate.split('.').count() >= 3
-            && candidate
-                .split('.')
-                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        let parts: Vec<&str> = candidate.split('.').collect();
+        if parts.len() == 3
+            && parts.iter().all(|part| {
+                !part.is_empty()
+                    && (part.len() == 1 || !part.starts_with('0'))
+                    && part.chars().all(|c| c.is_ascii_digit())
+            })
         {
             return Ok(candidate.to_string());
         }
     }
     bail!("no semantic version found")
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub enum HookCapability {
+    ReviewedLiveEvidence,
+    SupportedByConfigurationProbe,
+    Unsupported(&'static str),
+    Inconclusive(&'static str),
+    NotChecked(&'static str),
+}
+
+impl HookCapability {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReviewedLiveEvidence => "supported by reviewed live evidence",
+            Self::SupportedByConfigurationProbe => "supported by non-live configuration probe",
+            Self::Unsupported(_) => "unsupported by capability probe",
+            Self::Inconclusive(_) => "capability probe inconclusive",
+            Self::NotChecked(_) => "not checked",
+        }
+    }
+
+    pub const fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Unsupported(reason) | Self::Inconclusive(reason) | Self::NotChecked(reason) => {
+                Some(reason)
+            }
+            Self::ReviewedLiveEvidence | Self::SupportedByConfigurationProbe => None,
+        }
+    }
+}
+
+pub fn detect_hook_capability(installation: &Installation, launcher: &Path) -> HookCapability {
+    let config_override = hook_command_value(launcher);
+    let mut config_command = build_codex_command(installation);
+    config_command
+        .arg("--help")
+        .arg("-c")
+        .arg(&config_override)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let config_output = match bounded_output(config_command) {
+        Ok(output) => output,
+        Err(_) => return HookCapability::Inconclusive("the configuration probe could not run"),
+    };
+    if !config_output.status.success() {
+        return HookCapability::Unsupported(
+            "the installed Codex rejected the child-local hook configuration",
+        );
+    }
+    if output_size(&config_output) > CAPABILITY_OUTPUT_LIMIT
+        || !output_contains(&config_output, "-c, --config")
+    {
+        return HookCapability::Inconclusive(
+            "the configuration probe did not expose the required --config interface",
+        );
+    }
+
+    let mut feature_command = build_codex_command(installation);
+    feature_command
+        .args(["features", "list", "-c"])
+        .arg(&config_override)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let feature_output = match bounded_output(feature_command) {
+        Ok(output) => output,
+        Err(_) => return HookCapability::Inconclusive("the hooks feature probe could not run"),
+    };
+    if !feature_output.status.success() {
+        return HookCapability::Inconclusive(
+            "the installed Codex does not expose a usable feature-list probe",
+        );
+    }
+    if output_size(&feature_output) > CAPABILITY_OUTPUT_LIMIT {
+        return HookCapability::Inconclusive("the hooks feature probe output was too large");
+    }
+    if !hooks_feature_is_stable_and_enabled(&feature_output) {
+        return HookCapability::Unsupported(
+            "the installed Codex did not report stable, enabled hooks",
+        );
+    }
+    HookCapability::SupportedByConfigurationProbe
+}
+
+fn bounded_output(mut command: Command) -> Result<Output> {
+    let mut child = command.spawn().context("spawn Codex capability probe")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("capture Codex capability probe stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("capture Codex capability probe stderr")?;
+    let stdout_thread = thread::spawn(move || read_probe_output(stdout));
+    let stderr_thread = thread::spawn(move || read_probe_output(stderr));
+    let deadline = Instant::now() + CAPABILITY_TIMEOUT;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                let _ = child.kill();
+                break child
+                    .wait()
+                    .context("reap timed-out Codex capability probe");
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(anyhow::Error::new(error).context("poll Codex capability probe"));
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("Codex capability probe stdout reader failed"))??;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("Codex capability probe stderr reader failed"))??;
+    if timed_out {
+        bail!("Codex capability probe timed out")
+    }
+    Ok(Output {
+        status: status?,
+        stdout,
+        stderr,
+    })
+}
+
+fn read_probe_output(stream: impl Read) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    stream
+        .take((CAPABILITY_OUTPUT_LIMIT + 1) as u64)
+        .read_to_end(&mut output)
+        .context("read Codex capability probe output")?;
+    Ok(output)
+}
+
+fn output_size(output: &Output) -> usize {
+    output.stdout.len() + output.stderr.len()
+}
+
+fn output_contains(output: &Output, needle: &str) -> bool {
+    String::from_utf8_lossy(&output.stdout).contains(needle)
+        || String::from_utf8_lossy(&output.stderr).contains(needle)
+}
+
+fn hooks_feature_is_stable_and_enabled(output: &Output) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stdout.lines().chain(stderr.lines()).any(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.len() >= 3 && fields[0] == "hooks" && fields[1] == "stable" && fields[2] == "true"
+    })
 }
 
 pub fn status_code(status: ExitStatus) -> i32 {
@@ -284,6 +468,8 @@ mod tests {
     fn parses_local_version_shape() {
         assert_eq!(parse_version("codex-cli 0.151.0").unwrap(), "0.151.0");
         assert_eq!(parse_version("codex-cli v1.2.3\n").unwrap(), "1.2.3");
+        assert!(parse_version("codex-cli 0.153.4-rc.1").is_err());
+        assert!(parse_version("codex-cli 0.153").is_err());
         assert!(parse_version("not a version").is_err());
     }
 
@@ -301,6 +487,13 @@ mod tests {
         let snippet =
             hook_config_snippet(std::path::Path::new("C:\\tools\\codex-autoapprover.exe"));
         assert!(snippet.contains("commandWindows"));
+    }
+
+    #[test]
+    fn windows_candidate_version_is_exact() {
+        assert_eq!(parse_version("codex-cli 0.152.1").unwrap(), "0.152.1");
+        assert!(parse_version("codex-cli 0.152.0").is_ok());
+        assert_ne!(parse_version("codex-cli 0.152.0").unwrap(), "0.152.1");
     }
 
     #[cfg(windows)]
@@ -333,12 +526,5 @@ mod tests {
             launcher_kind(std::path::Path::new("codex")),
             LauncherKind::Other
         );
-    }
-
-    #[test]
-    fn windows_candidate_version_is_exact() {
-        assert_eq!(parse_version("codex-cli 0.152.1").unwrap(), "0.152.1");
-        assert!(parse_version("codex-cli 0.152.0").is_ok());
-        assert_ne!(parse_version("codex-cli 0.152.0").unwrap(), "0.152.1");
     }
 }
