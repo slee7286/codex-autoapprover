@@ -7,10 +7,10 @@ pub const LOCAL_VERIFICATION_TARGET: &str = "0.153.0";
 pub const PREVIOUS_LOCAL_VERIFIED_VERSION: &str = "0.151.0";
 pub const WINDOWS_VERIFICATION_TARGET: &str = "0.152.1";
 pub const WINDOWS_VERIFIED_VERSION: &str = "0.153.2";
+pub const WINDOWS_NEWLY_VERIFIED_VERSION: &str = "0.154.0";
 pub const LINUX_ADAPTER_BASELINE: &str = "0.153.0";
 pub const WINDOWS_ADAPTER_BASELINE: &str = "0.152.1";
 pub const LINUX_REQUESTED_EXPERIMENTAL_TARGET: &str = "0.153.4";
-pub const WINDOWS_REQUESTED_EXPERIMENTAL_TARGET: &str = "0.154.0";
 pub const SUPPORTED_HOOK_PROTOCOL: &str = "permission-request-v1";
 pub const AUTOAPPROVER_RELEASE: &str = "0.1.0";
 
@@ -212,17 +212,17 @@ pub const COMPATIBILITY_REGISTRY: &[CompatibilityEntry] = &[
         evidence_summary: "User-requested experimental target; stable-version eligibility and non-live hook/configuration capability checks only; no live protocol verification.",
     },
     CompatibilityEntry {
-        codex_version: WINDOWS_REQUESTED_EXPERIMENTAL_TARGET,
+        codex_version: WINDOWS_NEWLY_VERIFIED_VERSION,
         operating_system: OperatingSystem::Windows,
         surface: Surface::LocalCliLauncher,
         hook_event: crate::protocol::PERMISSION_REQUEST_EVENT,
         hook_protocol: SUPPORTED_HOOK_PROTOCOL,
         observed_tool_type: ObservedToolType::Bash,
         response_behavior: ResponseBehavior::OneRequestAllow,
-        verification_status: VerificationStatus::Experimental,
-        verification_method: VerificationMethod::RequestedExperimentalTarget,
+        verification_status: VerificationStatus::Verified,
+        verification_method: VerificationMethod::IsolatedLiveEndToEndTest,
         autoapprover_release: AUTOAPPROVER_RELEASE,
-        evidence_summary: "User-requested experimental target; stable-version eligibility and non-live hook/configuration capability checks only; no live protocol verification.",
+        evidence_summary: "User-supplied native Windows live verification: Codex CLI 0.154.0, one executable entry, one validated PermissionRequest, one exact curl.exe probe match, one allow record, one structured allow emission, one acknowledged broker response, stdout written once, HTTP 200, no manual approval prompt in the supplied transcript, child and verifier exit 0, clean temporary repository, successful cleanup, and zero broker errors, no-decision results, or rejection counters. Pre-launch baseline output was not supplied; one startup issue was mentioned without contents, so neither is interpreted as additional evidence.",
     },
 ];
 
@@ -628,6 +628,20 @@ mod tests {
             version_eligibility(request("0.153.2", OperatingSystem::Windows), true),
             VersionEligibility::Verified(entry) if entry.codex_version == "0.153.2"
         ));
+        assert!(verified_hook_support_for(
+            WINDOWS_NEWLY_VERIFIED_VERSION,
+            OperatingSystem::Windows,
+            Surface::LocalCliLauncher,
+            SUPPORTED_HOOK_PROTOCOL
+        ));
+        assert!(matches!(
+            version_eligibility(
+                request(WINDOWS_NEWLY_VERIFIED_VERSION, OperatingSystem::Windows),
+                true
+            ),
+            VersionEligibility::Verified(entry)
+                if entry.codex_version == WINDOWS_NEWLY_VERIFIED_VERSION
+        ));
         assert_eq!(
             version_eligibility(request("0.153.0", OperatingSystem::Linux), false),
             VersionEligibility::Experimental {
@@ -645,10 +659,10 @@ mod tests {
         assert_eq!(
             COMPATIBILITY_REGISTRY
                 .iter()
-                .find(|entry| entry.codex_version == "0.154.0")
-                .expect("Windows requested target")
+                .find(|entry| entry.codex_version == WINDOWS_NEWLY_VERIFIED_VERSION)
+                .expect("Windows newly verified target")
                 .verification_status,
-            VerificationStatus::Experimental
+            VerificationStatus::Verified
         );
     }
 
@@ -663,8 +677,11 @@ mod tests {
             VersionEligibility::Experimental { .. }
         ));
         assert!(matches!(
-            version_eligibility(request("0.154.0", OperatingSystem::Windows), false),
-            VersionEligibility::Experimental { .. }
+            version_eligibility(
+                request(WINDOWS_NEWLY_VERIFIED_VERSION, OperatingSystem::Windows),
+                false
+            ),
+            VersionEligibility::Verified(_)
         ));
         assert!(matches!(
             version_eligibility(request("0.153.4", OperatingSystem::Linux), true),

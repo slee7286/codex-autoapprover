@@ -1,6 +1,6 @@
 # Hook protocol
 
-This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI/Codex 0.151.0 tuple and native Windows/local-CLI/Codex 0.153.2 tuple. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Native Windows 0.152.1 remains candidate/unverified; Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets are attempted only under the automatic compatibility policy and a passing non-live capability probe.
+This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI/Codex 0.151.0 tuple and native Windows/local-CLI/Codex 0.153.2 and 0.154.0 tuples. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Native Windows 0.152.1 remains candidate/unverified; Linux 0.153.4 remains an experimental/unverified requested target; newer stable targets are attempted only under the automatic compatibility policy and a passing non-live capability probe.
 
 ## Officially documented facts
 
@@ -38,7 +38,7 @@ The documentation also states that matching hooks from multiple files run and mu
 
 ## Local Codex observations
 
-The current local observation is Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposes `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposes stable hooks in `codex features list`. The reviewed Linux 0.151.0 live evidence is the repository-recorded evidence from commit `4206097`; the user-supplied native Windows 0.153.2 evidence is recorded in the compatibility matrix. Both are exact verified compatibility entries.
+The current local observation is Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposes `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposes stable hooks in `codex features list`. The reviewed Linux 0.151.0 live evidence is the repository-recorded evidence from commit `4206097`; the user-supplied native Windows 0.153.2 and 0.154.0 evidence is recorded in the compatibility matrix. These are exact verified compatibility entries.
 
 ```text
 hooks  stable  true
@@ -88,7 +88,7 @@ The launcher creates a private broker and listener, launches the exact Codex chi
 
 ## Compatibility and no-decision policy
 
-The launcher distinguishes version/platform eligibility, detected hook/configuration capability, runtime request-schema support, reviewed live-verification status, and active session arming. Automatic mode permits stable native Linux/Windows local-CLI versions at or above the inspected baselines (Linux 0.153.0; Windows 0.152.1) only after the non-live capability probe. The requested Linux 0.153.4 and Windows 0.154.0 entries remain experimental/unverified. `--compatibility strict`, or `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` when the flag is absent, arms only exact reviewed tuples. Ineligible targets, inconclusive capability checks, unsupported surfaces, and runtime-invalid requests produce no decision, preserving normal Codex approval behavior.
+The launcher distinguishes version/platform eligibility, detected hook/configuration capability, runtime request-schema support, reviewed live-verification status, and active session arming. Automatic mode permits stable native Linux/Windows local-CLI versions at or above the inspected baselines (Linux 0.153.0; Windows 0.152.1) only after the non-live capability probe. The requested Linux 0.153.4 entry remains experimental/unverified; native Windows 0.153.2 and 0.154.0 have exact user-supplied verified entries. `--compatibility strict`, or `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` when the flag is absent, arms only exact reviewed tuples. Ineligible targets, inconclusive capability checks, unsupported surfaces, and runtime-invalid requests produce no decision, preserving normal Codex approval behavior.
 
 The exact verification probes are `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. The verifier resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. The exact comparison applies to `tool_input.command`; the already-supported optional `tool_input.description` does not change that command identity, while unknown fields remain schema-rejected. A successful network command with zero observed PermissionRequest invocations is inconclusive. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
 

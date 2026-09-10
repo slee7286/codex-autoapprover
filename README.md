@@ -8,7 +8,7 @@ This project is not affiliated with, endorsed by, sponsored by, or maintained by
 
 ## Status
 
-The project is **pre-alpha**. Production automatic approval is verified only for the exact Linux/local CLI/Codex CLI 0.151.0 tuple and the exact native Windows/local CLI/Codex CLI 0.153.2 tuple. The installed Linux 0.153.0 target has no independently identifiable reviewed live evidence in this checkout and is therefore **experimental/unverified**. Native Windows with Codex CLI 0.152.1 remains **candidate/unverified**. Linux 0.153.4 and native Windows 0.154.0 are explicit **experimental/unverified** requested targets. Newer stable versions at or above the inspected platform adapter baseline are attempted automatically only after a non-live capability check; they are never called verified because they are newer. No live Codex configuration is installed or modified.
+The project is **pre-alpha**. Production automatic approval is verified only for the exact Linux/local CLI/Codex CLI 0.151.0 tuple and the exact native Windows/local CLI/Codex CLI 0.153.2 and 0.154.0 tuples. The installed Linux 0.153.0 target has no independently identifiable reviewed live evidence in this checkout and is therefore **experimental/unverified**. Native Windows with Codex CLI 0.152.1 remains **candidate/unverified**. Linux 0.153.4 remains an **experimental/unverified** requested target. Newer stable versions at or above the inspected platform adapter baseline are attempted automatically only after a non-live capability check; a newer version without exact reviewed evidence is never called verified merely because it is newer. No live Codex configuration is installed or modified.
 
 ### Evidence and compatibility
 
@@ -41,7 +41,7 @@ codex-autoapprover verify-local-hook
 
 With no subcommand, the binary behaves as `run` with no Codex arguments. `hook` is a protocol entry point for Codex and must not be invoked as a general-purpose approval API. `--compatibility` belongs before the `--` separator; every argument after `--` is forwarded to Codex unchanged. `CODEX_AUTOAPPROVER_COMPATIBILITY=automatic|strict` selects the default when the flag is absent, and the command-line flag takes precedence. `print-hook-config` never writes configuration and refuses to print a support snippet for an unverified installed version.
 
-`verify-local-hook` is a separate, experimental, interactive-only verification mechanism. It resolves the installed eligible stable version into one verification target, then derives the displayed command, confirmation phrase, child version binding, prompt, and broker authorization from that target. Linux uses `curl -I https://example.com`; native Windows uses `curl.exe -I https://example.com`. For example, the current Linux target requires `VERIFY CODEX 0.153.0 HOOK`, while the requested Windows target would require `VERIFY CODEX 0.154.0 WINDOWS HOOK`. It uses a temporary Git repository and child-only `-c` overrides, does not promote compatibility, and must not be run automatically in CI.
+`verify-local-hook` is a separate, experimental, interactive-only verification mechanism. It resolves the installed eligible stable version into one verification target, then derives the displayed command, confirmation phrase, child version binding, prompt, and broker authorization from that target. Linux uses `curl -I https://example.com`; native Windows uses `curl.exe -I https://example.com`. For example, a Windows 0.154.0 target requires `VERIFY CODEX 0.154.0 WINDOWS HOOK`. It uses a temporary Git repository and child-only `-c` overrides, does not promote compatibility, and must not be run automatically in CI.
 
 ## Implemented and unimplemented
 
@@ -55,7 +55,7 @@ Implemented in this milestone:
 - bounded JSON parsing and exact documented allow-response serialization;
 - fail-closed handling for unarmed, malformed, unknown, and mismatched requests;
 - non-sensitive diagnostics and synthetic protocol/launcher tests;
-- a typed compatibility registry with the reviewed Linux/local-CLI Codex 0.151.0 and native-Windows/local-CLI Codex 0.153.2 entries, an explicitly unverified inspected Linux 0.153.0 entry, a Windows 0.152.1 candidate, and the requested experimental targets Linux 0.153.4 and Windows 0.154.0;
+- a typed compatibility registry with the reviewed Linux/local-CLI Codex 0.151.0 and native-Windows/local-CLI Codex 0.153.2/0.154.0 entries, an explicitly unverified inspected Linux 0.153.0 entry, a Windows 0.152.1 candidate, and the requested experimental target Linux 0.153.4;
 - separate version eligibility, non-live hook/configuration capability detection, runtime request-schema validation, reviewed live-verification status, and active-session arming gates;
 - automatic attempts for newer stable releases at or above the platform adapter baseline, plus `--compatibility strict` and `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` exact-tuple opt-in;
 - exact version, platform, surface, protocol, and `Bash` tool gating before child arming;
@@ -73,7 +73,7 @@ Not implemented or not verified:
 - packages or a supported release; and
 - a direct App Server backend.
 
-The native Windows preflight used Rust/MSVC on Windows 11 with `codex-cli 0.152.1`. A first isolated live attempt then failed safely because its generated prompt used bare `curl`, which PowerShell resolved to `Invoke-WebRequest` instead of the authorized `curl.exe`; it produced zero hook invocations and zero allows, changed no persistent configuration, and supplied no positive compatibility evidence. Windows 0.152.1 remains candidate/unverified and was not promoted. A later user-supplied live verification of the exact native Windows/local CLI/Codex 0.153.2 tuple is recorded in [the compatibility matrix](docs/compatibility.md).
+The native Windows preflight used Rust/MSVC on Windows 11 with `codex-cli 0.152.1`. A first isolated live attempt then failed safely because its generated prompt used bare `curl`, which PowerShell resolved to `Invoke-WebRequest` instead of the authorized `curl.exe`; it produced zero hook invocations and zero allows, changed no persistent configuration, and supplied no positive compatibility evidence. Windows 0.152.1 remains candidate/unverified and was not promoted. Later user-supplied live verifications of the exact native Windows/local CLI/Codex 0.153.2 and 0.154.0 tuples are recorded in [the compatibility matrix](docs/compatibility.md).
 
 The arming secret remains inherited by descendants as defense in depth. It is no longer sufficient for approval: the broker also requires kernel peer credentials and exact live ancestry. This is not perfect same-user isolation.
 
