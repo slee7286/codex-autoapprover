@@ -13,6 +13,7 @@ const SESSION_TOKEN_ENV: &str = "CODEX_AUTOAPPROVER_SESSION_TOKEN";
 const SESSION_SOCKET_ENV: &str = "CODEX_AUTOAPPROVER_SESSION_SOCKET";
 const PROTOCOL_ENV: &str = "CODEX_AUTOAPPROVER_HOOK_PROTOCOL";
 const PROTOCOL_VERSION: &str = "permission-request-v1";
+const AUDIT_PATH_ENV: &str = "CODEX_AUTOAPPROVER_AUDIT_PATH";
 const LOCAL_CLI_SURFACE: &str = "local CLI launcher";
 
 fn hook_command() -> Command {
@@ -527,6 +528,103 @@ fn fake_codex_exe_cmd_and_ps1_preserve_arguments_stdio_and_exit_status() {
         );
         assert!(!codex_home.join("config.toml").exists());
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn compiled_hook_runs_through_codex_command_windows_invocation() {
+    let (_temp, directory, _result) = windows_fake_codex_fixture(".exe");
+    let path = windows_fixture_path(&directory);
+    let codex_home = directory.join("codex-home");
+    let audit_path = directory.join("hook-audit.log");
+    let output = Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", path)
+        .env("CODEX_HOME", &codex_home)
+        .env("FAKE_CODEX_CAPABILITY_PROBE", "1")
+        .env("FAKE_CODEX_INVOKE_HOOK", "1")
+        .env(
+            "FAKE_CODEX_PERMISSION_DESCRIPTION",
+            "network-access example.com",
+        )
+        .env(AUDIT_PATH_ENV, &audit_path)
+        .args(["run", "--", "synthetic prompt"])
+        .output()
+        .expect("run compiled hook through fake Codex");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(
+        "\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}"
+    ));
+    let audit = fs::read_to_string(&audit_path).expect("hook stage audit");
+    for stage in [
+        "entry",
+        "stdin_read",
+        "stdin_parsed",
+        "arming_valid",
+        "broker_request",
+        "broker_connected",
+        "broker_request_sent",
+        "broker_response_received",
+        "broker_response_parsed",
+        "broker_allow",
+        "stdout_written",
+    ] {
+        assert!(
+            audit.contains(&format!("hook stage={stage}")),
+            "missing {stage}"
+        );
+    }
+    assert!(!codex_home.join("config.toml").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn compiled_hook_accepts_equivalent_windows_cwd_spelling() {
+    let (_temp, directory, _result) = windows_fake_codex_fixture(".exe");
+    let path = windows_fixture_path(&directory);
+    let cwd = env::current_dir().expect("cwd");
+    let alternate_cwd = cwd.to_string_lossy().replace('\\', "/");
+    let output = Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", path)
+        .env("CODEX_HOME", directory.join("codex-home"))
+        .env("FAKE_CODEX_CAPABILITY_PROBE", "1")
+        .env("FAKE_CODEX_INVOKE_HOOK", "1")
+        .env("FAKE_CODEX_REQUEST_CWD", alternate_cwd)
+        .args(["run", "--", "synthetic prompt"])
+        .output()
+        .expect("run compiled hook with equivalent cwd spelling");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains(
+        "\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn compiled_hook_runs_through_windows_codex_launcher_wrappers() {
+    let form = ".cmd";
+    let (_temp, directory, _result) = windows_fake_codex_fixture(form);
+    let path = windows_fixture_path(&directory);
+    let audit_path = directory.join("hook-audit.log");
+    let output = Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", path)
+        .env("CODEX_HOME", directory.join("codex-home"))
+        .env("FAKE_CODEX_CAPABILITY_PROBE", "1")
+        .env("FAKE_CODEX_INVOKE_HOOK", "1")
+        .env(AUDIT_PATH_ENV, &audit_path)
+        .args(["run", "--", "synthetic prompt"])
+        .output()
+        .expect("run compiled hook through launcher wrapper");
+    assert!(
+        output.status.success(),
+        "{form} launcher failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains(
+        "\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}"
+    ));
 }
 
 #[cfg(windows)]

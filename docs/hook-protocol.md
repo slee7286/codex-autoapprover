@@ -1,6 +1,6 @@
 # Hook protocol
 
-This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI tuple Codex 0.151.0. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets are attempted only under the automatic compatibility policy and a passing non-live capability probe.
+This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI/Codex 0.151.0 tuple and native Windows/local-CLI/Codex 0.153.2 tuple. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Native Windows 0.152.1 remains candidate/unverified; Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets are attempted only under the automatic compatibility policy and a passing non-live capability probe.
 
 ## Officially documented facts
 
@@ -38,7 +38,7 @@ The documentation also states that matching hooks from multiple files run and mu
 
 ## Local Codex observations
 
-The current local observation is Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposes `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposes stable hooks in `codex features list`. The reviewed Linux 0.151.0 live evidence is the repository-recorded evidence from commit `4206097`; it is retained as the only verified compatibility entry.
+The current local observation is Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposes `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposes stable hooks in `codex features list`. The reviewed Linux 0.151.0 live evidence is the repository-recorded evidence from commit `4206097`; the user-supplied native Windows 0.153.2 evidence is recorded in the compatibility matrix. Both are exact verified compatibility entries.
 
 ```text
 hooks  stable  true
@@ -64,7 +64,13 @@ Unknown JSON fields are ignored by the parser but never broaden a decision. The 
 
 The marker, version/platform eligibility, local-surface, and cwd checks are project policy, not official Codex fields. Unknown hook fields are ignored for forward compatibility, but they cannot satisfy or broaden a decision. Optional documented fields may be absent; unknown schema variants and malformed required fields receive no decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
 
-The verifier gives the broker an audit path in its own temporary state. The broker records only an allow marker and short hashes of tool name and tool input; the hook does not own the allow decision or audit sink. If the audit sink cannot be written, the broker declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
+On Windows, the cwd policy accepts only the same absolute path after lexical Windows normalization of separators, the extended-path prefix, root spelling, and case; it does not resolve symlinks or junctions.
+
+The verifier gives the broker an audit path in its own temporary state. The broker records only an allow marker and short hashes of tool name, complete tool input, and (for command inputs) the command field; the hook does not own the allow decision or audit sink. If the audit sink cannot be written, the broker declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
+
+For bounded native diagnostics, the verifier also passes that temporary audit path to the child hook. The hook records only fixed stage categories such as entry, stdin parsing, broker connection, response parsing, and stdout completion; it never writes diagnostics to protocol stdout. The executable-entry stage and the broker's post-validation `request` record are counted and reported separately. A Windows broker rejection records its first fixed category (request schema, Codex identity, peer identity, session, ancestry, version, cwd, tool, exact command, shutdown, or audit sink) in the same temporary channel; it never records payloads, command text, SIDs, or pipe names. An exact-command rejection additionally records only expected/actual byte lengths, equality, leading/trailing whitespace, CR/LF presence, and a small recognized-wrapper category. On Windows, the hook acknowledges a parsed broker response with a bounded fixed frame before the broker disconnects, preventing response loss during named-pipe teardown. The verifier stops accepting new broker connections, waits for active broker workers to become idle, prints the redacted stage and rejection summary, and only then removes temporary state.
+
+On native Windows, the generated `commandWindows` hook line avoids embedded quotes for shell-safe absolute launcher paths. When a path needs quoting, it attempts an existing Windows short-path spelling first because Codex CLI 0.153.2's legacy `cmd.exe /C` invocation re-escapes embedded quotes; an unresolvable path remains subject to the installed Codex's command-runner behavior and is not compatibility evidence.
 
 ## Decline and malformed behavior
 
@@ -74,7 +80,7 @@ The exact way Codex surfaces hook process errors, timeouts, termination, or malf
 
 ## Environment inheritance
 
-The official hooks page documents plugin-specific environment variables and says hook commands run with the session cwd. The second isolated verification demonstrated the required child environment reaching the real hook path for this target. The launcher passes only the socket location, internal marker, and random secret needed by the hook. Descendants can inherit those values and may invoke the hook or cause denial of service, but the broker independently obtains peer identity from the kernel and checks live ancestry. This is not perfect same-user isolation.
+The official hooks page documents plugin-specific environment variables and says hook commands run with the session cwd. The second isolated verification demonstrated the required child environment reaching the real hook path for this target. The launcher passes only the socket location, internal marker, and random secret needed by the hook during normal runs. The isolated verifier additionally passes its temporary redacted audit path for stage diagnostics. Descendants can inherit those values and may invoke the hook or cause denial of service, but the broker independently obtains peer identity from the kernel and checks live ancestry. This is not perfect same-user isolation.
 
 ## Binding sequence
 
@@ -84,7 +90,7 @@ The launcher creates a private broker and listener, launches the exact Codex chi
 
 The launcher distinguishes version/platform eligibility, detected hook/configuration capability, runtime request-schema support, reviewed live-verification status, and active session arming. Automatic mode permits stable native Linux/Windows local-CLI versions at or above the inspected baselines (Linux 0.153.0; Windows 0.152.1) only after the non-live capability probe. The requested Linux 0.153.4 and Windows 0.154.0 entries remain experimental/unverified. `--compatibility strict`, or `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` when the flag is absent, arms only exact reviewed tuples. Ineligible targets, inconclusive capability checks, unsupported surfaces, and runtime-invalid requests produce no decision, preserving normal Codex approval behavior.
 
-The exact verification probes are `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. The verifier resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. A successful network command with zero observed PermissionRequest invocations is inconclusive. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
+The exact verification probes are `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. The verifier resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. The exact comparison applies to `tool_input.command`; the already-supported optional `tool_input.description` does not change that command identity, while unknown fields remain schema-rejected. A successful network command with zero observed PermissionRequest invocations is inconclusive. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
 
 ## Schema versions and open questions
 

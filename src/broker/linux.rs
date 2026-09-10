@@ -235,6 +235,17 @@ impl Broker {
         self.shared.shutdown.store(true, Ordering::Release);
     }
 
+    pub fn wait_for_idle(&self) -> Result<()> {
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
+        while self.shared.active_connections.load(Ordering::Acquire) != 0 {
+            if Instant::now() >= deadline {
+                bail!("decision broker workers did not become idle");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
     pub fn shutdown(mut self) -> Result<()> {
         self.shared.shutdown.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
@@ -558,6 +569,7 @@ pub fn request(input: &HookInput) -> Result<bool> {
         bail!("invalid hook arming")
     }
     let mut stream = UnixStream::connect(PathBuf::from(socket)).context("connect to broker")?;
+    let _ = audit::hook_stage("broker_connected");
     stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
     stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
     let request = serde_json::json!({
@@ -569,10 +581,14 @@ pub fn request(input: &HookInput) -> Result<bool> {
     let bytes = serde_json::to_vec(&request)?;
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
     write_frame_until(&mut stream, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline)?;
+    let _ = audit::hook_stage("broker_request_sent");
     stream.shutdown(Shutdown::Write)?;
     let response = read_frame_until(&mut stream, MAX_BROKER_RESPONSE_BYTES, deadline)?;
+    let _ = audit::hook_stage("broker_response_received");
     ensure_no_trailing_data(&mut stream, deadline)?;
-    parse_response(&response)
+    let decision = parse_response(&response)?;
+    let _ = audit::hook_stage("broker_response_parsed");
+    Ok(decision)
 }
 
 fn parse_response(bytes: &[u8]) -> Result<bool> {

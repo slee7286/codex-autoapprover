@@ -437,6 +437,7 @@ pub fn verify_local_hook() -> Result<i32> {
         .arg(codex::hook_command_value(&launcher))
         .arg(verification_prompt(&verification_target))
         .current_dir(&repo_path)
+        .env(arming::AUDIT_PATH_ENV, &audit_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -526,9 +527,22 @@ pub fn verify_local_hook() -> Result<i32> {
             return Err(with_cleanup_error(error, cleanup));
         }
     };
+    broker.stop_accepting();
+    if let Err(error) = broker.wait_for_idle() {
+        let cleanup = cleanup_bound_verification(state, broker, session);
+        return Err(with_cleanup_error(error, cleanup));
+    }
 
-    let invocation_count = match audit::invocation_count(&audit_path)
-        .context("read temporary hook invocation audit")
+    let entry_count =
+        match audit::hook_entry_count(&audit_path).context("read temporary hook entry audit") {
+            Ok(count) => count,
+            Err(error) => {
+                let cleanup = cleanup_bound_verification(state, broker, session);
+                return Err(with_cleanup_error(error, cleanup));
+            }
+        };
+    let validated_request_count = match audit::validated_request_count(&audit_path)
+        .context("read temporary validated request audit")
     {
         Ok(count) => count,
         Err(error) => {
@@ -545,11 +559,11 @@ pub fn verify_local_hook() -> Result<i32> {
             return Err(with_cleanup_error(error, cleanup));
         }
     };
-    let expected_input = serde_json::json!({"command": verification_target.command});
+    let expected_command_input = serde_json::json!({"command": verification_target.command});
     let exact_request_count = match audit::exact_request_count(
         &audit_path,
         verification_target.observed_tool_type,
-        &expected_input,
+        &expected_command_input,
     )
     .context("read exact redacted PermissionRequest evidence")
     {
@@ -562,7 +576,7 @@ pub fn verify_local_hook() -> Result<i32> {
     let emitted_allow_count = match audit::emitted_allow_count(
         &audit_path,
         verification_target.observed_tool_type,
-        &expected_input,
+        &expected_command_input,
     )
     .context("read structured allow emission evidence")
     {
@@ -571,6 +585,13 @@ pub fn verify_local_hook() -> Result<i32> {
             let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
+    };
+    let evidence_counts = VerificationEvidenceCounts {
+        entry_count,
+        validated_request_count,
+        exact_request_count,
+        allow_count,
+        emitted_allow_count,
     };
     let post_status = match temporary_repository_status(&repo_path) {
         Ok(status) => status,
@@ -583,13 +604,36 @@ pub fn verify_local_hook() -> Result<i32> {
         }
     };
     let repository_clean = post_status.is_clean();
+    let hook_diagnostics = match audit::hook_diagnostic_summary(&audit_path)
+        .context("read redacted hook stage diagnostics")
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
 
-    eprintln!("verification evidence: hook invocation count: {invocation_count}");
     eprintln!(
-        "verification evidence: exact authorized request hash match count: {exact_request_count}"
+        "verification evidence: executable hook entry count: {}",
+        evidence_counts.entry_count
     );
-    eprintln!("verification evidence: allowed PermissionRequest count: {allow_count}");
-    eprintln!("verification evidence: structured allow emission count: {emitted_allow_count}");
+    eprintln!(
+        "verification evidence: validated PermissionRequest count: {}",
+        evidence_counts.validated_request_count
+    );
+    eprintln!(
+        "verification evidence: exact authorized command match count: {}",
+        evidence_counts.exact_request_count
+    );
+    eprintln!(
+        "verification evidence: allowed PermissionRequest count: {}",
+        evidence_counts.allow_count
+    );
+    eprintln!(
+        "verification evidence: structured allow emission count: {}",
+        evidence_counts.emitted_allow_count
+    );
     eprintln!(
         "verification evidence: exact command result via Codex child exit status: {}",
         codex::status_code(status)
@@ -598,6 +642,7 @@ pub fn verify_local_hook() -> Result<i32> {
         "verification evidence: temporary repository clean: {}",
         if repository_clean { "yes" } else { "no" }
     );
+    eprintln!("{hook_diagnostics}");
     if !repository_clean {
         print_repository_diagnostics(
             "changes during Codex child session (post-run porcelain entries)",
@@ -619,22 +664,33 @@ pub fn verify_local_hook() -> Result<i32> {
         "codex-autoapprover: Codex {expected_version} remains production-unsupported until this evidence is reviewed and the exact command result is confirmed."
     );
 
-    if !baseline_clean {
-        bail!("temporary repository baseline was dirty; compatibility was not promoted")
-    }
-    if invocation_count != 1
-        || exact_request_count != 1
-        || allow_count != 1
-        || emitted_allow_count != 1
-    {
-        bail!(
-            "expected exactly one exact hook request, allow record, and structured allow emission, recorded {invocation_count} invocation(s), {exact_request_count} exact request(s), {allow_count} allow record(s), and {emitted_allow_count} emission(s); compatibility was not promoted"
-        )
-    }
-    if !repository_clean {
-        bail!("the temporary repository was modified; compatibility was not promoted")
-    }
-    if !status.success() {
+    if !verification_evidence_complete(
+        baseline_clean,
+        &evidence_counts,
+        repository_clean,
+        status.success(),
+    ) {
+        if !baseline_clean {
+            bail!("temporary repository baseline was dirty; compatibility was not promoted")
+        }
+        if evidence_counts.entry_count != 1
+            || evidence_counts.validated_request_count != 1
+            || evidence_counts.exact_request_count != 1
+            || evidence_counts.allow_count != 1
+            || evidence_counts.emitted_allow_count != 1
+        {
+            bail!(
+                "expected exactly one executable hook entry, validated request, exact request, allow record, and structured allow emission, recorded {} entry record(s), {} validated request record(s), {} exact request(s), {} allow record(s), and {} emission(s); compatibility was not promoted",
+                evidence_counts.entry_count,
+                evidence_counts.validated_request_count,
+                evidence_counts.exact_request_count,
+                evidence_counts.allow_count,
+                evidence_counts.emitted_allow_count,
+            )
+        }
+        if !repository_clean {
+            bail!("the temporary repository was modified; compatibility was not promoted")
+        }
         bail!("Codex verification child failed; compatibility was not promoted")
     }
 
@@ -970,6 +1026,30 @@ fn verification_prompt(target: &compatibility::VerificationTarget) -> String {
     )
 }
 
+struct VerificationEvidenceCounts {
+    entry_count: usize,
+    validated_request_count: usize,
+    exact_request_count: usize,
+    allow_count: usize,
+    emitted_allow_count: usize,
+}
+
+fn verification_evidence_complete(
+    baseline_clean: bool,
+    counts: &VerificationEvidenceCounts,
+    repository_clean: bool,
+    child_succeeded: bool,
+) -> bool {
+    baseline_clean
+        && counts.entry_count == 1
+        && counts.validated_request_count == 1
+        && counts.exact_request_count == 1
+        && counts.allow_count == 1
+        && counts.emitted_allow_count == 1
+        && repository_clean
+        && child_succeeded
+}
+
 #[allow(dead_code)]
 fn wait_for_verification_child(mut child: Child, interrupted: &AtomicBool) -> Result<ExitStatus> {
     let started = Instant::now();
@@ -1170,6 +1250,36 @@ mod tests {
         let prompt = verification_prompt(&target);
         assert!(!prompt.contains("--yolo"));
         assert!(prompt.contains("use full access"));
+    }
+
+    #[test]
+    fn failed_verification_is_not_successful_when_child_exit_is_zero() {
+        let no_evidence = VerificationEvidenceCounts {
+            entry_count: 0,
+            validated_request_count: 0,
+            exact_request_count: 0,
+            allow_count: 0,
+            emitted_allow_count: 0,
+        };
+        let complete_evidence = VerificationEvidenceCounts {
+            entry_count: 1,
+            validated_request_count: 1,
+            exact_request_count: 1,
+            allow_count: 1,
+            emitted_allow_count: 1,
+        };
+        assert!(!verification_evidence_complete(
+            true,
+            &no_evidence,
+            true,
+            true
+        ));
+        assert!(verification_evidence_complete(
+            true,
+            &complete_evidence,
+            true,
+            true
+        ));
     }
 
     #[cfg(unix)]

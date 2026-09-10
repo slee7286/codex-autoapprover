@@ -4,7 +4,7 @@
 
 `codex-autoapprover` can cause the official Codex CLI to receive an `allow` decision for a permission request. That may grant an individual command additional filesystem, network, Git, shell, or other authority. The hook does not make unconditional approval safe and does not strengthen Codex's sandbox.
 
-The project is pre-alpha. The narrowly verified production compatibility is Linux, the local CLI launcher, and Codex CLI 0.151.0. Linux 0.153.0 has no independently identifiable reviewed live evidence in this checkout and remains experimental/unverified; native Windows 0.152.1 is candidate/unverified; Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets. Automatic attempts on newer stable versions are compatibility experiments, not verification or a safety guarantee.
+The project is pre-alpha. The narrowly verified production compatibility is the exact Linux/local CLI/Codex CLI 0.151.0 tuple and the exact native Windows/local CLI/Codex CLI 0.153.2 tuple. Linux 0.153.0 has no independently identifiable reviewed live evidence in this checkout and remains experimental/unverified; native Windows 0.152.1 is candidate/unverified; Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets. Automatic attempts on newer stable versions are compatibility experiments, not verification or a safety guarantee.
 
 ## Hook-specific attack surface
 
@@ -41,7 +41,7 @@ The Linux v1 path creates a unique 0700 private runtime directory and 0600 Unix 
 
 The secret remains defense in depth and is compared in a fixed-length byte loop. It is never sufficient by itself. Descendant processes can still inherit the socket location and secret, invoke the hook binary, or cause denial of service. This design meaningfully improves on inherited environment metadata alone but does not create a privilege boundary against malicious code already executing as the same user inside the exact authorized Codex descendant tree.
 
-Native Windows uses a launcher-owned named pipe with remote-client rejection, current-user security, client process identity, user-SID and ancestry validation, bounded framed I/O, deadlines, and a response-delivery regression test. That is implementation evidence, not live Windows Codex verification; native Windows execution and live protocol behavior still require separate reproduction and review.
+Native Windows uses a launcher-owned named pipe with remote-client rejection, current-user security, client process identity, user-SID and ancestry validation, bounded framed I/O, deadlines, and a response-delivery regression test. These checks are live-verified only for the exact native Windows/local CLI/Codex CLI 0.153.2 tuple using user-supplied evidence; they do not transfer to other Windows releases or surfaces.
 
 The verification hook additionally restricts the synthetic test to a `tool_input.command` equal to the platform-resolved exact command: `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. This is project-side fail-closed policy, not a claim that every Codex tool schema uses that field. If the real request does not expose that exact shape, verification declines and must not retry with a broader rule. Evidence must be redacted and must include the actual request hash match, structured allow emission, the successful child result used as command-result evidence, clean pre/post repository state, child exit, and cleanup.
 

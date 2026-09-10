@@ -37,8 +37,9 @@ use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSin
 const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
 
 use crate::{
-    arming, audit,
-    decision::{self, Decision, DecisionContext},
+    arming,
+    audit::{self, RejectionCategory},
+    decision::{self, Decision, DecisionContext, DeclineReason},
     process::{self, ProcessIdentity, ProcessReader, WinProcess},
     protocol::{self, HookInput},
 };
@@ -48,6 +49,7 @@ pub const MAX_BROKER_MESSAGE_BYTES: usize = protocol::MAX_INPUT_BYTES + 4096;
 pub const MAX_BROKER_RESPONSE_BYTES: usize = 256;
 pub const MAX_ACTIVE_CONNECTIONS: usize = 16;
 pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
+const RESPONSE_ACK: &[u8] = b"response_received";
 
 #[derive(Debug, Clone)]
 pub struct BrokerConfig {
@@ -164,6 +166,17 @@ impl Broker {
         self.shared.shutdown.store(true, Ordering::Release);
     }
 
+    pub fn wait_for_idle(&self) -> Result<()> {
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
+        while self.shared.active_connections.load(Ordering::Acquire) != 0 {
+            if Instant::now() >= deadline {
+                bail!("decision broker workers did not become idle");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
     pub fn shutdown(mut self) -> Result<()> {
         self.shared.shutdown.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
@@ -255,6 +268,7 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
         close_handle(pipe);
         return;
     }
+    record_server_stage(shared, "broker_server_connected");
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
     let frame = match read_frame_until(
         pipe,
@@ -269,32 +283,32 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
         }
     };
     if ensure_no_trailing_data(pipe).is_err() {
-        let _ = write_response_until(
-            pipe,
-            BrokerDecision::NoDecision,
-            deadline,
-            Some(&shared.shutdown),
-        );
+        record_rejection(shared, RejectionCategory::RequestTrailingData);
+        let _ = send_response_and_wait_for_ack(pipe, shared, BrokerDecision::NoDecision, deadline);
         close_handle(pipe);
         return;
     }
     let request = match parse_request(&frame) {
         Ok(request) => request,
         Err(_) => {
-            let _ = write_response_until(
-                pipe,
-                BrokerDecision::NoDecision,
-                deadline,
-                Some(&shared.shutdown),
-            );
+            record_rejection(shared, RejectionCategory::RequestSchema);
+            let _ =
+                send_response_and_wait_for_ack(pipe, shared, BrokerDecision::NoDecision, deadline);
             close_handle(pipe);
             return;
         }
     };
+    record_server_stage(shared, "broker_server_request_received");
+    if let Err(reason) = wait_for_codex_identity(shared, deadline) {
+        record_rejection(shared, reason);
+        let _ = send_response_and_wait_for_ack(pipe, shared, BrokerDecision::NoDecision, deadline);
+        close_handle(pipe);
+        return;
+    }
     let reader = WinProcess;
     let peer_user_matches = process::peer_user_matches_launcher(client_pid, &shared.launcher_sid);
-    let allowed = verify_request(shared, client_pid, &request, &reader, peer_user_matches);
-    if allowed {
+    let decision = verify_request(shared, client_pid, &request, &reader, peer_user_matches);
+    if decision.is_ok() {
         if let Some(path) = shared.config.audit_path.as_deref()
             && (audit::hook_request_at(
                 path,
@@ -310,24 +324,15 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
                 )
                 .is_err())
         {
-            let _ = write_response_until(
-                pipe,
-                BrokerDecision::NoDecision,
-                deadline,
-                Some(&shared.shutdown),
-            );
+            record_rejection(shared, RejectionCategory::AuditSink);
+            let _ =
+                send_response_and_wait_for_ack(pipe, shared, BrokerDecision::NoDecision, deadline);
             close_handle(pipe);
             return;
         }
-        if write_response_until(
-            pipe,
-            BrokerDecision::Allow,
-            deadline,
-            Some(&shared.shutdown),
-        )
-        .is_ok()
-            && let Some(path) = shared.config.audit_path.as_deref()
-        {
+        let response_delivered =
+            send_response_and_wait_for_ack(pipe, shared, BrokerDecision::Allow, deadline);
+        if response_delivered && let Some(path) = shared.config.audit_path.as_deref() {
             let _ = audit::hook_allow_emitted_at(
                 path,
                 request.hook_input.tool_name.as_deref().unwrap_or("unknown"),
@@ -335,17 +340,88 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
             );
         }
     } else {
-        let _ = write_response_until(
-            pipe,
-            BrokerDecision::NoDecision,
-            deadline,
-            Some(&shared.shutdown),
+        record_rejection(
+            shared,
+            decision.expect_err("decision result is either allow or a rejection"),
         );
+        let _ = send_response_and_wait_for_ack(pipe, shared, BrokerDecision::NoDecision, deadline);
     }
     unsafe {
         DisconnectNamedPipe(pipe);
     }
     close_handle(pipe);
+}
+
+fn record_server_stage(shared: &Arc<SharedState>, category: &str) {
+    if let Some(path) = shared.config.audit_path.as_deref() {
+        let _ = audit::hook_stage_at(path, category);
+    }
+}
+
+fn record_rejection(shared: &Arc<SharedState>, category: RejectionCategory) {
+    if let Some(path) = shared.config.audit_path.as_deref() {
+        let _ = audit::hook_rejection_at(path, category);
+    }
+}
+
+fn record_exact_command_mismatch(shared: &Arc<SharedState>, input: &HookInput) {
+    let (Some(path), Some(expected)) = (
+        shared.config.audit_path.as_deref(),
+        shared.config.expected_command.as_deref(),
+    ) else {
+        return;
+    };
+    let actual = input
+        .tool_input
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|object| object.get("command"))
+        .and_then(serde_json::Value::as_str);
+    let _ = audit::hook_exact_command_mismatch_at(path, expected, actual);
+}
+
+fn send_response_and_wait_for_ack(
+    pipe: HANDLE,
+    shared: &Arc<SharedState>,
+    decision: BrokerDecision,
+    deadline: Instant,
+) -> bool {
+    if write_response_until(pipe, decision, deadline, Some(&shared.shutdown)).is_err() {
+        return false;
+    }
+    record_server_stage(shared, "broker_server_response_written");
+    let Ok(ack) = read_frame_until(pipe, RESPONSE_ACK.len(), deadline, Some(&shared.shutdown))
+    else {
+        return false;
+    };
+    if ack != RESPONSE_ACK || ensure_no_trailing_data(pipe).is_err() {
+        return false;
+    }
+    record_server_stage(shared, "broker_server_response_acknowledged");
+    true
+}
+
+fn wait_for_codex_identity(
+    shared: &Arc<SharedState>,
+    deadline: Instant,
+) -> Result<(), RejectionCategory> {
+    loop {
+        if shared.shutdown.load(Ordering::Acquire) {
+            return Err(RejectionCategory::Shutdown);
+        }
+        if shared
+            .expected
+            .read()
+            .ok()
+            .is_some_and(|expected| expected.is_some())
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(RejectionCategory::CodexIdentity);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,17 +451,24 @@ fn verify_request(
     request: &BrokerRequest,
     reader: &impl ProcessReader,
     peer_user_matches_launcher: bool,
-) -> bool {
+) -> Result<(), RejectionCategory> {
     let Some(expected) = shared.expected.read().ok().and_then(|value| value.clone()) else {
-        return false;
+        return Err(RejectionCategory::CodexIdentity);
     };
-    if shared.shutdown.load(Ordering::Acquire)
-        || !peer_user_matches_launcher
-        || !arming::valid_token(Some(&request.session_secret))
-        || !constant_time_equal(&request.session_secret, &shared.session_secret)
-        || !validate_peer(reader, peer_pid, expected.clone())
-    {
-        return false;
+    if shared.shutdown.load(Ordering::Acquire) {
+        return Err(RejectionCategory::Shutdown);
+    }
+    if !peer_user_matches_launcher {
+        return Err(RejectionCategory::PeerIdentity);
+    }
+    if !arming::valid_token(Some(&request.session_secret)) {
+        return Err(RejectionCategory::SessionToken);
+    }
+    if !constant_time_equal(&request.session_secret, &shared.session_secret) {
+        return Err(RejectionCategory::SessionSecret);
+    }
+    if !validate_peer(reader, peer_pid, expected.clone()) {
+        return Err(RejectionCategory::Ancestry);
     }
     let expected_cwd = shared.config.expected_cwd.to_string_lossy();
     let context = DecisionContext {
@@ -394,11 +477,35 @@ fn verify_request(
         expected_command: shared.config.expected_command.as_deref(),
         expected_tool_name: shared.config.expected_tool_name.as_deref(),
     };
-    matches!(
-        decision::decide(&request.hook_input, context),
-        Decision::Allow
-    ) && !shared.shutdown.load(Ordering::Acquire)
-        && validate_peer(reader, peer_pid, expected)
+    match decision::decide(&request.hook_input, context) {
+        Decision::Allow => {}
+        Decision::Decline(reason) => {
+            if matches!(reason, DeclineReason::UnexpectedVerificationAction) {
+                record_exact_command_mismatch(shared, &request.hook_input);
+            }
+            return Err(decision_rejection_category(reason));
+        }
+    }
+    if shared.shutdown.load(Ordering::Acquire) {
+        return Err(RejectionCategory::PostValidationShutdown);
+    }
+    if !validate_peer(reader, peer_pid, expected) {
+        return Err(RejectionCategory::PostValidationAncestry);
+    }
+    Ok(())
+}
+
+fn decision_rejection_category(reason: DeclineReason) -> RejectionCategory {
+    match reason {
+        DeclineReason::WrongEvent | DeclineReason::MissingRequiredField => {
+            RejectionCategory::Schema
+        }
+        DeclineReason::WorkingDirectoryMismatch => RejectionCategory::Cwd,
+        DeclineReason::UnsupportedCodexCompatibility => RejectionCategory::Version,
+        DeclineReason::UnsupportedToolType => RejectionCategory::Tool,
+        DeclineReason::UnsupportedRequestSchema => RejectionCategory::Schema,
+        DeclineReason::UnexpectedVerificationAction => RejectionCategory::ExactCommand,
+    }
 }
 
 fn validate_peer(reader: &impl ProcessReader, peer_pid: u32, expected: ProcessIdentity) -> bool {
@@ -463,6 +570,7 @@ pub fn request(input: &HookInput) -> Result<bool> {
     let wide = encode_wide(OsStr::new(&pipe_name));
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
     let handle = connect_client(&wide, deadline).context("connect to broker")?;
+    let _ = audit::hook_stage("broker_connected");
     let request = serde_json::json!({
         "protocol_version": BROKER_PROTOCOL_VERSION,
         "message_type": "permission_request",
@@ -472,9 +580,14 @@ pub fn request(input: &HookInput) -> Result<bool> {
     let bytes = serde_json::to_vec(&request)?;
     let result = (|| -> io::Result<bool> {
         write_frame_until(handle, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline, None)?;
+        let _ = audit::hook_stage("broker_request_sent");
         let response = read_frame_until(handle, MAX_BROKER_RESPONSE_BYTES, deadline, None)?;
+        let _ = audit::hook_stage("broker_response_received");
         ensure_no_trailing_data(handle)?;
-        parse_response(&response).map_err(io::Error::other)
+        let decision = parse_response(&response).map_err(io::Error::other)?;
+        let _ = audit::hook_stage("broker_response_parsed");
+        write_frame_until(handle, RESPONSE_ACK, RESPONSE_ACK.len(), deadline, None)?;
+        Ok(decision)
     })();
     close_handle(handle);
     result.map_err(Into::into)
@@ -1086,6 +1199,236 @@ mod tests {
         close_handle(client_handle);
         close_handle(server);
         client.join().expect("client thread");
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn valid_request_allows_but_cwd_rejection_preserves_its_category() {
+        let (session, broker) = test_broker();
+        let identity = process::current_process_identity(std::process::id()).expect("identity");
+        broker
+            .set_codex_identity(identity.clone())
+            .expect("identity");
+        let hook_input = protocol::parse(
+            serde_json::json!({
+                "session_id": "session",
+                "cwd": std::env::current_dir().expect("cwd"),
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": {"command": "printf synthetic"},
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .expect("hook input");
+        let request = BrokerRequest {
+            protocol_version: BROKER_PROTOCOL_VERSION.into(),
+            message_type: "permission_request".into(),
+            session_secret: session.secret().into(),
+            hook_input,
+        };
+        let sid_matches =
+            process::peer_user_matches_launcher(std::process::id(), &broker.shared.launcher_sid);
+        assert_eq!(
+            verify_request(
+                &broker.shared,
+                std::process::id(),
+                &request,
+                &WinProcess,
+                sid_matches,
+            ),
+            Ok(())
+        );
+
+        let mut wrong_cwd = request;
+        wrong_cwd.hook_input.cwd = Some(std::env::temp_dir().to_string_lossy().into_owned());
+        assert_eq!(
+            verify_request(
+                &broker.shared,
+                std::process::id(),
+                &wrong_cwd,
+                &WinProcess,
+                sid_matches,
+            ),
+            Err(RejectionCategory::Cwd)
+        );
+        broker.shutdown().expect("shutdown broker");
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn exact_command_accepts_documented_description_but_rejects_changed_command() {
+        let evidence = tempfile::TempDir::new().expect("evidence directory");
+        let audit_path = evidence.path().join("audit.log");
+        audit::initialize(&audit_path).expect("audit");
+        let session = Session::create().expect("session");
+        let broker = Broker::start(
+            &session,
+            BrokerConfig {
+                codex_version: "0.152.1".into(),
+                expected_cwd: std::env::current_dir().expect("cwd"),
+                expected_command: Some(crate::compatibility::verification_probe_command().into()),
+                expected_tool_name: Some("Bash".into()),
+                audit_path: Some(audit_path.clone()),
+            },
+        )
+        .expect("broker");
+        broker
+            .set_codex_identity(
+                process::current_process_identity(std::process::id()).expect("identity"),
+            )
+            .expect("identity");
+        let hook_input = |command: &str, extra_field: bool| {
+            let tool_input = if extra_field {
+                serde_json::json!({
+                    "command": command,
+                    "description": "network-access example.com",
+                    "unknown": "rejected",
+                })
+            } else {
+                serde_json::json!({
+                    "command": command,
+                    "description": "network-access example.com",
+                })
+            };
+            protocol::parse(
+                serde_json::json!({
+                    "session_id": "session",
+                    "cwd": std::env::current_dir().expect("cwd"),
+                    "hook_event_name": "PermissionRequest",
+                    "tool_name": "Bash",
+                    "tool_input": tool_input,
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("hook input")
+        };
+        let request = |hook_input| BrokerRequest {
+            protocol_version: BROKER_PROTOCOL_VERSION.into(),
+            message_type: "permission_request".into(),
+            session_secret: session.secret().into(),
+            hook_input,
+        };
+        let sid_matches =
+            process::peer_user_matches_launcher(std::process::id(), &broker.shared.launcher_sid);
+        assert_eq!(
+            verify_request(
+                &broker.shared,
+                std::process::id(),
+                &request(hook_input(
+                    crate::compatibility::verification_probe_command(),
+                    false,
+                )),
+                &WinProcess,
+                sid_matches,
+            ),
+            Ok(())
+        );
+        let rejected = verify_request(
+            &broker.shared,
+            std::process::id(),
+            &request(hook_input("curl.exe -I https://example.com ", false)),
+            &WinProcess,
+            sid_matches,
+        );
+        assert_eq!(rejected, Err(RejectionCategory::ExactCommand));
+        record_rejection(&broker.shared, RejectionCategory::ExactCommand);
+        assert_eq!(
+            verify_request(
+                &broker.shared,
+                std::process::id(),
+                &request(hook_input(
+                    crate::compatibility::verification_probe_command(),
+                    true,
+                )),
+                &WinProcess,
+                sid_matches,
+            ),
+            Err(RejectionCategory::Schema)
+        );
+        broker.shutdown().expect("shutdown broker");
+        let summary = audit::hook_diagnostic_summary(&audit_path).expect("diagnostics");
+        assert!(summary.contains("first_broker_rejection=exact_command"));
+        assert!(summary.contains("exact_command_diagnostics=1"));
+        assert!(summary.contains("expected_len="));
+        assert!(summary.contains("actual_len="));
+        assert!(summary.contains("leading_ws=0"));
+        assert!(summary.contains("trailing_ws=1"));
+        assert!(!summary.contains(crate::compatibility::verification_probe_command()));
+        session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn broker_round_trip_records_valid_allow_and_cwd_rejection_category() {
+        let evidence = tempfile::TempDir::new().expect("evidence directory");
+        let audit_path = evidence.path().join("audit.log");
+        audit::initialize(&audit_path).expect("audit");
+        let session = Session::create().expect("session");
+        let broker = Broker::start(
+            &session,
+            BrokerConfig {
+                codex_version: "0.152.1".into(),
+                expected_cwd: std::env::current_dir().expect("cwd"),
+                expected_command: None,
+                expected_tool_name: None,
+                audit_path: Some(audit_path.clone()),
+            },
+        )
+        .expect("broker");
+        broker
+            .set_codex_identity(
+                process::current_process_identity(std::process::id()).expect("identity"),
+            )
+            .expect("identity");
+        let request = |cwd: PathBuf| {
+            let hook_input = protocol::parse(
+                serde_json::json!({
+                    "session_id": "session",
+                    "cwd": cwd,
+                    "hook_event_name": "PermissionRequest",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "printf synthetic"},
+                })
+                .to_string()
+                .as_bytes(),
+            )
+            .expect("hook input");
+            let envelope = serde_json::json!({
+                "protocol_version": BROKER_PROTOCOL_VERSION,
+                "message_type": "permission_request",
+                "session_secret": session.secret(),
+                "hook_input": hook_input,
+            });
+            let handle = connect_client(
+                &encode_wide(OsStr::new(session.pipe_name())),
+                Instant::now() + CONNECTION_TIMEOUT,
+            )
+            .expect("client");
+            let deadline = Instant::now() + CONNECTION_TIMEOUT;
+            write_frame_until(
+                handle,
+                &serde_json::to_vec(&envelope).expect("request serialization"),
+                MAX_BROKER_MESSAGE_BYTES,
+                deadline,
+                None,
+            )
+            .expect("request");
+            let response = read_frame_until(handle, MAX_BROKER_RESPONSE_BYTES, deadline, None)
+                .expect("response");
+            let decision = parse_response(&response).expect("decision");
+            write_frame_until(handle, RESPONSE_ACK, RESPONSE_ACK.len(), deadline, None)
+                .expect("ack");
+            close_handle(handle);
+            decision
+        };
+
+        assert!(request(std::env::current_dir().expect("cwd")));
+        assert!(!request(PathBuf::from(r"C:\Windows")));
+        broker.shutdown().expect("shutdown broker");
+        let summary = audit::hook_diagnostic_summary(&audit_path).expect("diagnostics");
+        assert!(summary.contains("first_broker_rejection=cwd"));
+        assert!(summary.contains("cwd=1"));
         session.cleanup().expect("cleanup session");
     }
 }

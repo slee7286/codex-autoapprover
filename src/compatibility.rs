@@ -6,6 +6,7 @@
 pub const LOCAL_VERIFICATION_TARGET: &str = "0.153.0";
 pub const PREVIOUS_LOCAL_VERIFIED_VERSION: &str = "0.151.0";
 pub const WINDOWS_VERIFICATION_TARGET: &str = "0.152.1";
+pub const WINDOWS_VERIFIED_VERSION: &str = "0.153.2";
 pub const LINUX_ADAPTER_BASELINE: &str = "0.153.0";
 pub const WINDOWS_ADAPTER_BASELINE: &str = "0.152.1";
 pub const LINUX_REQUESTED_EXPERIMENTAL_TARGET: &str = "0.153.4";
@@ -183,6 +184,19 @@ pub const COMPATIBILITY_REGISTRY: &[CompatibilityEntry] = &[
         verification_method: VerificationMethod::IsolatedLiveEndToEndTest,
         autoapprover_release: AUTOAPPROVER_RELEASE,
         evidence_summary: "Candidate only: native Windows Codex CLI 0.152.1 local launcher path pending isolated live verification and manual evidence review.",
+    },
+    CompatibilityEntry {
+        codex_version: WINDOWS_VERIFIED_VERSION,
+        operating_system: OperatingSystem::Windows,
+        surface: Surface::LocalCliLauncher,
+        hook_event: crate::protocol::PERMISSION_REQUEST_EVENT,
+        hook_protocol: SUPPORTED_HOOK_PROTOCOL,
+        observed_tool_type: ObservedToolType::Bash,
+        response_behavior: ResponseBehavior::OneRequestAllow,
+        verification_status: VerificationStatus::Verified,
+        verification_method: VerificationMethod::IsolatedLiveEndToEndTest,
+        autoapprover_release: AUTOAPPROVER_RELEASE,
+        evidence_summary: "User-supplied native Windows live verification: Codex CLI 0.153.2, one executable hook entry, one validated PermissionRequest, one exact curl.exe command match, one broker allow with acknowledged response, one structured allow emission, HTTP 200, no observed manual approval prompt, clean temporary repository before and after, complete cleanup, and verifier exit 0. Evidence and tested uncommitted implementation hashes are recorded in docs/compatibility.md.",
     },
     CompatibilityEntry {
         codex_version: LINUX_REQUESTED_EXPERIMENTAL_TARGET,
@@ -591,7 +605,7 @@ mod tests {
 
     #[test]
     fn registry_preserves_verified_entries_and_requested_experimental_targets() {
-        assert_eq!(COMPATIBILITY_REGISTRY.len(), 5);
+        assert_eq!(COMPATIBILITY_REGISTRY.len(), 6);
         assert!(verified_hook_support_for(
             "0.151.0",
             OperatingSystem::Linux,
@@ -603,6 +617,16 @@ mod tests {
             OperatingSystem::Linux,
             Surface::LocalCliLauncher,
             SUPPORTED_HOOK_PROTOCOL
+        ));
+        assert!(verified_hook_support_for(
+            "0.153.2",
+            OperatingSystem::Windows,
+            Surface::LocalCliLauncher,
+            SUPPORTED_HOOK_PROTOCOL
+        ));
+        assert!(matches!(
+            version_eligibility(request("0.153.2", OperatingSystem::Windows), true),
+            VersionEligibility::Verified(entry) if entry.codex_version == "0.153.2"
         ));
         assert_eq!(
             version_eligibility(request("0.153.0", OperatingSystem::Linux), false),

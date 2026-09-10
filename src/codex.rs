@@ -414,7 +414,16 @@ pub fn build_codex_command(installation: &Installation) -> Command {
 fn absolute_shell_quote(path: &Path) -> String {
     let absolute =
         normalize_windows_path(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
-    shell_quote(&absolute)
+    #[cfg(windows)]
+    {
+        // Codex 0.153.2 forwards commandWindows to cmd.exe with a normal
+        // Command::arg, so embedded quotes arrive as literal \" characters.
+        windows_command_path(&absolute)
+    }
+    #[cfg(not(windows))]
+    {
+        shell_quote(&absolute)
+    }
 }
 
 #[cfg(windows)]
@@ -434,12 +443,63 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
     path
 }
 
+#[cfg(not(windows))]
 fn shell_quote(path: &Path) -> String {
     let value = path.to_string_lossy();
-    if cfg!(windows) {
-        format!("\"{}\"", value.replace('"', "\\\""))
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(windows)]
+fn windows_command_path(path: &Path) -> String {
+    let path = if windows_shell_safe(path) {
+        path.to_path_buf()
     } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
+        short_windows_path(path).unwrap_or_else(|| path.to_path_buf())
+    };
+    let value = path.to_string_lossy();
+    if windows_shell_safe(&path) {
+        value.into_owned()
+    } else {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    }
+}
+
+#[cfg(windows)]
+fn windows_shell_safe(path: &Path) -> bool {
+    !path.to_string_lossy().chars().any(|character| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '"' | '&' | '|' | '<' | '>' | '^' | '(' | ')' | '%' | '!'
+            )
+    })
+}
+
+#[cfg(windows)]
+fn short_windows_path(path: &Path) -> Option<PathBuf> {
+    use std::{
+        ffi::OsString,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+    };
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let input: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut buffer = vec![0_u16; 260];
+    loop {
+        let length =
+            unsafe { GetShortPathNameW(input.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) }
+                as usize;
+        if length == 0 {
+            return None;
+        }
+        if length < buffer.len() {
+            return Some(PathBuf::from(OsString::from_wide(&buffer[..length])));
+        }
+        buffer.resize(length.saturating_add(1), 0);
     }
 }
 
@@ -505,6 +565,17 @@ mod tests {
         assert!(
             snippet.contains("\\\"C:\\\\space & unicode-测试\\\\codex-autoapprover.exe\\\" hook")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_command_leaves_safe_paths_unquoted_for_legacy_cmd_invocation() {
+        let snippet =
+            hook_config_snippet(std::path::Path::new("C:\\tools\\codex-autoapprover.exe"));
+        assert!(
+            snippet.contains("commandWindows = \"C:\\\\tools\\\\codex-autoapprover.exe hook\"")
+        );
+        assert!(!snippet.contains("\\\"C:\\\\tools"));
     }
 
     #[cfg(windows)]

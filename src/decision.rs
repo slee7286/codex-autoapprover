@@ -13,6 +13,7 @@ pub enum DeclineReason {
     WorkingDirectoryMismatch,
     UnsupportedCodexCompatibility,
     UnsupportedToolType,
+    UnsupportedRequestSchema,
     UnexpectedVerificationAction,
 }
 
@@ -68,7 +69,7 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         .as_ref()
         .and_then(serde_json::Value::as_object)
     else {
-        return Decision::Decline(DeclineReason::UnsupportedToolType);
+        return Decision::Decline(DeclineReason::UnsupportedRequestSchema);
     };
     let command_is_string = tool_input
         .get("command")
@@ -78,21 +79,63 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         (key == "command" && value.is_string()) || (key == "description" && value.is_string())
     });
     if !command_is_string || !nested_fields_are_supported {
-        return Decision::Decline(DeclineReason::UnsupportedToolType);
+        return Decision::Decline(DeclineReason::UnsupportedRequestSchema);
     }
 
-    if input.cwd.as_deref() != Some(context.expected_cwd) {
+    if !cwd_matches(
+        input.cwd.as_deref().unwrap_or_default(),
+        context.expected_cwd,
+    ) {
         return Decision::Decline(DeclineReason::WorkingDirectoryMismatch);
     }
 
-    if let Some(expected_command) = context.expected_command {
-        let expected_input = serde_json::json!({"command": expected_command});
-        if input.tool_input.as_ref() != Some(&expected_input) {
-            return Decision::Decline(DeclineReason::UnexpectedVerificationAction);
-        }
+    if let Some(expected_command) = context.expected_command
+        && tool_input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_command)
+    {
+        return Decision::Decline(DeclineReason::UnexpectedVerificationAction);
     }
 
     Decision::Allow
+}
+
+#[cfg(windows)]
+fn cwd_matches(actual: &str, expected: &str) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if !std::path::Path::new(actual).is_absolute() || !std::path::Path::new(expected).is_absolute()
+    {
+        return false;
+    }
+    let actual = windows_path_key(actual);
+    let expected = windows_path_key(expected);
+    actual.eq_ignore_ascii_case(&expected)
+}
+
+#[cfg(not(windows))]
+fn cwd_matches(actual: &str, expected: &str) -> bool {
+    actual == expected
+}
+
+#[cfg(windows)]
+fn windows_path_key(path: &str) -> String {
+    let value = path.replace('/', "\\");
+    let value = if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        value
+    };
+    let trimmed = value.trim_end_matches(['\\', '/']);
+    if trimmed.len() == 2 && trimmed.as_bytes()[1] == b':' {
+        format!(r"{trimmed}\")
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +199,32 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn equivalent_windows_cwd_spelling_is_allowed_but_other_path_is_rejected() {
+        let expected = windows_path_key(
+            std::env::current_dir()
+                .expect("current cwd")
+                .to_str()
+                .expect("cwd is Unicode"),
+        );
+        let test_context = DecisionContext {
+            expected_cwd: &expected,
+            ..context()
+        };
+        let alternate = expected.replace('\\', "/");
+        let mut equivalent = input();
+        equivalent.cwd = Some(alternate);
+        assert_eq!(decide(&equivalent, test_context), Decision::Allow);
+
+        let mut different = input();
+        different.cwd = Some(format!(r"{expected}\different"));
+        assert_eq!(
+            decide(&different, test_context),
+            Decision::Decline(DeclineReason::WorkingDirectoryMismatch)
+        );
+    }
+
     #[test]
     fn accepts_only_documented_optional_bash_input_fields() {
         let mut optional = input();
@@ -172,7 +241,7 @@ mod tests {
         }));
         assert_eq!(
             decide(&unknown, context()),
-            Decision::Decline(DeclineReason::UnsupportedToolType)
+            Decision::Decline(DeclineReason::UnsupportedRequestSchema)
         );
     }
 
@@ -192,6 +261,24 @@ mod tests {
         let exact = input_with_command(expected_command);
         assert_eq!(decide(&exact, verification_context), Decision::Allow);
 
+        let exact_with_description = input_with_tool_input(serde_json::json!({
+            "command": expected_command,
+            "description": "network-access example.com",
+        }));
+        assert_eq!(
+            decide(&exact_with_description, verification_context),
+            Decision::Allow
+        );
+
+        let exact_with_unknown_field = input_with_tool_input(serde_json::json!({
+            "command": expected_command,
+            "unknown": "rejected",
+        }));
+        assert_eq!(
+            decide(&exact_with_unknown_field, verification_context),
+            Decision::Decline(DeclineReason::UnsupportedRequestSchema)
+        );
+
         let alternate_executable = if cfg!(windows) {
             "curl -I https://example.com"
         } else {
@@ -199,8 +286,10 @@ mod tests {
         };
         for command in [
             format!("{expected_command} "),
+            format!("{expected_command}\r\n"),
             format!("{expected_command} --silent"),
             format!("{expected_command} && echo extra"),
+            format!("cmd.exe /c {expected_command}"),
             alternate_executable.to_string(),
             "Invoke-WebRequest -Uri https://example.com".to_string(),
         ] {
@@ -214,13 +303,17 @@ mod tests {
     }
 
     fn input_with_command(command: &str) -> HookInput {
+        input_with_tool_input(serde_json::json!({"command": command}))
+    }
+
+    fn input_with_tool_input(tool_input: serde_json::Value) -> HookInput {
         protocol::parse(
             serde_json::to_vec(&serde_json::json!({
                 "session_id": "sess",
                 "cwd": "/tmp/work",
                 "hook_event_name": "PermissionRequest",
                 "tool_name": "Bash",
-                "tool_input": {"command": command},
+                "tool_input": tool_input,
             }))
             .expect("serialize verification fixture")
             .as_slice(),
