@@ -115,11 +115,6 @@ fn invoke_generated_hook(arguments: &[String]) {
     process::exit(output.status.code().unwrap_or(1));
 }
 
-#[cfg(not(windows))]
-fn invoke_generated_hook(_arguments: &[String]) {
-    panic!("generated Windows hook fixture used on a non-Windows target");
-}
-
 #[cfg(windows)]
 fn decode_command_windows(config: &str) -> String {
     let marker = "commandWindows=\"";

@@ -203,11 +203,13 @@ pub fn hook_stage_at(path: &Path, category: &str) -> io::Result<()> {
     append_private(path, line.as_bytes())
 }
 
+#[cfg(any(test, windows))]
 pub fn hook_rejection_at(path: &Path, category: RejectionCategory) -> io::Result<()> {
     let line = format!("hook rejection={}\n", category.as_str());
     append_private(path, line.as_bytes())
 }
 
+#[cfg(any(test, windows))]
 pub fn hook_exact_command_mismatch_at(
     path: &Path,
     expected: &str,
@@ -412,6 +414,7 @@ fn command_hash(tool_input: Option<&serde_json::Value>) -> String {
         .unwrap_or_else(|| "none".into())
 }
 
+#[cfg(any(test, windows))]
 fn recognized_command_wrapper(command: &str) -> &'static str {
     [
         ("cmd /c ", "cmd"),
