@@ -3,65 +3,36 @@ use std::{env, path::Path, process::Command};
 use anyhow::{Context, Result};
 
 pub const SESSION_TOKEN_ENV: &str = "CODEX_AUTOAPPROVER_SESSION_TOKEN";
-pub const EXPECTED_CWD_ENV: &str = "CODEX_AUTOAPPROVER_EXPECTED_CWD";
+pub const SESSION_SOCKET_ENV: &str = "CODEX_AUTOAPPROVER_SESSION_SOCKET";
 pub const PROTOCOL_ENV: &str = "CODEX_AUTOAPPROVER_HOOK_PROTOCOL";
-pub const CODEX_VERSION_ENV: &str = "CODEX_AUTOAPPROVER_CODEX_VERSION";
-pub const SURFACE_ENV: &str = "CODEX_AUTOAPPROVER_SURFACE";
+#[allow(dead_code)]
 pub const AUDIT_PATH_ENV: &str = "CODEX_AUTOAPPROVER_AUDIT_PATH";
-pub const VERIFICATION_COMMAND_ENV: &str = "CODEX_AUTOAPPROVER_VERIFICATION_COMMAND";
 pub const PROTOCOL_VERSION: &str = "permission-request-v1";
 
 const TOKEN_BYTES: usize = 32;
 
-pub fn arm_child(command: &mut Command, cwd: &Path, codex_version: &str) -> Result<()> {
+pub fn new_secret() -> Result<String> {
     let mut bytes = [0_u8; TOKEN_BYTES];
     getrandom::fill(&mut bytes).context("generate per-session arming token")?;
+    Ok(hex(&bytes))
+}
 
-    command.env(SESSION_TOKEN_ENV, hex(&bytes));
-    command.env(EXPECTED_CWD_ENV, cwd);
+pub fn arm_child(command: &mut Command, socket: &Path, secret: &str) -> Result<()> {
+    if !valid_token(Some(secret)) {
+        anyhow::bail!("generated session secret has an invalid shape")
+    }
+    command.env(SESSION_TOKEN_ENV, secret);
+    command.env(SESSION_SOCKET_ENV, socket);
     command.env(PROTOCOL_ENV, PROTOCOL_VERSION);
-    command.env(CODEX_VERSION_ENV, codex_version);
-    command.env(
-        SURFACE_ENV,
-        crate::compatibility::Surface::LocalCliLauncher.as_str(),
-    );
-    Ok(())
-}
-
-pub fn arm_child_with_audit(
-    command: &mut Command,
-    cwd: &Path,
-    codex_version: &str,
-    audit_path: &Path,
-) -> Result<()> {
-    arm_child(command, cwd, codex_version)?;
-    command.env(AUDIT_PATH_ENV, audit_path);
-    Ok(())
-}
-
-pub fn arm_child_for_verification(
-    command: &mut Command,
-    cwd: &Path,
-    codex_version: &str,
-    audit_path: &Path,
-    exact_command: &str,
-) -> Result<()> {
-    arm_child_with_audit(command, cwd, codex_version, audit_path)?;
-    command.env(VERIFICATION_COMMAND_ENV, exact_command);
     Ok(())
 }
 
 pub fn is_armed() -> bool {
     valid_token(env::var(SESSION_TOKEN_ENV).ok().as_deref())
         && env::var(PROTOCOL_ENV).ok().as_deref() == Some(PROTOCOL_VERSION)
-        && env::var(EXPECTED_CWD_ENV)
+        && env::var(SESSION_SOCKET_ENV)
             .map(|cwd| !cwd.is_empty())
             .unwrap_or(false)
-        && env::var(CODEX_VERSION_ENV)
-            .ok()
-            .is_some_and(|version| crate::compatibility::verified_hook_support(&version))
-        && env::var(SURFACE_ENV).ok().as_deref()
-            == Some(crate::compatibility::Surface::LocalCliLauncher.as_str())
 }
 
 pub fn valid_token(token: Option<&str>) -> bool {
@@ -85,9 +56,10 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Stdio;
-
     use super::*;
+
+    #[cfg(unix)]
+    use std::process::Stdio;
 
     #[test]
     fn tokens_must_be_full_lowercase_hex() {
@@ -101,20 +73,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn arming_is_child_only_and_token_is_not_printed() {
+        let secret = new_secret().expect("secret");
         let mut command = Command::new("sh");
         command
             .arg("-c")
-            .arg("test ${#CODEX_AUTOAPPROVER_SESSION_TOKEN} -eq 64 && test -n \"$CODEX_AUTOAPPROVER_EXPECTED_CWD\"")
+            .arg("test ${#CODEX_AUTOAPPROVER_SESSION_TOKEN} -eq 64 && test -n \"$CODEX_AUTOAPPROVER_SESSION_SOCKET\"")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        arm_child(
-            &mut command,
-            Path::new("/tmp/codex-hook-fixture"),
-            "0.151.0",
-        )
-        .expect("arm child");
+        arm_child(&mut command, Path::new("/tmp/codex-hook-fixture"), &secret).expect("arm child");
         assert!(std::env::var(SESSION_TOKEN_ENV).is_err());
-        assert!(std::env::var(CODEX_VERSION_ENV).is_err());
         assert!(command.status().expect("run child").success());
     }
 
@@ -142,8 +109,18 @@ mod tests {
             .env("TOKEN_FILE", &second_path)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        arm_child(&mut first, directory.path(), "0.151.0").expect("arm first child");
-        arm_child(&mut second, directory.path(), "0.151.0").expect("arm second child");
+        arm_child(
+            &mut first,
+            directory.path(),
+            &new_secret().expect("first secret"),
+        )
+        .expect("arm first child");
+        arm_child(
+            &mut second,
+            directory.path(),
+            &new_secret().expect("second secret"),
+        )
+        .expect("arm second child");
         assert!(first.status().expect("run first child").success());
         assert!(second.status().expect("run second child").success());
         assert_ne!(

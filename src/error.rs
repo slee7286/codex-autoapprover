@@ -8,4 +8,6 @@ pub enum ProtocolError {
     NotAnObject,
     #[error("hook input is malformed JSON")]
     InvalidJson(#[from] serde_json::Error),
+    #[error("hook input contains trailing data")]
+    TrailingData,
 }

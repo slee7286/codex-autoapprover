@@ -3,26 +3,24 @@ use std::{
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
-use signal_hook::{
-    consts::{SIGINT, SIGTERM},
-    flag,
-};
 use tempfile::TempDir;
 
-use crate::{arming, audit, cli::RunArgs, codex, compatibility};
+use crate::{
+    arming, audit,
+    broker::{self, Broker, BrokerConfig, Session},
+    cli::{COMPATIBILITY_ENV, CompatibilityMode, RunArgs},
+    codex, compatibility, interrupt, process,
+};
 
-const VERIFICATION_COMMAND: &str = "curl -I https://example.com";
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const VERIFICATION_FIXTURE: &str = "codex-autoapprover-fixture.txt";
+const VERIFICATION_HOOKS_DIR: &str = ".codex-autoapprover-hooks";
 const VERIFICATION_COMMIT_MESSAGE: &str = "verification baseline";
 const VERIFICATION_GIT_NAME: &str = "codex-autoapprover verification";
 const VERIFICATION_GIT_EMAIL: &str = "codex-autoapprover-verification@localhost";
@@ -31,33 +29,194 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     let installation = codex::inspect()?;
     let launcher = env::current_exe().context("resolve current launcher executable")?;
     let cwd = env::current_dir().context("read current working directory")?;
-    let hook_supported = compatibility::verified_hook_support_for(
-        &installation.version,
-        compatibility::OperatingSystem::current(),
-        compatibility::Surface::LocalCliLauncher,
-        arming::PROTOCOL_VERSION,
+    let compatibility_mode = resolve_compatibility_mode(args)?;
+    let request = compatibility::CompatibilityRequest {
+        codex_version: &installation.version,
+        operating_system: compatibility::OperatingSystem::current(),
+        surface: compatibility::Surface::LocalCliLauncher,
+        hook_protocol: arming::PROTOCOL_VERSION,
+    };
+    let eligibility = compatibility::version_eligibility(
+        request,
+        compatibility_mode == CompatibilityMode::Strict,
     );
-
-    let mut command = Command::new(&installation.path);
-    command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    if hook_supported {
-        command.arg("-c").arg(codex::hook_command_value(&launcher));
-        arming::arm_child(&mut command, &cwd, &installation.version)?;
-        eprintln!(
-            "codex-autoapprover: automatic one-request approvals ARMED for this Codex child; press Ctrl-C to stop"
-        );
-    } else {
-        eprintln!(
-            "codex-autoapprover: Codex {} has no locally verified PermissionRequest compatibility; automatic approval is DISABLED",
-            installation.version
+    let is_experimental = matches!(
+        eligibility,
+        compatibility::VersionEligibility::Experimental { .. }
+    );
+    if !eligibility.is_eligible() {
+        return launch_unarmed(
+            &installation,
+            args,
+            &format!(
+                "{}; compatibility policy is {}",
+                eligibility.status(),
+                compatibility_mode.as_str()
+            ),
         );
     }
 
-    command.args(&args.codex_args);
+    let capability = codex::detect_hook_capability(&installation, &launcher);
+    if !matches!(
+        capability,
+        codex::HookCapability::ReviewedLiveEvidence
+            | codex::HookCapability::SupportedByConfigurationProbe
+    ) {
+        let reason = capability
+            .reason()
+            .unwrap_or("the hook capability check did not pass");
+        return launch_unarmed(
+            &installation,
+            args,
+            &format!(
+                "eligible version, but hook/configuration capability is {} ({reason})",
+                capability.as_str()
+            ),
+        );
+    }
+
+    let launch_version = match codex::version(&installation.path) {
+        Ok(version) => version,
+        Err(error) => {
+            return launch_unarmed(
+                &installation,
+                args,
+                &format!("Codex version recheck was inconclusive ({error:#})"),
+            );
+        }
+    };
+    if launch_version != installation.version {
+        return launch_unarmed(
+            &installation,
+            args,
+            &format!(
+                "Codex version changed between capability check and launch (detected {}, found {})",
+                installation.version, launch_version
+            ),
+        );
+    }
+
+    if is_experimental {
+        eprintln!(
+            "Experimental automatic approvals: Codex {} on {} has not been live-verified. Eligible permission requests will be approved automatically; incompatible requests fall back to normal approval.",
+            installation.version,
+            compatibility::OperatingSystem::current().as_str()
+        );
+        eprintln!(
+            "codex-autoapprover: enabling automatic approval on an unverified Codex version carries compatibility and command-execution risk; runtime validation remains fail-closed."
+        );
+    }
+
+    let session = Session::create()?;
+    let broker = Broker::start(
+        &session,
+        BrokerConfig {
+            codex_version: installation.version.clone(),
+            expected_cwd: cwd,
+            expected_command: None,
+            expected_tool_name: None,
+            audit_path: None,
+        },
+    )?;
+    let mut command = codex::build_codex_command(&installation);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .arg("-c")
+        .arg(codex::hook_command_value(&launcher))
+        .args(&args.codex_args);
+    if let Err(error) = session.arm_child(&mut command) {
+        let _ = broker.shutdown();
+        let cleanup = session.cleanup();
+        return Err(with_cleanup_error(error, cleanup));
+    }
+    eprintln!(
+        "codex-autoapprover: automatic one-request approvals ARMED for this Codex child; press Ctrl-C to stop"
+    );
+    let mut child = match command
+        .spawn()
+        .with_context(|| format!("launch official Codex at {}", installation.path.display()))
+    {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = broker.shutdown();
+            let cleanup = session.cleanup();
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    // Install the parent-only observer after fork/exec so the child retains
+    // Codex's default terminal signal dispositions.
+    let interrupted = match interrupt::register_interrupt_flag() {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = broker.shutdown();
+            let cleanup = session.cleanup();
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let identity = match process::current_process_identity(child.id()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            broker.stop_accepting();
+            let _ = broker.shutdown();
+            let cleanup = session.cleanup();
+            return Err(with_cleanup_error(
+                anyhow::anyhow!("record exact Codex child process identity: {error}"),
+                cleanup,
+            ));
+        }
+    };
+    if let Err(error) = broker.set_codex_identity(identity) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = broker.shutdown();
+        let cleanup = session.cleanup();
+        return Err(with_cleanup_error(error, cleanup));
+    }
+    let status = wait_for_bound_child(&mut child, &broker, &interrupted.flag)
+        .with_context(|| format!("wait for official Codex at {}", installation.path.display()));
+    let broker_result = broker.shutdown();
+    let cleanup = session.cleanup();
+    let status = status.and_then(|status| {
+        broker_result.context("stop decision broker")?;
+        cleanup?;
+        Ok(status)
+    })?;
+    Ok(codex::status_code(status))
+}
+
+fn resolve_compatibility_mode(args: &RunArgs) -> Result<CompatibilityMode> {
+    if let Some(mode) = args.compatibility {
+        return Ok(mode);
+    }
+    match env::var(COMPATIBILITY_ENV) {
+        Ok(value) if value.eq_ignore_ascii_case("automatic") => Ok(CompatibilityMode::Automatic),
+        Ok(value) if value.eq_ignore_ascii_case("strict") => Ok(CompatibilityMode::Strict),
+        Ok(value) => {
+            bail!("invalid {COMPATIBILITY_ENV} value `{value}`; expected `automatic` or `strict`")
+        }
+        Err(env::VarError::NotPresent) => Ok(CompatibilityMode::Automatic),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("{COMPATIBILITY_ENV} is not valid Unicode; refusing to arm")
+        }
+    }
+}
+
+fn launch_unarmed(installation: &codex::Installation, args: &RunArgs, reason: &str) -> Result<i32> {
+    eprintln!(
+        "codex-autoapprover: automatic approval is DISABLED; running Codex normally ({reason})"
+    );
+    let mut command = codex::build_codex_command(installation);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .args(&args.codex_args);
     let status = command
         .status()
         .with_context(|| format!("launch official Codex at {}", installation.path.display()))?;
@@ -80,6 +239,14 @@ pub fn diagnose() -> Result<i32> {
         "current process armed: {}",
         if arming::is_armed() { "yes" } else { "no" }
     );
+    let configured_mode = resolve_compatibility_mode(&RunArgs {
+        compatibility: None,
+        codex_args: Vec::new(),
+    });
+    match &configured_mode {
+        Ok(mode) => println!("compatibility policy: {}", mode.as_str()),
+        Err(error) => println!("compatibility policy: invalid ({error})"),
+    }
     println!(
         "hook configuration installed: not checked; this milestone never installs live configuration"
     );
@@ -88,6 +255,55 @@ pub fn diagnose() -> Result<i32> {
         Ok(installation) => {
             println!("resolved codex path: {}", installation.path.display());
             println!("installed Codex version: {}", installation.version);
+            println!(
+                "version probe: {}",
+                if installation.version_diagnostic.is_some() {
+                    "inconclusive; version is treated as unknown"
+                } else {
+                    "recognized stable version"
+                }
+            );
+            let request = compatibility::CompatibilityRequest {
+                codex_version: &installation.version,
+                operating_system: compatibility::OperatingSystem::current(),
+                surface: compatibility::Surface::LocalCliLauncher,
+                hook_protocol: arming::PROTOCOL_VERSION,
+            };
+            let strict = configured_mode
+                .as_ref()
+                .is_ok_and(|mode| *mode == CompatibilityMode::Strict);
+            let eligibility = compatibility::version_eligibility(request, strict);
+            println!("version eligibility: {}", eligibility.status());
+            println!(
+                "reviewed live-verification status: {}",
+                compatibility::status_for_version(&installation.version)
+            );
+            println!(
+                "runtime request schema (Bash): {}",
+                compatibility::runtime_request_schema(
+                    &installation.version,
+                    request.operating_system,
+                    request.surface,
+                    request.hook_protocol,
+                    "Bash"
+                )
+                .as_str()
+            );
+            if eligibility.is_eligible() {
+                let launcher = env::current_exe().context("resolve current launcher executable")?;
+                let capability = codex::detect_hook_capability(&installation, &launcher);
+                println!(
+                    "detected hook/configuration capability: {}",
+                    capability.as_str()
+                );
+                if let Some(reason) = capability.reason() {
+                    println!("capability detail: {reason}");
+                }
+            } else {
+                println!(
+                    "detected hook/configuration capability: not checked (version is not eligible)"
+                );
+            }
             println!(
                 "PermissionRequest compatibility: {}",
                 compatibility::status_for_version(&installation.version)
@@ -123,32 +339,38 @@ pub fn print_hook_config() -> Result<i32> {
 }
 
 pub fn verify_local_hook() -> Result<i32> {
-    if !cfg!(target_os = "linux") {
-        bail!("verify-local-hook currently requires the verified Linux development path")
+    if compatibility::is_wsl_runtime() {
+        bail!("verify-local-hook requires native Windows, not WSL")
+    }
+    if !(cfg!(target_os = "linux") || cfg!(windows)) {
+        bail!("verify-local-hook is limited to eligible native Linux/Windows local-CLI targets")
+    }
+    if cfg!(windows) && !compatibility::is_native_windows_runtime() {
+        bail!("verify-local-hook requires native Windows, not WSL or another hosted runtime")
     }
     if !io::stdin().is_terminal() {
         bail!("verify-local-hook requires an interactive terminal; no live test was started")
     }
 
     let installation = codex::inspect()?;
-    let expected_version = installation.version.clone();
-    if expected_version.is_empty() {
-        bail!("the installed Codex version is empty; refusing verification")
-    }
-    if expected_version != compatibility::LOCAL_VERIFICATION_TARGET {
+    let verification_target = compatibility::resolved_verification_target(&installation.version)
+        .context("the installed Codex version is not an eligible verification target")?;
+    if installation.version != verification_target.version {
         bail!(
-            "verify-local-hook is limited to Codex {}; found {}; refusing verification",
-            compatibility::LOCAL_VERIFICATION_TARGET,
-            expected_version
+            "verify-local-hook target changed while resolving the installed version; refusing verification"
         )
     }
+    let expected_version = verification_target.version.clone();
 
     eprintln!();
     eprintln!("!!! ISOLATED LOCAL HOOK VERIFICATION !!!");
     eprintln!("This starts the official Codex executable with a child-local hook override.");
     eprintln!("Automatic approval is armed only for this verification child.");
     eprintln!("No persistent Codex configuration will be written.");
-    eprintln!("The only authorized action is: {VERIFICATION_COMMAND}");
+    eprintln!(
+        "The only authorized action is: {}",
+        verification_target.command
+    );
     eprintln!(
         "The test prompt forbids all other commands, file changes, Git changes, installs, and full access."
     );
@@ -158,53 +380,85 @@ pub fn verify_local_hook() -> Result<i32> {
     eprintln!();
     eprint!(
         "Type exactly `{} ` followed by Enter to continue: ",
-        confirmation_phrase(&expected_version)
+        confirmation_phrase(&verification_target)
     );
     io::stderr()
         .flush()
         .context("flush verification confirmation prompt")?;
 
-    let interrupted = register_interrupt_flag()?;
-    confirm_with_timeout(&expected_version, &interrupted)?;
+    let confirmation_interrupt = interrupt::register_interrupt_flag()?;
+    confirm_with_timeout(&verification_target, &confirmation_interrupt.flag)?;
 
     let current_version = codex::version(&installation.path)?;
-    if !compatibility::verification_version_matches(&current_version, &expected_version) {
+    if !compatibility::verification_version_matches(&current_version, &verification_target) {
         bail!(
             "Codex version changed during verification (expected {expected_version}, found {current_version}); refusing to start"
         )
     }
+    // Do not let the confirmation handler be inherited by the Codex child.
+    drop(confirmation_interrupt);
 
     let launcher = env::current_exe().context("resolve current launcher executable")?;
     let state = VerificationState::new()?;
     let repo_path = state.repository_path.clone();
     let audit_path = state.audit_path.clone();
-    let mut command = Command::new(&installation.path);
+    let session = match Session::create() {
+        Ok(session) => session,
+        Err(error) => {
+            let cleanup = state.cleanup();
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let broker = match Broker::start(
+        &session,
+        BrokerConfig {
+            codex_version: expected_version.clone(),
+            expected_cwd: repo_path.clone(),
+            expected_command: Some(verification_target.command.into()),
+            expected_tool_name: Some(verification_target.observed_tool_type.into()),
+            audit_path: Some(audit_path.clone()),
+        },
+    ) {
+        Ok(broker) => broker,
+        Err(error) => {
+            let session_cleanup = session.cleanup();
+            let state_cleanup = state.cleanup();
+            return Err(with_cleanup_error(
+                error,
+                combine_cleanup(session_cleanup, state_cleanup),
+            ));
+        }
+    };
+    let mut command = codex::build_codex_command(&installation);
     command
         .args(["-s", "workspace-write", "-a", "on-request"])
         .arg("--dangerously-bypass-hook-trust")
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
-        .arg(verification_prompt())
+        .arg(verification_prompt(&verification_target))
         .current_dir(&repo_path)
+        .env(arming::AUDIT_PATH_ENV, &audit_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if let Err(error) = arming::arm_child_for_verification(
-        &mut command,
-        &repo_path,
-        &expected_version,
-        &audit_path,
-        VERIFICATION_COMMAND,
-    ) {
-        let cleanup = state.cleanup();
-        return Err(with_cleanup_error(error, cleanup));
+    if let Err(error) = session.arm_child(&mut command) {
+        let broker_cleanup = broker.shutdown();
+        let session_cleanup = session.cleanup();
+        let state_cleanup = state.cleanup();
+        return Err(with_cleanup_error(
+            error,
+            combine_cleanup(
+                combine_cleanup(broker_cleanup, session_cleanup),
+                state_cleanup,
+            ),
+        ));
     }
 
     let baseline_status = match temporary_repository_status(&repo_path) {
         Ok(status) => status,
         Err(error) => {
             let message = error.context("read clean baseline status before Codex launch");
-            let cleanup = state.cleanup();
+            let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(message, cleanup));
         }
     };
@@ -220,14 +474,14 @@ pub fn verify_local_hook() -> Result<i32> {
         );
         let message =
             anyhow::anyhow!("temporary repository baseline was dirty; no Codex child was launched");
-        let cleanup = state.cleanup();
+        let cleanup = cleanup_bound_verification(state, broker, session);
         return Err(with_cleanup_error(message, cleanup));
     }
 
     eprintln!(
         "codex-autoapprover: launching isolated verification child; do not approve any action other than the displayed curl request"
     );
-    let child = match command.spawn().with_context(|| {
+    let mut child = match command.spawn().with_context(|| {
         format!(
             "launch official Codex {} for isolated verification",
             installation.path.display()
@@ -235,24 +489,64 @@ pub fn verify_local_hook() -> Result<i32> {
     }) {
         Ok(child) => child,
         Err(error) => {
-            let cleanup = state.cleanup();
+            let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
-    let status = match wait_for_verification_child(child, &interrupted) {
+    let identity = match process::current_process_identity(child.id()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(
+                anyhow::anyhow!("record exact Codex child process identity: {error}"),
+                cleanup,
+            ));
+        }
+    };
+    if let Err(error) = broker.set_codex_identity(identity) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let cleanup = cleanup_bound_verification(state, broker, session);
+        return Err(with_cleanup_error(error, cleanup));
+    }
+    let interrupted = match interrupt::register_interrupt_flag() {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let status = match wait_for_bound_child(&mut child, &broker, &interrupted.flag) {
         Ok(status) => status,
         Err(error) => {
-            let cleanup = state.cleanup();
+            let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
+    broker.stop_accepting();
+    if let Err(error) = broker.wait_for_idle() {
+        let cleanup = cleanup_bound_verification(state, broker, session);
+        return Err(with_cleanup_error(error, cleanup));
+    }
 
-    let invocation_count = match audit::invocation_count(&audit_path)
-        .context("read temporary hook invocation audit")
+    let entry_count =
+        match audit::hook_entry_count(&audit_path).context("read temporary hook entry audit") {
+            Ok(count) => count,
+            Err(error) => {
+                let cleanup = cleanup_bound_verification(state, broker, session);
+                return Err(with_cleanup_error(error, cleanup));
+            }
+        };
+    let validated_request_count = match audit::validated_request_count(&audit_path)
+        .context("read temporary validated request audit")
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = state.cleanup();
+            let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -261,9 +555,43 @@ pub fn verify_local_hook() -> Result<i32> {
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = state.cleanup();
+            let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
+    };
+    let expected_command_input = serde_json::json!({"command": verification_target.command});
+    let exact_request_count = match audit::exact_request_count(
+        &audit_path,
+        verification_target.observed_tool_type,
+        &expected_command_input,
+    )
+    .context("read exact redacted PermissionRequest evidence")
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let emitted_allow_count = match audit::emitted_allow_count(
+        &audit_path,
+        verification_target.observed_tool_type,
+        &expected_command_input,
+    )
+    .context("read structured allow emission evidence")
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
+    let evidence_counts = VerificationEvidenceCounts {
+        entry_count,
+        validated_request_count,
+        exact_request_count,
+        allow_count,
+        emitted_allow_count,
     };
     let post_status = match temporary_repository_status(&repo_path) {
         Ok(status) => status,
@@ -271,22 +599,50 @@ pub fn verify_local_hook() -> Result<i32> {
             eprintln!("verification evidence: post-run repository status: unavailable");
             eprintln!("verification diagnostics: post-run Git status could not be read");
             let message = error.context("read temporary repository status after Codex exit");
-            let cleanup = state.cleanup();
+            let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(message, cleanup));
         }
     };
     let repository_clean = post_status.is_clean();
+    let hook_diagnostics = match audit::hook_diagnostic_summary(&audit_path)
+        .context("read redacted hook stage diagnostics")
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
 
-    eprintln!("verification evidence: hook invocation count: {invocation_count}");
-    eprintln!("verification evidence: allowed PermissionRequest count: {allow_count}");
     eprintln!(
-        "verification evidence: Codex exit status: {}",
+        "verification evidence: executable hook entry count: {}",
+        evidence_counts.entry_count
+    );
+    eprintln!(
+        "verification evidence: validated PermissionRequest count: {}",
+        evidence_counts.validated_request_count
+    );
+    eprintln!(
+        "verification evidence: exact authorized command match count: {}",
+        evidence_counts.exact_request_count
+    );
+    eprintln!(
+        "verification evidence: allowed PermissionRequest count: {}",
+        evidence_counts.allow_count
+    );
+    eprintln!(
+        "verification evidence: structured allow emission count: {}",
+        evidence_counts.emitted_allow_count
+    );
+    eprintln!(
+        "verification evidence: exact command result via Codex child exit status: {}",
         codex::status_code(status)
     );
     eprintln!(
         "verification evidence: temporary repository clean: {}",
         if repository_clean { "yes" } else { "no" }
     );
+    eprintln!("{hook_diagnostics}");
     if !repository_clean {
         print_repository_diagnostics(
             "changes during Codex child session (post-run porcelain entries)",
@@ -294,7 +650,7 @@ pub fn verify_local_hook() -> Result<i32> {
         );
     }
 
-    let cleanup_result = state.cleanup();
+    let cleanup_result = cleanup_bound_verification(state, broker, session);
     let cleanup_completed = cleanup_result.is_ok();
     eprintln!(
         "verification evidence: temporary state cleanup completed: {}",
@@ -308,18 +664,33 @@ pub fn verify_local_hook() -> Result<i32> {
         "codex-autoapprover: Codex {expected_version} remains production-unsupported until this evidence is reviewed and the exact command result is confirmed."
     );
 
-    if !baseline_clean {
-        bail!("temporary repository baseline was dirty; compatibility was not promoted")
-    }
-    if invocation_count != 1 || allow_count != 1 {
-        bail!(
-            "expected exactly one hook invocation and exactly one allow, recorded {invocation_count} invocation(s) and {allow_count} allow(s); compatibility was not promoted"
-        )
-    }
-    if !repository_clean {
-        bail!("the temporary repository was modified; compatibility was not promoted")
-    }
-    if !status.success() {
+    if !verification_evidence_complete(
+        baseline_clean,
+        &evidence_counts,
+        repository_clean,
+        status.success(),
+    ) {
+        if !baseline_clean {
+            bail!("temporary repository baseline was dirty; compatibility was not promoted")
+        }
+        if evidence_counts.entry_count != 1
+            || evidence_counts.validated_request_count != 1
+            || evidence_counts.exact_request_count != 1
+            || evidence_counts.allow_count != 1
+            || evidence_counts.emitted_allow_count != 1
+        {
+            bail!(
+                "expected exactly one executable hook entry, validated request, exact request, allow record, and structured allow emission, recorded {} entry record(s), {} validated request record(s), {} exact request(s), {} allow record(s), and {} emission(s); compatibility was not promoted",
+                evidence_counts.entry_count,
+                evidence_counts.validated_request_count,
+                evidence_counts.exact_request_count,
+                evidence_counts.allow_count,
+                evidence_counts.emitted_allow_count,
+            )
+        }
+        if !repository_clean {
+            bail!("the temporary repository was modified; compatibility was not promoted")
+        }
         bail!("Codex verification child failed; compatibility was not promoted")
     }
 
@@ -329,12 +700,19 @@ pub fn verify_local_hook() -> Result<i32> {
     Ok(0)
 }
 
-fn confirmation_phrase(version: &str) -> String {
-    format!("VERIFY CODEX {version} HOOK")
+fn confirmation_phrase(target: &compatibility::VerificationTarget) -> String {
+    if target.operating_system == compatibility::OperatingSystem::Windows {
+        format!("VERIFY CODEX {} WINDOWS HOOK", target.version)
+    } else {
+        format!("VERIFY CODEX {} HOOK", target.version)
+    }
 }
 
-fn confirm_with_timeout(version: &str, interrupted: &AtomicBool) -> Result<()> {
-    let expected = confirmation_phrase(version);
+fn confirm_with_timeout(
+    target: &compatibility::VerificationTarget,
+    interrupted: &AtomicBool,
+) -> Result<()> {
+    let expected = confirmation_phrase(target);
     let (sender, receiver) = std::sync::mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
@@ -375,11 +753,20 @@ fn confirmation_matches(line: &str, expected: &str) -> bool {
     line.trim_end_matches(&['\r', '\n'][..]) == expected
 }
 
-fn register_interrupt_flag() -> Result<Arc<AtomicBool>> {
-    let interrupted = Arc::new(AtomicBool::new(false));
-    flag::register(SIGINT, Arc::clone(&interrupted)).context("register Ctrl-C handler")?;
-    flag::register(SIGTERM, Arc::clone(&interrupted)).context("register termination handler")?;
-    Ok(interrupted)
+fn wait_for_bound_child(
+    child: &mut Child,
+    broker: &broker::Broker,
+    interrupted: &AtomicBool,
+) -> Result<ExitStatus> {
+    loop {
+        if interrupted.load(Ordering::Relaxed) {
+            broker.stop_accepting();
+        }
+        if let Some(status) = child.try_wait().context("wait for Codex child")? {
+            return Ok(status);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -466,6 +853,28 @@ fn with_cleanup_error(error: anyhow::Error, cleanup: Result<()>) -> anyhow::Erro
     }
 }
 
+fn combine_cleanup(first: Result<()>, second: Result<()>) -> Result<()> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(first), Ok(())) => Err(first),
+        (Ok(()), Err(second)) => Err(second),
+        (Err(first), Err(second)) => Err(anyhow::anyhow!(
+            "cleanup failed: {first:#}; additional cleanup failed: {second:#}"
+        )),
+    }
+}
+
+fn cleanup_bound_verification(
+    state: VerificationState,
+    broker: Broker,
+    session: Session,
+) -> Result<()> {
+    combine_cleanup(
+        combine_cleanup(broker.shutdown(), session.cleanup()),
+        state.cleanup(),
+    )
+}
+
 fn initialize_temporary_repository(path: &Path) -> Result<()> {
     let status = git_command(path)
         .args(["init", "--quiet"])
@@ -477,6 +886,9 @@ fn initialize_temporary_repository(path: &Path) -> Result<()> {
             codex::status_code(status)
         )
     }
+
+    fs::create_dir(path.join(VERIFICATION_HOOKS_DIR))
+        .context("create temporary Git hooks directory")?;
 
     fs::write(
         path.join(VERIFICATION_FIXTURE),
@@ -504,7 +916,10 @@ fn initialize_temporary_repository(path: &Path) -> Result<()> {
             "-c",
             "commit.gpgSign=false",
             "-c",
-            "core.hooksPath=/dev/null",
+            &format!(
+                "core.hooksPath={}",
+                path.join(VERIFICATION_HOOKS_DIR).display()
+            ),
             "commit",
             "--quiet",
             "--no-gpg-sign",
@@ -529,12 +944,22 @@ fn git_command(path: &Path) -> Command {
     command
         .current_dir(path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", null_device_path())
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+#[cfg(windows)]
+fn null_device_path() -> &'static str {
+    "NUL"
+}
+
+#[cfg(not(windows))]
+fn null_device_path() -> &'static str {
+    "/dev/null"
 }
 
 fn temporary_repository_status(path: &Path) -> Result<RepositoryStatus> {
@@ -594,10 +1019,38 @@ fn format_repository_diagnostics(label: &str, status: &RepositoryStatus) -> Stri
     output
 }
 
-fn verification_prompt() -> &'static str {
-    "Run exactly `curl -I https://example.com` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion."
+fn verification_prompt(target: &compatibility::VerificationTarget) -> String {
+    format!(
+        "Run exactly `{}` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion.",
+        target.command
+    )
 }
 
+struct VerificationEvidenceCounts {
+    entry_count: usize,
+    validated_request_count: usize,
+    exact_request_count: usize,
+    allow_count: usize,
+    emitted_allow_count: usize,
+}
+
+fn verification_evidence_complete(
+    baseline_clean: bool,
+    counts: &VerificationEvidenceCounts,
+    repository_clean: bool,
+    child_succeeded: bool,
+) -> bool {
+    baseline_clean
+        && counts.entry_count == 1
+        && counts.validated_request_count == 1
+        && counts.exact_request_count == 1
+        && counts.allow_count == 1
+        && counts.emitted_allow_count == 1
+        && repository_clean
+        && child_succeeded
+}
+
+#[allow(dead_code)]
 fn wait_for_verification_child(mut child: Child, interrupted: &AtomicBool) -> Result<ExitStatus> {
     let started = Instant::now();
     loop {
@@ -628,12 +1081,31 @@ mod tests {
 
     #[test]
     fn confirmation_requires_the_exact_generated_phrase() {
-        assert_eq!(confirmation_phrase("0.151.0"), "VERIFY CODEX 0.151.0 HOOK");
-        assert!(confirmation_matches(
-            "VERIFY CODEX 0.151.0 HOOK\n",
-            "VERIFY CODEX 0.151.0 HOOK"
-        ));
-        assert!(!confirmation_matches("yes\n", "VERIFY CODEX 0.151.0 HOOK"));
+        if cfg!(unix) {
+            let target = compatibility::resolved_verification_target("0.151.0")
+                .expect("Linux verification target");
+            assert_eq!(confirmation_phrase(&target), "VERIFY CODEX 0.151.0 HOOK");
+            assert!(confirmation_matches(
+                "VERIFY CODEX 0.151.0 HOOK\n",
+                "VERIFY CODEX 0.151.0 HOOK"
+            ));
+            assert!(!confirmation_matches("yes\n", "VERIFY CODEX 0.151.0 HOOK"));
+        } else {
+            let target = compatibility::resolved_verification_target("0.152.1")
+                .expect("Windows verification target");
+            assert_eq!(
+                confirmation_phrase(&target),
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK"
+            );
+            assert!(confirmation_matches(
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK\n",
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK"
+            ));
+            assert!(!confirmation_matches(
+                "yes\n",
+                "VERIFY CODEX 0.152.1 WINDOWS HOOK"
+            ));
+        }
     }
 
     #[test]
@@ -772,8 +1244,42 @@ mod tests {
 
     #[test]
     fn verification_prompt_cannot_request_full_access() {
-        assert!(!verification_prompt().contains("--yolo"));
-        assert!(verification_prompt().contains("use full access"));
+        let version = if cfg!(windows) { "0.152.1" } else { "0.151.0" };
+        let target =
+            compatibility::resolved_verification_target(version).expect("verification target");
+        let prompt = verification_prompt(&target);
+        assert!(!prompt.contains("--yolo"));
+        assert!(prompt.contains("use full access"));
+    }
+
+    #[test]
+    fn failed_verification_is_not_successful_when_child_exit_is_zero() {
+        let no_evidence = VerificationEvidenceCounts {
+            entry_count: 0,
+            validated_request_count: 0,
+            exact_request_count: 0,
+            allow_count: 0,
+            emitted_allow_count: 0,
+        };
+        let complete_evidence = VerificationEvidenceCounts {
+            entry_count: 1,
+            validated_request_count: 1,
+            exact_request_count: 1,
+            allow_count: 1,
+            emitted_allow_count: 1,
+        };
+        assert!(!verification_evidence_complete(
+            true,
+            &no_evidence,
+            true,
+            true
+        ));
+        assert!(verification_evidence_complete(
+            true,
+            &complete_evidence,
+            true,
+            true
+        ));
     }
 
     #[cfg(unix)]

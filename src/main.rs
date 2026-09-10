@@ -1,12 +1,15 @@
 mod arming;
 mod audit;
+mod broker;
 mod cli;
 mod codex;
 mod compatibility;
 mod decision;
 mod error;
 mod hook;
+mod interrupt;
 mod launcher;
+mod process;
 mod protocol;
 
 use clap::Parser;
@@ -14,6 +17,7 @@ use clap::Parser;
 fn main() {
     let cli = cli::Cli::parse();
     let result = match cli.command.unwrap_or(cli::Command::Run(cli::RunArgs {
+        compatibility: None,
         codex_args: Vec::new(),
     })) {
         cli::Command::Run(args) => launcher::run(&args),
