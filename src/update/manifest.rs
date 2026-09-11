@@ -591,7 +591,7 @@ fn hex_nibble(value: u8) -> u8 {
     }
 }
 
-fn reject_duplicate_json_keys(bytes: &[u8]) -> Result<(), ManifestError> {
+pub(crate) fn reject_duplicate_json_keys(bytes: &[u8]) -> Result<(), ManifestError> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     deserializer.deserialize_any(DuplicateKeyVisitor)?;
     deserializer.end()?;

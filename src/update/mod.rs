@@ -15,6 +15,12 @@ pub(crate) mod manifest;
 #[allow(dead_code)]
 pub(crate) mod verify;
 
+// State storage and check coordination are local-only primitives. They do not
+// perform network checks, TUF verification, installation, prompting, or hook
+// authorization.
+#[allow(dead_code)]
+pub(crate) mod state;
+
 // Selection is a pure interface seam for later startup-check work; it is not
 // called by the existing launcher until the subsequent updater milestones.
 #[allow(dead_code)]

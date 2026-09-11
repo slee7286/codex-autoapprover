@@ -3,7 +3,7 @@
 # Distribution roadmap
 
 - Schema version: `1.0`
-- Roadmap revision: `5`
+- Roadmap revision: `6`
 - Repository: `slee7286/codex-autoapprover`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
 - Source branch: `main`
@@ -441,7 +441,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 #### M2-T1 — Atomic state and concurrent-check coordination
 
-- Status: `planned`
+- Status: `in_progress`
 - Dependencies: `M0-T2`, `M1-T1`
 - Objective: Define and implement user-scoped state for installed version, last successful check, validators, skip scope, backoff, failure category, and active update coordination.
 - User-visible outcome: Concurrent wrapper launches do not duplicate downloads/prompts, corrupt state, or expose secrets, and a crash leaves recoverable state.
@@ -449,28 +449,36 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 **Expected implementation areas**
 
 - `src/launcher.rs` (`existing`): Provide the wrapper startup boundary and preserve current child lifecycle behavior.
-- `src/update/state.rs` (`planned`): Implement atomic user-scoped state, bounded records, lock/coordination, and crash recovery.
+- `src/update/state.rs` (`planned`): Implement atomic user-scoped state, bounded records, kernel-released advisory lock coordination, explicit recoverable errors, and crash recovery.
 - `docs/threat-model.md` (`existing`): Document state privacy, symlink/path risks, concurrent launch behavior, and recovery.
 
 **Deliverables**
 
-- A versioned state schema containing only minimal install/check/version/failure metadata.
-- Atomic write and lock/coordination behavior for concurrent wrappers and interrupted writes.
-- Retention and cleanup rules that never store commands, hook payloads, credentials, session secrets, or unnecessary machine identifiers.
+- A version 1 bounded state schema containing only installed/observed versions, successful-check metadata, HTTP validators, exact skip scope, backoff, and fixed failure categories.
+- Atomic same-directory temporary-file replacement with sync-before-replace behavior, path safety checks, and recovery that leaves the previous valid state untouched after an interrupted write.
+- Kernel-released Windows/Unix advisory check coordination with bounded acquisition, explicit contention/storage/corruption outcomes, and a read/modify/write lease API.
+- Retention rules and typed fields that never store commands, hook payloads, credentials, session secrets, raw environments, or unnecessary machine identifiers.
 
 **Validation**
 
-- Deterministic tests for concurrent readers/writers, truncated state, stale locks, interrupted replace, symlink/path rejection, and bounded record sizes.
-- Verify user configuration and Codex data are never treated as updater state.
+- Native Windows focused tests cover state round trips, unsupported/corrupt/duplicate/unknown/oversized state, interrupted temporary writes, unavailable storage, path rejection, concurrent read/modify/write, bounded contention, and sensitive-data exclusion.
+- A native Windows child-process test confirms the kernel lock is released after process termination; no stale lock file is deleted or interpreted as authorization.
+- Verify user configuration, Codex data, hook payloads, commands, credentials, session secrets, and raw environments are never treated as updater state.
+- Native Linux execution remains required for the Unix lock/atomic-write branch; cross-compilation is not counted as native evidence.
 
 **Completion evidence**
 
-- Not complete; evidence must be recorded before status becomes `completed`.
+- src/update/state.rs implements the bounded versioned schema, strict duplicate/unknown-field parsing, validation, atomic replacement, path checks, minimal metadata fields, injectable Clock, and bounded CheckCoordinator/CheckLease APIs.
+- Native Windows focused test result: 11 M2-T1 state tests passed, including child-process termination lock release; no network, prompt, installation, or hook integration was added.
+- Native Windows full test result: 90 unit tests and 13 integration tests passed; cargo clippy --all-targets --all-features -- -D warnings and cargo build --all-targets passed.
+- docs/threat-model.md documents state privacy, atomic replacement, path safety, kernel lock release, bounded contention, and the absence of updater/hook/TUF behavior.
+- Linux-native execution evidence is pending the pushed CI result; cargo check --target x86_64-unknown-linux-gnu --offline could not run because errno v0.3.14 was unavailable locally, so no cross-compilation or Linux claim is made.
 
 **Risks and unresolved decisions**
 
 - Windows and Linux atomic replacement/locking semantics differ and need platform-specific implementation and tests.
 - The lock must coordinate checks without holding a lock across consent or a long download.
+- M2-T1 remains in progress until native Linux CI exercises the Unix rustix flock and atomic-replacement branch; this is an evidence gap, not a production authorization bypass.
 
 **Required access or action**
 
@@ -482,7 +490,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 #### M2-T2 — Bounded startup check and unresolved-state policy
 
 - Status: `planned`
-- Dependencies: `M1-T2`, `M2-T1`
+- Dependencies: `M1-T2`, `M1-T3`, `M2-T1`
 - Objective: Check for an applicable release when Codex version changes and on subsequent wrapper launches while compatibility is unresolved, subject to validators, timeout, backoff, and noninteractive rules.
 - User-visible outcome: The wrapper remains usable during service failure or timeout, checks unresolved compatibility on later launches, and never blocks a noninteractive Codex session on an update prompt.
 
@@ -511,6 +519,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 - The check origin and redirect policy depend on the trust design and must not be replaced by arbitrary URLs.
 - Startup latency must be bounded tightly enough that normal Codex launch remains predictable.
+- The check implementation must accept only an AuthenticatedManifest produced by the future M5-T2 verifier; M1-T3 is the current type boundary, and no parsed or hash-matched manifest may be promoted into that path.
 
 **Required access or action**
 

@@ -9,13 +9,14 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Roadmap base commit before this M0 update: `cd82e224e9084b6c8cc8f479e2e932e13c97c96c`
 - Roadmap source branch: `main`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
-- Roadmap revision: `5`
+- Roadmap revision: `6`
 - Current milestone: `M2 - Startup check and persistent state`
 - First executable task: `M2-T1 - Atomic state and concurrent-check coordination`
 - M0 is complete as a design milestone. No updater, installer, release workflow, dependency, persistent Codex configuration, or live verification changed.
 - M1-T1 is complete: the descriptive schema, strict bounded parser, synthetic fixtures, deterministic serialization, and crate-private TUF verification seam are implemented in `src/update/manifest.rs`.
 - M1-T2 is complete: pure deterministic applicable-release selection is implemented in `src/update/selection.rs`; no updater, network, installation, or hook behavior was wired.
 - M1-T3 is complete: `src/update/verify.rs` now provides a verifier-owned read-only authenticated-manifest boundary with no production constructor. The only constructor compiled for tests is explicitly synthetic byte binding and does not execute TUF verification. Selection accepts only this wrapper, and the runtime compatibility/broker authority remains unchanged.
+- M2-T1 implementation is in progress: `src/update/state.rs` now contains bounded version 1 state, atomic replacement, path safety, injectable clock support, and kernel-released bounded Windows/Unix check coordination. Native Windows acceptance is green; native Linux CI evidence is still required before marking the task completed.
 - Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 compatibility records and authorization behavior remain unchanged.
 
 ## Read first
@@ -68,6 +69,15 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Focused tests retain automatic/strict policy, exact exclusion, runtime rejection, and read-only-content coverage. Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 evidence and authorization behavior are unchanged.
 - Real TUF root/role/expiry/target verification is explicitly deferred to M5-T2. No network, installer, state, prompt, release publication, or live verification was added.
 
+## M2-T1 state and coordination implementation in progress
+
+- State stores only installed/observed versions, successful-check metadata, bounded HTTP validators, exact Codex/release skip scope, backoff, and fixed failure categories. It rejects duplicate/unknown/corrupt/oversized/unsupported state and never defaults over corruption.
+- Writes use a same-directory temporary file, restrictive permissions where supported, sync-before-replace, and an atomic target replacement. Interrupted temporary files are ignored; the previous valid state remains authoritative.
+- `CheckCoordinator` uses kernel-owned advisory file locks with bounded acquisition. `CheckLease` is required for read/modify/write transactions, contention is recoverable, and process termination releases the lock without stale-lock deletion.
+- Native Windows focused tests cover round trips, validation, interrupted writes, storage/path failures, concurrent transactions, contention, process termination, and sensitive-data exclusion. Full native Windows tests, Clippy, and build pass.
+- The Unix branch uses the existing `rustix` dependency with its `fs` feature; native Linux execution is pending CI. This task does not perform network checks, TUF verification, installation, prompts, or hook integration.
+- M2-T2 now depends on the completed M1-T3 authenticated-manifest type boundary and M2-T1; it must accept only an `AuthenticatedManifest`. Real TUF construction remains owned by M5-T2, so no parsed or hash-matched manifest may enter production selection before that verifier exists. This dependency correction avoids a cycle through M3-T2/M5-T1 while preserving the trust gate.
+
 ## Update protocol
 
 After each session:
@@ -92,7 +102,7 @@ After each session:
 
 ## Next task
 
-`M1-T3` should review and test the compatibility/authorization boundary: manifest selection and local observations must remain separate from reviewed support and runtime broker authorization, with no updater path inside hook protocol execution or hook stdout.
+`M2-T1` remains the active task until native Linux CI confirms the Unix state/lock branch. After it is complete, `M2-T3` is the next independent ready implementation task. `M2-T2` may design its transport and policy around the M1-T3 type boundary, but production selection remains blocked until M5-T2 supplies genuine TUF verification.
 
 ## Boundaries
 
