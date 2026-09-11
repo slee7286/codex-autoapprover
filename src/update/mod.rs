@@ -21,6 +21,10 @@ pub(crate) mod verify;
 #[allow(dead_code)]
 pub(crate) mod state;
 
+// Session outcomes are fixed-category local observations. They are not
+// compatibility registry entries and cannot arm or authorize a hook.
+pub(crate) mod outcome;
+
 // Selection is a pure interface seam for later startup-check work; it is not
 // called by the existing launcher until the subsequent updater milestones.
 #[allow(dead_code)]

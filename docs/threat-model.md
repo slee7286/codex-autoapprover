@@ -98,6 +98,25 @@ Protections against a fully compromised host, malicious official Codex build, ar
 
 IDE-extension, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud integration are independently unverified. A future IDE implementation must have its own persistent-hook composition, secure arming, session identity, and threat review; the current CLI child environment is not sufficient evidence.
 
+## Compatibility outcome observations
+
+M2-T3 records only fixed-category observations from the private session audit
+channel: no hook invocation, successful exchange, compatibility rejection,
+transport failure, or protocol failure. Bounded stage counters preserve the
+distinction between executable entry, validated request, broker decision, and
+structured emission. The wrapper never treats a successful child exit as
+command success; command outcome is unknown unless a separate trusted observer
+supplies a typed result.
+
+The hook and broker never put command text, raw payloads, credentials, session
+secrets, environments, child output, or arbitrary error text into this channel
+or the persistent state. Mixed requests aggregate conservatively, and records
+are keyed by autoapprover version, Codex version, operating system, and surface
+so a finishing older session cannot replace a newer observation. These local
+observations are diagnostic only: they cannot change the reviewed compatibility
+registry, arm a hook, override strict or automatic policy, or bypass broker
+authorization. Hook stdout remains the structured protocol response only.
+
 ## Pre-release security gates
 
 Before release, the project MUST have a locally demonstrated supported hook flow, exact positive and negative protocol fixtures, malformed/oversized input tests, process/session binding tests, concurrency tests, executable and configuration path checks, secret-redaction tests, kill-switch and recovery tests, and a review of the effect of other matching hooks. Package/update integrity must be reviewed before distribution.

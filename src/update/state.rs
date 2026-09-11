@@ -7,6 +7,7 @@
 //! transaction; lock contention is an explicit recoverable result.
 
 use std::{
+    env,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -18,12 +19,19 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{manifest::StableVersion, manifest::reject_duplicate_json_keys};
+use crate::compatibility::{OperatingSystem, Surface};
+
+use super::{
+    manifest::StableVersion,
+    manifest::reject_duplicate_json_keys,
+    outcome::{CommandOutcome, HookOutcome, HookOutcomeCounts, SessionOutcome},
+};
 
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const MAX_STATE_BYTES: usize = 64 * 1024;
 pub const MAX_VALIDATOR_BYTES: usize = 512;
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_millis(250);
+pub const MAX_COMPATIBILITY_OBSERVATIONS: usize = 8;
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -39,6 +47,8 @@ pub struct UpdateState {
     pub skip_scope: Option<SkipScope>,
     pub backoff: Option<BackoffState>,
     pub last_failure: Option<FailureCategory>,
+    #[serde(default)]
+    pub compatibility_observations: Vec<CompatibilityObservation>,
 }
 
 impl Default for UpdateState {
@@ -52,6 +62,7 @@ impl Default for UpdateState {
             skip_scope: None,
             backoff: None,
             last_failure: None,
+            compatibility_observations: Vec::new(),
         }
     }
 }
@@ -73,7 +84,62 @@ impl UpdateState {
         if let Some(backoff) = &self.backoff {
             backoff.validate()?;
         }
+        if self.compatibility_observations.len() > MAX_COMPATIBILITY_OBSERVATIONS {
+            return Err(StateError::Invalid);
+        }
+        for observation in &self.compatibility_observations {
+            observation.validate()?;
+        }
         Ok(())
+    }
+
+    pub fn record_compatibility_observation<C: Clock>(
+        &mut self,
+        observation: CompatibilityObservation,
+        clock: &C,
+    ) -> Result<(), StateError> {
+        let mut observation = observation;
+        if observation.observed_at_unix_seconds == 0 {
+            observation.observed_at_unix_seconds = clock.now_unix_seconds();
+        }
+        observation.validate()?;
+        if let Some(existing) = self
+            .compatibility_observations
+            .iter_mut()
+            .find(|existing| existing.same_identity(&observation))
+        {
+            existing
+                .counts
+                .merge(&observation.counts)
+                .map_err(|_| StateError::Invalid)?;
+            existing.hook_outcome = existing.counts.aggregate_hook_outcome();
+            existing.command_outcome =
+                merge_command_outcomes(existing.command_outcome, observation.command_outcome);
+            existing.observed_at_unix_seconds = clock.now_unix_seconds();
+        } else {
+            observation.observed_at_unix_seconds = clock.now_unix_seconds();
+            if self.compatibility_observations.len() >= MAX_COMPATIBILITY_OBSERVATIONS {
+                let Some((oldest_index, _)) =
+                    self.compatibility_observations.iter().enumerate().min_by(
+                        |(_, left), (_, right)| {
+                            observation_order(left).cmp(&observation_order(right))
+                        },
+                    )
+                else {
+                    return Err(StateError::Invalid);
+                };
+                if observation_order(&observation)
+                    <= observation_order(&self.compatibility_observations[oldest_index])
+                {
+                    return self.validate();
+                }
+                self.compatibility_observations.remove(oldest_index);
+            }
+            self.compatibility_observations.push(observation);
+            self.compatibility_observations
+                .sort_by(|left, right| observation_order(left).cmp(&observation_order(right)));
+        }
+        self.validate()
     }
 
     pub fn record_successful_check<C: Clock>(
@@ -110,6 +176,77 @@ impl UpdateState {
             &skip.codex_version == codex_version && &skip.release_version == release_version
         })
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilityObservation {
+    pub observed_at_unix_seconds: u64,
+    pub autoapprover_version: StableVersion,
+    pub codex_version: StableVersion,
+    pub operating_system: OperatingSystem,
+    pub surface: Surface,
+    pub hook_outcome: HookOutcome,
+    pub command_outcome: CommandOutcome,
+    pub counts: HookOutcomeCounts,
+}
+
+impl CompatibilityObservation {
+    pub fn from_session(
+        autoapprover_version: StableVersion,
+        codex_version: StableVersion,
+        operating_system: OperatingSystem,
+        surface: Surface,
+        session: SessionOutcome,
+    ) -> Self {
+        Self {
+            observed_at_unix_seconds: 0,
+            autoapprover_version,
+            codex_version,
+            operating_system,
+            surface,
+            hook_outcome: session.hook_outcome,
+            command_outcome: session.command_outcome,
+            counts: session.counts,
+        }
+    }
+
+    fn validate(&self) -> Result<(), StateError> {
+        if self.observed_at_unix_seconds == 0 {
+            return Err(StateError::Invalid);
+        }
+        self.counts.validate().map_err(|_| StateError::Invalid)?;
+        if self.hook_outcome != self.counts.aggregate_hook_outcome() {
+            return Err(StateError::Invalid);
+        }
+        Ok(())
+    }
+
+    fn same_identity(&self, other: &Self) -> bool {
+        self.autoapprover_version == other.autoapprover_version
+            && self.codex_version == other.codex_version
+            && self.operating_system == other.operating_system
+            && self.surface == other.surface
+    }
+}
+
+fn merge_command_outcomes(left: CommandOutcome, right: CommandOutcome) -> CommandOutcome {
+    match (left, right) {
+        (CommandOutcome::Failed, _) | (_, CommandOutcome::Failed) => CommandOutcome::Failed,
+        (CommandOutcome::Unknown, _) | (_, CommandOutcome::Unknown) => CommandOutcome::Unknown,
+        _ => CommandOutcome::Succeeded,
+    }
+}
+
+fn observation_order(
+    observation: &CompatibilityObservation,
+) -> (&StableVersion, &StableVersion, OperatingSystem, Surface) {
+    (
+        &observation.codex_version,
+        &observation.autoapprover_version,
+        observation.operating_system,
+        observation.surface,
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -295,6 +432,20 @@ impl StateStore {
         Ok(LoadState::Present(Box::new(state)))
     }
 
+    pub fn record_compatibility_observation<C: Clock>(
+        &self,
+        observation: CompatibilityObservation,
+        clock: &C,
+    ) -> Result<(), StateError> {
+        let lease = CheckCoordinator::for_state(self).acquire(DEFAULT_LOCK_TIMEOUT)?;
+        let mut state = match self.load()? {
+            LoadState::Missing => UpdateState::default(),
+            LoadState::Present(state) => *state,
+        };
+        state.record_compatibility_observation(observation, clock)?;
+        self.save_with_lease(&state, &lease)
+    }
+
     pub fn save(&self, state: &UpdateState) -> Result<(), StateError> {
         self.save_inner(state, None)
     }
@@ -362,6 +513,26 @@ impl StateStore {
         }
         Ok(parent.to_path_buf())
     }
+}
+
+pub fn user_state_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        return env::var_os("LOCALAPPDATA").map(PathBuf::from).map(|root| {
+            root.join("codex-autoapprover")
+                .join("state")
+                .join("active.json")
+        });
+    }
+    #[cfg(unix)]
+    {
+        return env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+            .map(|root| root.join("codex-autoapprover").join("active.json"));
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 pub struct CheckCoordinator {
@@ -871,6 +1042,58 @@ mod tests {
         loop {
             thread::sleep(Duration::from_secs(1));
         }
+    }
+
+    #[test]
+    fn compatibility_observations_are_bounded_and_older_versions_cannot_overwrite_newer() {
+        use crate::update::outcome::SessionOutcomeAccumulator;
+
+        fn observation(codex: &str, hook: HookOutcome) -> CompatibilityObservation {
+            let mut accumulator = SessionOutcomeAccumulator::default();
+            accumulator.record_hook_outcome(hook).expect("hook outcome");
+            CompatibilityObservation::from_session(
+                StableVersion::parse("0.1.0").expect("autoapprover version"),
+                StableVersion::parse(codex).expect("Codex version"),
+                OperatingSystem::Windows,
+                Surface::LocalCliLauncher,
+                accumulator.finish(),
+            )
+        }
+
+        let directory = TempDir::new().expect("state directory");
+        let store = StateStore::new(directory.path().join("state.json"));
+        let newer = observation("0.154.0", HookOutcome::SuccessfulExchange);
+        let older = observation("0.153.2", HookOutcome::CompatibilityRejection);
+        store
+            .record_compatibility_observation(newer, &FixedClock(100))
+            .expect("newer observation");
+        store
+            .record_compatibility_observation(older, &FixedClock(101))
+            .expect("older observation remains separate");
+        store
+            .record_compatibility_observation(
+                observation("0.154.0", HookOutcome::SuccessfulExchange),
+                &FixedClock(102),
+            )
+            .expect("same identity merges");
+
+        let LoadState::Present(state) = store.load().expect("load state") else {
+            panic!("expected state")
+        };
+        assert_eq!(state.compatibility_observations.len(), 2);
+        let latest = state
+            .compatibility_observations
+            .iter()
+            .find(|value| value.codex_version == StableVersion::parse("0.154.0").unwrap())
+            .expect("newer observation");
+        assert_eq!(latest.hook_outcome, HookOutcome::SuccessfulExchange);
+        assert_eq!(latest.counts.successful_exchange_count, 2);
+        assert!(
+            state
+                .compatibility_observations
+                .iter()
+                .any(|value| value.codex_version == StableVersion::parse("0.153.2").unwrap())
+        );
     }
 
     #[test]

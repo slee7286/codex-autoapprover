@@ -3,13 +3,13 @@
 # Distribution roadmap
 
 - Schema version: `1.0`
-- Roadmap revision: `6`
+- Roadmap revision: `7`
 - Repository: `slee7286/codex-autoapprover`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
 - Source branch: `main`
 - Roadmap branch: `feat/distribution-roadmap`
 - Current milestone: `M2`
-- Next executable task: `M2-T1`
+- Next executable task: `M2-T3`
 
 ## Objective
 
@@ -441,7 +441,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 #### M2-T1 — Atomic state and concurrent-check coordination
 
-- Status: `in_progress`
+- Status: `completed`
 - Dependencies: `M0-T2`, `M1-T1`
 - Objective: Define and implement user-scoped state for installed version, last successful check, validators, skip scope, backoff, failure category, and active update coordination.
 - User-visible outcome: Concurrent wrapper launches do not duplicate downloads/prompts, corrupt state, or expose secrets, and a crash leaves recoverable state.
@@ -449,7 +449,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 **Expected implementation areas**
 
 - `src/launcher.rs` (`existing`): Provide the wrapper startup boundary and preserve current child lifecycle behavior.
-- `src/update/state.rs` (`planned`): Implement atomic user-scoped state, bounded records, kernel-released advisory lock coordination, explicit recoverable errors, and crash recovery.
+- `src/update/state.rs` (`existing`): Implement atomic user-scoped state, bounded records, kernel-released advisory lock coordination, explicit recoverable errors, and crash recovery.
 - `docs/threat-model.md` (`existing`): Document state privacy, symlink/path risks, concurrent launch behavior, and recovery.
 
 **Deliverables**
@@ -464,7 +464,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 - Native Windows focused tests cover state round trips, unsupported/corrupt/duplicate/unknown/oversized state, interrupted temporary writes, unavailable storage, path rejection, concurrent read/modify/write, bounded contention, and sensitive-data exclusion.
 - A native Windows child-process test confirms the kernel lock is released after process termination; no stale lock file is deleted or interpreted as authorization.
 - Verify user configuration, Codex data, hook payloads, commands, credentials, session secrets, and raw environments are never treated as updater state.
-- Native Linux execution remains required for the Unix lock/atomic-write branch; cross-compilation is not counted as native evidence.
+- Native Linux and native Windows CI are required for the Unix/Windows branches; the supplied CI run used the checked-in cargo test --all-targets workflow on both jobs, and no cross-compilation or installer acceptance is counted.
 
 **Completion evidence**
 
@@ -472,13 +472,13 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 - Native Windows focused test result: 11 M2-T1 state tests passed, including child-process termination lock release; no network, prompt, installation, or hook integration was added.
 - Native Windows full test result: 90 unit tests and 13 integration tests passed; cargo clippy --all-targets --all-features -- -D warnings and cargo build --all-targets passed.
 - docs/threat-model.md documents state privacy, atomic replacement, path safety, kernel lock release, bounded contention, and the absence of updater/hook/TUF behavior.
-- Linux-native execution evidence is pending the pushed CI result; cargo check --target x86_64-unknown-linux-gnu --offline could not run because errno v0.3.14 was unavailable locally, so no cross-compilation or Linux claim is made.
+- User-supplied GitHub Actions evidence reports the native Windows job 103256814382 and native Linux job 103256814560 passed in run 34597568124; the workflow definition confirms cargo test --all-targets, Clippy, build, diagnose, and diff checks for both jobs. Direct log retrieval was unavailable in this environment, so this remains attributed to the supplied CI evidence.
 
 **Risks and unresolved decisions**
 
 - Windows and Linux atomic replacement/locking semantics differ and need platform-specific implementation and tests.
 - The lock must coordinate checks without holding a lock across consent or a long download.
-- M2-T1 remains in progress until native Linux CI exercises the Unix rustix flock and atomic-replacement branch; this is an evidence gap, not a production authorization bypass.
+- This CI milestone validates state/coordination execution only; it does not validate installers, Linux minimum runtime floors, package-manager migration, or release assets.
 
 **Required access or action**
 
@@ -530,7 +530,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 #### M2-T3 — Compatibility outcome propagation and local diagnostics
 
-- Status: `planned`
+- Status: `in_progress`
 - Dependencies: `M1-T3`, `M2-T1`
 - Objective: Propagate hook outcomes to the wrapper with fixed categories that distinguish no invocation, successful exchange, compatibility failure, and command execution failure.
 - User-visible outcome: A successful Codex exit alone never marks compatibility as working, a hook failure falls back to ordinary approval, and diagnosis explains the local outcome without leaking sensitive data.
@@ -540,26 +540,34 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 - `src/audit.rs` (`existing`): Extend fixed-category redacted local diagnostics while preserving separate entry, validated-request, decision, and emission stages.
 - `src/launcher.rs` (`existing`): Consume bounded child/broker outcomes and preserve ordinary Codex fallback and exit status.
 - `src/hook.rs` (`existing`): Keep protocol stdout exact and report no decision on incompatible or failed requests.
-- `src/update/outcome.rs` (`planned`): Define a bounded wrapper-facing result type for local compatibility state.
+- `src/update/outcome.rs` (`existing`): Define bounded fixed-category session outcomes, conservative multi-request aggregation, and redacted audit parsing.
+- `src/update/state.rs` (`existing`): Persist version/platform/surface-bound local observations under the M2-T1 atomic lease without changing reviewed support.
 
 **Deliverables**
 
 - Fixed categories for no hook invocation, successful hook exchange, compatibility rejection/failure, and command execution failure.
 - A bounded propagation mechanism that cannot carry commands, payloads, credentials, session secrets, or arbitrary child output into update state.
-- Diagnose output and state records that distinguish local observation from reviewed verification.
+- Diagnose output and state records distinguish local observations from reviewed verification, and retain command outcome as unknown unless independently observed.
 
 **Validation**
 
-- Tests for no request plus successful child, successful request plus failed command, hook no-decision, hook transport failure, and normal approval fallback.
-- Verify a failed hook never restarts or replays a Codex session or command.
+- Focused outcome tests cover no invocation with successful child, successful exchange with independently recorded command failure, mixed requests, hook no-decision, transport/protocol failure, bounded redacted audit parsing, and unknown command evidence.
+- State tests cover concurrent observation updates, version-bound retention, atomic coordination, and preservation of newer observations when an older session finishes later.
+- Existing native hook/launcher tests continue to cover ordinary approval fallback, unchanged child exit status, no replay, exact authorization, and protocol-only hook stdout.
 
 **Completion evidence**
 
-- Not complete; evidence must be recorded before status becomes `completed`.
+- src/update/outcome.rs defines NoHookInvocation, SuccessfulExchange, CompatibilityRejection, TransportFailure, ProtocolFailure, independent Succeeded/Failed/Unknown command outcomes, bounded counters, conservative aggregation, and fixed audit parsing.
+- src/hook.rs emits only fixed outcome categories to the private audit channel; src/broker/windows.rs and src/broker/linux.rs classify request transport versus protocol failure without persisting error text.
+- src/launcher.rs records version/platform/surface-bound observations through StateStore::record_compatibility_observation, keeps child exit status separate as Unknown, and exposes local observations in diagnose without changing the reviewed registry or authorization path.
+- Native Windows focused outcome/state tests passed: 4 outcome tests and 12 state tests. Native Windows cargo test --all-targets passed with 95 unit tests and 13 integration tests; Clippy with warnings denied and all-target build passed.
+- Existing hook stdout, fallback, argument, cwd, exact-command, and no-replay tests passed; no network, installer, persistent Codex configuration, or live Codex verification was added.
 
 **Risks and unresolved decisions**
 
-- The current launcher observes child lifecycle but does not yet define an updater outcome channel; the channel must avoid coupling the hook protocol to startup update logic.
+- A Codex child exit code is not independently observable command evidence and is therefore recorded as unknown; a future trusted wrapper observation may record a typed command result without accepting child output.
+- The launcher does not initialize a new user state directory in this milestone; an existing installer/startup state owner must create the user-scoped state root before persistence.
+- Local observations remain descriptive and cannot promote the reviewed registry, arm a hook, override automatic/strict policy, or weaken broker checks.
 
 **Required access or action**
 

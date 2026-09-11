@@ -9,14 +9,15 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Roadmap base commit before this M0 update: `cd82e224e9084b6c8cc8f479e2e932e13c97c96c`
 - Roadmap source branch: `main`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
-- Roadmap revision: `6`
+- Roadmap revision: `7`
 - Current milestone: `M2 - Startup check and persistent state`
-- First executable task: `M2-T1 - Atomic state and concurrent-check coordination`
+- First executable task: `M2-T3 - Compatibility outcome propagation and local diagnostics`
 - M0 is complete as a design milestone. No updater, installer, release workflow, dependency, persistent Codex configuration, or live verification changed.
 - M1-T1 is complete: the descriptive schema, strict bounded parser, synthetic fixtures, deterministic serialization, and crate-private TUF verification seam are implemented in `src/update/manifest.rs`.
 - M1-T2 is complete: pure deterministic applicable-release selection is implemented in `src/update/selection.rs`; no updater, network, installation, or hook behavior was wired.
 - M1-T3 is complete: `src/update/verify.rs` now provides a verifier-owned read-only authenticated-manifest boundary with no production constructor. The only constructor compiled for tests is explicitly synthetic byte binding and does not execute TUF verification. Selection accepts only this wrapper, and the runtime compatibility/broker authority remains unchanged.
-- M2-T1 implementation is in progress: `src/update/state.rs` now contains bounded version 1 state, atomic replacement, path safety, injectable clock support, and kernel-released bounded Windows/Unix check coordination. Native Windows acceptance is green; native Linux CI evidence is still required before marking the task completed.
+- M2-T1 is complete: `src/update/state.rs` contains bounded version 1 state, atomic replacement, path safety, injectable clock support, and kernel-released bounded Windows/Unix check coordination. User-supplied GitHub Actions run `34597568124` reports native Windows job `103256814382` and native Linux job `103256814560` passed. The checked-in workflow runs all-target tests, Clippy, build, diagnose, and diff checks on both jobs; this is not installer or minimum-runtime acceptance.
+- M2-T3 implementation is in progress: `src/update/outcome.rs` defines fixed-category session outcomes and conservative aggregation; the hook/broker path emits only bounded private audit categories; launcher observations are version/platform/surface-bound and coordinated through M2-T1 state. Child exit status remains independent and unknown without trusted command evidence.
 - Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 compatibility records and authorization behavior remain unchanged.
 
 ## Read first
@@ -30,7 +31,7 @@ This is a planning handoff, not an updater implementation, installer, release ap
    cargo run --bin validate_distribution_roadmap -- --check
    ```
 
-5. Execute the first task whose dependencies are complete. The next ready task is `M2-T1`.
+5. Execute the first task whose dependencies are complete. The next ready task is `M2-T3`.
 
 ## M0 decisions completed
 
@@ -69,14 +70,23 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Focused tests retain automatic/strict policy, exact exclusion, runtime rejection, and read-only-content coverage. Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 evidence and authorization behavior are unchanged.
 - Real TUF root/role/expiry/target verification is explicitly deferred to M5-T2. No network, installer, state, prompt, release publication, or live verification was added.
 
-## M2-T1 state and coordination implementation in progress
+## M2-T1 state and coordination completed
 
 - State stores only installed/observed versions, successful-check metadata, bounded HTTP validators, exact Codex/release skip scope, backoff, and fixed failure categories. It rejects duplicate/unknown/corrupt/oversized/unsupported state and never defaults over corruption.
 - Writes use a same-directory temporary file, restrictive permissions where supported, sync-before-replace, and an atomic target replacement. Interrupted temporary files are ignored; the previous valid state remains authoritative.
 - `CheckCoordinator` uses kernel-owned advisory file locks with bounded acquisition. `CheckLease` is required for read/modify/write transactions, contention is recoverable, and process termination releases the lock without stale-lock deletion.
 - Native Windows focused tests cover round trips, validation, interrupted writes, storage/path failures, concurrent transactions, contention, process termination, and sensitive-data exclusion. Full native Windows tests, Clippy, and build pass.
-- The Unix branch uses the existing `rustix` dependency with its `fs` feature; native Linux execution is pending CI. This task does not perform network checks, TUF verification, installation, prompts, or hook integration.
+- The Unix branch uses the existing `rustix` dependency with its `fs` feature; the user-supplied native Linux and Windows CI jobs passed the checked-in all-target workflow. This task did not perform network checks, TUF verification, installation, prompts, or hook integration.
 - M2-T2 now depends on the completed M1-T3 authenticated-manifest type boundary and M2-T1; it must accept only an `AuthenticatedManifest`. Real TUF construction remains owned by M5-T2, so no parsed or hash-matched manifest may enter production selection before that verifier exists. This dependency correction avoids a cycle through M3-T2/M5-T1 while preserving the trust gate.
+
+## M2-T3 compatibility outcomes and local diagnostics in progress
+
+- `HookOutcome` has fixed categories for no invocation, successful exchange, compatibility rejection, transport failure, and protocol failure. `CommandOutcome` is independent and can be succeeded, failed, or unknown; the launcher records unknown because a Codex child exit code is not command evidence.
+- Multi-request sessions retain bounded stage counters and aggregate conservatively: protocol failure outranks transport failure, which outranks compatibility rejection, which outranks success; no invocation is reported only when no hook entry occurred.
+- Hook outcome records contain only fixed category names and bounded counters. No command text, payload, credentials, secrets, environments, child output, or arbitrary error text enters state or diagnostics. Hook stdout remains protocol-only.
+- M2-T1 state records observations keyed by autoapprover version, Codex version, operating system, and surface. Same-identity sessions merge bounded counters; different versions remain separate, so an older finishing session cannot overwrite a newer observation.
+- `diagnose` reports local observations separately from reviewed compatibility. It cannot alter the compiled registry or runtime broker authorization. Existing fallback, exit-status, exact-command, cwd, session, ancestry, and no-replay behavior remains unchanged.
+- The launcher does not create a new user state root in this milestone; an installer/startup state owner must initialize that path before persistence. No network, updater, install, prompt, or live Codex verification was added.
 
 ## Update protocol
 
@@ -102,7 +112,7 @@ After each session:
 
 ## Next task
 
-`M2-T1` remains the active task until native Linux CI confirms the Unix state/lock branch. After it is complete, `M2-T3` is the next independent ready implementation task. `M2-T2` may design its transport and policy around the M1-T3 type boundary, but production selection remains blocked until M5-T2 supplies genuine TUF verification.
+`M2-T3` is the active task until its implementation evidence is committed and CI-confirmed. After it is complete, `M2-T2` is ready because M1-T2, M1-T3, and M2-T1 are complete; production selection still requires the genuine M5-T2 TUF verifier.
 
 ## Boundaries
 
