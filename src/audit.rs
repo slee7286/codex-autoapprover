@@ -6,6 +6,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use crate::update::outcome::HookOutcome;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RejectionCategory {
     RequestTrailingData,
@@ -201,6 +203,23 @@ pub fn hook_stage_at(path: &Path, category: &str) -> io::Result<()> {
     }
     let line = format!("hook stage={category}\n");
     append_private(path, line.as_bytes())
+}
+
+pub fn hook_outcome(outcome: HookOutcome) -> io::Result<()> {
+    let Some(path) = std::env::var_os(crate::arming::AUDIT_PATH_ENV) else {
+        return Ok(());
+    };
+    hook_outcome_at(Path::new(&path), outcome)
+}
+
+pub fn hook_outcome_at(path: &Path, outcome: HookOutcome) -> io::Result<()> {
+    let Some(category) = outcome.audit_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no-hook outcome is derived from an empty session audit",
+        ));
+    };
+    append_private(path, format!("hook outcome={category}\n").as_bytes())
 }
 
 #[cfg(any(test, windows))]

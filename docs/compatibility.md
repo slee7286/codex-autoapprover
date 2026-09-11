@@ -2,6 +2,88 @@
 
 This matrix distinguishes reviewed production compatibility from the experimental verification mechanism and historical UI evidence. Compatibility is an exact tuple, not a version-only claim.
 
+## Release-manifest compatibility metadata
+
+M1-T1 defines the descriptive release-manifest schema implemented in
+src/update/manifest.rs. The canonical JSON uses schema version 1 and
+snake_case field names. It contains bounded release metadata, HTTPS release
+notes, native x86_64 asset records, proposed runtime requirements, archive
+format, byte length, lowercase SHA-256 text, download origin, and build
+provenance. Compatibility entries contain an exact Codex version, operating
+system, architecture, launcher surface, hook event/protocol, required tool and
+input schema, response behavior, and one of reviewed, experimental, or
+excluded eligibility records.
+
+Parsing rejects duplicate keys, unknown nested fields, duplicate asset or
+compatibility identities, malformed stable versions, invalid lengths/hashes,
+unsupported schema versions, and contradictory compatibility entries. Canonical
+serialization sorts asset and compatibility arrays by identity. The proposed
+Windows and Linux runtime floors remain unvalidated until the native M4/M6
+acceptance work; synthetic fixtures do not promote compatibility.
+
+This metadata is descriptive only. It cannot arm the broker, bypass runtime
+identity/session/cwd/tool/schema/command checks, or promote an installed Codex
+version to reviewed support. A parsed manifest is untrusted until a later TUF
+adapter authenticates the exact target bytes and target length/hash using the
+repository's selected TUF trust model. The schema contains no competing
+signature format and does not implement signature verification or custom
+cryptography; it only compares the parsed bytes with a TUF-supplied SHA-256
+target digest. Selection, network fetching, persistent state, installation,
+and startup prompting are later milestones.
+
+M1-T2 selection consumes only a TUF-authenticated manifest wrapper and typed
+installed-version/Codex/platform/architecture/runtime/surface/policy inputs.
+It ranks all applicable candidates by numeric autoapprover release version and
+rejects equal-release, conflicting-asset, overlapping-compatibility, and
+equal-ranked-asset ambiguity. It never ranks by input order or publication
+date. A newer incompatible release is skipped in favor of an older release
+that is still newer than the installed version.
+
+Under automatic mode, the newest applicable exact tuple may be reviewed or
+explicitly experimental; the result retains its experimental label. Under
+strict mode, experimental records are rejected and the newest applicable exact
+reviewed tuple is selected instead. Therefore, when a newer experimental
+release and an older reviewed release are both applicable, automatic mode
+selects the newer experimental release while strict mode selects the older
+reviewed release. Exact exclusions take precedence over any overlapping
+experimental eligibility. Selection does not authorize downloading,
+execution, activation, or broker decisions.
+
+## M1-T3 metadata and authorization boundary
+
+The update path has six deliberately separate stages:
+
+1. Untrusted bytes are bounded input and have no metadata or compatibility
+   authority.
+2. `ParsedManifest` is a structurally validated, descriptive value. It has
+   strict schema, duplicate, length, and hash-field checks, but it is not
+   publisher authenticated.
+3. `AuthenticatedManifest` is a verifier-owned, read-only wrapper. Its
+   production constructor is intentionally absent until the future TUF
+   verifier is implemented. The current `#[cfg(test)]` `synthetic_for_tests`
+   constructor only checks that caller-supplied target name, length, and
+   SHA-256 match the fixture bytes; it executes no TUF verification and is not
+   publisher-authentication evidence.
+4. Applicable-release selection accepts only that wrapper and typed runtime
+   inputs. Selection preserves reviewed versus experimental status but cannot
+   download, execute, install, activate, or authorize a hook.
+5. User-approved installation is a later consent and activation stage. Its
+   authenticated target must come from the repository's TUF chain; a matching
+   hash/length or a parsed manifest alone is never an independent trust system.
+6. Runtime Codex compatibility and broker authorization remain the existing
+   authority. Metadata cannot arm a hook, edit the compiled reviewed registry,
+   override strict mode/exclusions, broaden the exact command, or bypass
+   version, schema, tool, cwd, secret, process-identity, ancestry, or session
+   checks. Local success cannot promote project-wide reviewed support.
+
+The wrapper is not deserializable or cloneable as a trusted value. Callers can
+clone a read-only manifest view only as an ordinary descriptive copy; mutating
+that copy does not mutate or retain the authenticated wrapper. No updater path
+runs inside hook protocol execution or writes diagnostics to hook stdout.
+Real TUF root/role/expiry/target verification remains deferred to M5-T2;
+the boundary tests are synthetic type/byte-binding tests, not TUF
+verification tests.
+
 | Compatibility area | Evidence | Status | Supported claim |
 | --- | --- | --- | --- |
 | Legacy UI proof of concept | Ubuntu Linux; external Expect script; Codex CLI 0.151.0; option 1 accepted harmless `curl -I https://example.com` network escalation | Historical proof only | Option 1 worked in that exact test; numeric ordering is not a supported interface |

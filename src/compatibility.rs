@@ -3,6 +3,8 @@
 //! Version eligibility, hook capability, runtime schema validation, review
 //! status, and active session arming are intentionally separate concepts.
 
+use serde::{Deserialize, Serialize};
+
 pub const LOCAL_VERIFICATION_TARGET: &str = "0.153.0";
 pub const PREVIOUS_LOCAL_VERIFIED_VERSION: &str = "0.151.0";
 pub const WINDOWS_VERIFICATION_TARGET: &str = "0.152.1";
@@ -24,7 +26,8 @@ pub(crate) const fn verification_probe_command() -> &'static str {
     "curl -I https://example.com"
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub enum OperatingSystem {
     Linux,
@@ -63,7 +66,8 @@ impl OperatingSystem {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub enum Surface {
     LocalCliLauncher,

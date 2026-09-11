@@ -18,6 +18,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use getrandom::fill;
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
     ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -64,6 +65,7 @@ pub struct BrokerConfig {
 pub struct Session {
     pipe_name: String,
     secret: String,
+    audit: NamedTempFile,
 }
 
 impl Session {
@@ -76,7 +78,16 @@ impl Session {
             .collect::<String>();
         let pipe_name = format!(r"\\.\pipe\codex-autoapprover-{suffix}");
         let secret = arming::new_secret()?;
-        Ok(Self { pipe_name, secret })
+        let audit = tempfile::Builder::new()
+            .prefix("codex-autoapprover-session-")
+            .tempfile()
+            .context("create private session outcome audit")?;
+        audit::initialize(audit.path()).context("initialize private session outcome audit")?;
+        Ok(Self {
+            pipe_name,
+            secret,
+            audit,
+        })
     }
 
     pub fn pipe_name(&self) -> &str {
@@ -87,8 +98,18 @@ impl Session {
         &self.secret
     }
 
+    pub fn audit_path(&self) -> &std::path::Path {
+        self.audit.path()
+    }
+
     pub fn arm_child(&self, command: &mut std::process::Command) -> Result<()> {
         arming::arm_child(command, std::path::Path::new(&self.pipe_name), &self.secret)
+    }
+
+    pub fn arm_child_with_audit(&self, command: &mut std::process::Command) -> Result<()> {
+        self.arm_child(command)?;
+        command.env(arming::AUDIT_PATH_ENV, self.audit.path());
+        Ok(())
     }
 
     pub fn cleanup(self) -> Result<()> {
@@ -559,17 +580,30 @@ fn parse_response(bytes: &[u8]) -> Result<bool> {
 }
 
 pub fn request(input: &HookInput) -> Result<bool> {
-    let pipe_name =
-        env::var_os(arming::SESSION_SOCKET_ENV).context("broker socket is not armed")?;
-    let secret = env::var(arming::SESSION_TOKEN_ENV).context("session secret is not armed")?;
+    let pipe_name = env::var_os(arming::SESSION_SOCKET_ENV).ok_or_else(|| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
+    let secret = env::var(arming::SESSION_TOKEN_ENV).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
     if !arming::valid_token(Some(&secret))
         || env::var(arming::PROTOCOL_ENV).ok().as_deref() != Some(arming::PROTOCOL_VERSION)
     {
-        bail!("invalid hook arming")
+        return Err(anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        )));
     }
     let wide = encode_wide(OsStr::new(&pipe_name));
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
-    let handle = connect_client(&wide, deadline).context("connect to broker")?;
+    let handle = connect_client(&wide, deadline).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Transport,
+        ))
+    })?;
     let _ = audit::hook_stage("broker_connected");
     let request = serde_json::json!({
         "protocol_version": BROKER_PROTOCOL_VERSION,
@@ -577,20 +611,28 @@ pub fn request(input: &HookInput) -> Result<bool> {
         "session_secret": secret,
         "hook_input": input,
     });
-    let bytes = serde_json::to_vec(&request)?;
-    let result = (|| -> io::Result<bool> {
-        write_frame_until(handle, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline, None)?;
+    let bytes = serde_json::to_vec(&request).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
+    let result = (|| -> std::result::Result<bool, super::RequestFailureKind> {
+        write_frame_until(handle, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline, None)
+            .map_err(|_| super::RequestFailureKind::Transport)?;
         let _ = audit::hook_stage("broker_request_sent");
-        let response = read_frame_until(handle, MAX_BROKER_RESPONSE_BYTES, deadline, None)?;
+        let response = read_frame_until(handle, MAX_BROKER_RESPONSE_BYTES, deadline, None)
+            .map_err(|_| super::RequestFailureKind::Transport)?;
         let _ = audit::hook_stage("broker_response_received");
-        ensure_no_trailing_data(handle)?;
-        let decision = parse_response(&response).map_err(io::Error::other)?;
+        ensure_no_trailing_data(handle).map_err(|_| super::RequestFailureKind::Protocol)?;
+        let decision =
+            parse_response(&response).map_err(|_| super::RequestFailureKind::Protocol)?;
         let _ = audit::hook_stage("broker_response_parsed");
-        write_frame_until(handle, RESPONSE_ACK, RESPONSE_ACK.len(), deadline, None)?;
+        write_frame_until(handle, RESPONSE_ACK, RESPONSE_ACK.len(), deadline, None)
+            .map_err(|_| super::RequestFailureKind::Transport)?;
         Ok(decision)
     })();
     close_handle(handle);
-    result.map_err(Into::into)
+    result.map_err(|kind| anyhow::Error::new(super::RequestFailure::new(kind)))
 }
 
 pub fn constant_time_equal(left: &str, right: &str) -> bool {

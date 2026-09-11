@@ -11,6 +11,7 @@ mod interrupt;
 mod launcher;
 mod process;
 mod protocol;
+mod update;
 
 use clap::Parser;
 

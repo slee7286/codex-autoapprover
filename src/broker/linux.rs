@@ -44,6 +44,7 @@ pub const MAX_RUNTIME_SOCKET_PATH_BYTES: usize = 100;
 pub struct Session {
     runtime: TempDir,
     socket_path: PathBuf,
+    audit_path: PathBuf,
     secret: String,
 }
 
@@ -60,9 +61,12 @@ impl Session {
             bail!("refusing a reused broker socket path")
         }
         let secret = arming::new_secret()?;
+        let audit_path = runtime.path().join("hook-audit.log");
+        audit::initialize(&audit_path).context("initialize private session outcome audit")?;
         Ok(Self {
             runtime,
             socket_path,
+            audit_path,
             secret,
         })
     }
@@ -75,8 +79,18 @@ impl Session {
         &self.secret
     }
 
+    pub fn audit_path(&self) -> &Path {
+        &self.audit_path
+    }
+
     pub fn arm_child(&self, command: &mut std::process::Command) -> Result<()> {
         arming::arm_child(command, &self.socket_path, &self.secret)
+    }
+
+    pub fn arm_child_with_audit(&self, command: &mut std::process::Command) -> Result<()> {
+        self.arm_child(command)?;
+        command.env(arming::AUDIT_PATH_ENV, self.audit_path());
+        Ok(())
     }
 
     pub fn cleanup(self) -> Result<()> {
@@ -561,32 +575,83 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
 }
 
 pub fn request(input: &HookInput) -> Result<bool> {
-    let socket = env::var_os(arming::SESSION_SOCKET_ENV).context("broker socket is not armed")?;
-    let secret = env::var(arming::SESSION_TOKEN_ENV).context("session secret is not armed")?;
+    let socket = env::var_os(arming::SESSION_SOCKET_ENV).ok_or_else(|| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
+    let secret = env::var(arming::SESSION_TOKEN_ENV).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
     if !arming::valid_token(Some(&secret))
         || env::var(arming::PROTOCOL_ENV).ok().as_deref() != Some(arming::PROTOCOL_VERSION)
     {
-        bail!("invalid hook arming")
+        return Err(anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        )));
     }
-    let mut stream = UnixStream::connect(PathBuf::from(socket)).context("connect to broker")?;
+    let mut stream = UnixStream::connect(PathBuf::from(socket)).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Transport,
+        ))
+    })?;
     let _ = audit::hook_stage("broker_connected");
-    stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
-    stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
+    stream
+        .set_read_timeout(Some(CONNECTION_TIMEOUT))
+        .map_err(|_| {
+            anyhow::Error::new(super::RequestFailure::new(
+                super::RequestFailureKind::Transport,
+            ))
+        })?;
+    stream
+        .set_write_timeout(Some(CONNECTION_TIMEOUT))
+        .map_err(|_| {
+            anyhow::Error::new(super::RequestFailure::new(
+                super::RequestFailureKind::Transport,
+            ))
+        })?;
     let request = serde_json::json!({
         "protocol_version": BROKER_PROTOCOL_VERSION,
         "message_type": "permission_request",
         "session_secret": secret,
         "hook_input": input,
     });
-    let bytes = serde_json::to_vec(&request)?;
+    let bytes = serde_json::to_vec(&request).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
-    write_frame_until(&mut stream, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline)?;
+    write_frame_until(&mut stream, &bytes, MAX_BROKER_MESSAGE_BYTES, deadline).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Transport,
+        ))
+    })?;
     let _ = audit::hook_stage("broker_request_sent");
-    stream.shutdown(Shutdown::Write)?;
-    let response = read_frame_until(&mut stream, MAX_BROKER_RESPONSE_BYTES, deadline)?;
+    stream.shutdown(Shutdown::Write).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Transport,
+        ))
+    })?;
+    let response =
+        read_frame_until(&mut stream, MAX_BROKER_RESPONSE_BYTES, deadline).map_err(|_| {
+            anyhow::Error::new(super::RequestFailure::new(
+                super::RequestFailureKind::Transport,
+            ))
+        })?;
     let _ = audit::hook_stage("broker_response_received");
-    ensure_no_trailing_data(&mut stream, deadline)?;
-    let decision = parse_response(&response)?;
+    ensure_no_trailing_data(&mut stream, deadline).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
+    let decision = parse_response(&response).map_err(|_| {
+        anyhow::Error::new(super::RequestFailure::new(
+            super::RequestFailureKind::Protocol,
+        ))
+    })?;
     let _ = audit::hook_stage("broker_response_parsed");
     Ok(decision)
 }

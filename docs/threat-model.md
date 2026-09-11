@@ -10,6 +10,34 @@ The hook input may include `session_id`, `cwd`, `hook_event_name`, `permission_m
 
 The experimental `verify-local-hook` path adds an exact local-version check, interactive confirmation, a temporary Git repository, `workspace-write` and `on-request` settings, a child-local hook override, and a redacted temporary audit sink. It does not isolate or replace the user's Codex authentication context, and the hook-trust bypass can allow other configured hooks to participate under Codex's documented composition rules.
 
+## Update state and startup-check coordination
+
+M2-T1 adds a separate user-scoped state file for future startup checks. Its
+version 1 schema contains only the installed autoapprover version, last-seen
+Codex version, successful-check timestamp/version, bounded HTTP validators,
+exact Codex/release skip scope, bounded backoff, and a fixed failure category.
+It cannot contain commands, hook payloads, credentials, session secrets, raw
+environments, or arbitrary machine identifiers. State parsing is bounded,
+rejects duplicate and unknown fields, validates stable versions and bounded
+validator text, and reports corrupt or unsupported state explicitly instead of
+silently resetting preferences.
+
+Writes use a same-directory temporary file, restrictive permissions where the
+platform supports them, flush/sync before replacement, and an atomic replace.
+An incomplete temporary file is ignored and cannot replace the previous valid
+state. The state path and coordination path reject symlinks and non-regular
+files in the checked path. Storage failures are recoverable outcomes; they do
+not arm a hook or prevent ordinary Codex fallback.
+
+Concurrent read/modify/write work must hold the user-scoped advisory check
+lease. The Unix and Windows implementations use kernel-owned file locks with a
+bounded acquisition deadline. The lease is released by normal drop or process
+termination, so a stale lock file is not deleted or interpreted as authority.
+Lock contention is an explicit recoverable category and must not be held across
+future consent or long downloads. This local state/coordination module does not
+perform network checks, TUF verification, installation, prompts, or hook
+protocol work.
+
 ## Assets
 
 - user files and filesystem contents;
@@ -69,6 +97,25 @@ The design assumes the host, terminal, user account, official Codex executable, 
 Protections against a fully compromised host, malicious official Codex build, arbitrary model behavior, all prompt injection, and all network/filesystem side effects are explicitly out of scope.
 
 IDE-extension, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud integration are independently unverified. A future IDE implementation must have its own persistent-hook composition, secure arming, session identity, and threat review; the current CLI child environment is not sufficient evidence.
+
+## Compatibility outcome observations
+
+M2-T3 records only fixed-category observations from the private session audit
+channel: no hook invocation, successful exchange, compatibility rejection,
+transport failure, or protocol failure. Bounded stage counters preserve the
+distinction between executable entry, validated request, broker decision, and
+structured emission. The wrapper never treats a successful child exit as
+command success; command outcome is unknown unless a separate trusted observer
+supplies a typed result.
+
+The hook and broker never put command text, raw payloads, credentials, session
+secrets, environments, child output, or arbitrary error text into this channel
+or the persistent state. Mixed requests aggregate conservatively, and records
+are keyed by autoapprover version, Codex version, operating system, and surface
+so a finishing older session cannot replace a newer observation. These local
+observations are diagnostic only: they cannot change the reviewed compatibility
+registry, arm a hook, override strict or automatic policy, or bypass broker
+authorization. Hook stdout remains the structured protocol response only.
 
 ## Pre-release security gates
 

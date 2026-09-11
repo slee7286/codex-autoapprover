@@ -16,6 +16,11 @@ use crate::{
     broker::{self, Broker, BrokerConfig, Session},
     cli::{COMPATIBILITY_ENV, CompatibilityMode, RunArgs},
     codex, compatibility, interrupt, process,
+    update::{
+        manifest::StableVersion,
+        outcome,
+        state::{self, CompatibilityObservation, SystemClock},
+    },
 };
 
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -108,6 +113,10 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     }
 
     let session = Session::create()?;
+    let inherited_audit_path = env::var_os(arming::AUDIT_PATH_ENV).map(PathBuf::from);
+    let audit_path = inherited_audit_path
+        .clone()
+        .unwrap_or_else(|| session.audit_path().to_path_buf());
     let broker = Broker::start(
         &session,
         BrokerConfig {
@@ -115,7 +124,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
             expected_cwd: cwd,
             expected_command: None,
             expected_tool_name: None,
-            audit_path: None,
+            audit_path: Some(audit_path.clone()),
         },
     )?;
     let mut command = codex::build_codex_command(&installation);
@@ -126,7 +135,12 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
         .args(&args.codex_args);
-    if let Err(error) = session.arm_child(&mut command) {
+    let arm_result = if inherited_audit_path.is_some() {
+        session.arm_child(&mut command)
+    } else {
+        session.arm_child_with_audit(&mut command)
+    };
+    if let Err(error) = arm_result {
         let _ = broker.shutdown();
         let cleanup = session.cleanup();
         return Err(with_cleanup_error(error, cleanup));
@@ -181,6 +195,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     let status = wait_for_bound_child(&mut child, &broker, &interrupted.flag)
         .with_context(|| format!("wait for official Codex at {}", installation.path.display()));
     let broker_result = broker.shutdown();
+    record_session_observation(&installation.version, &audit_path);
     let cleanup = session.cleanup();
     let status = status.and_then(|status| {
         broker_result.context("stop decision broker")?;
@@ -188,6 +203,69 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         Ok(status)
     })?;
     Ok(codex::status_code(status))
+}
+
+fn record_session_observation(codex_version: &str, audit_path: &Path) {
+    let mut audit = match outcome::read_audit(audit_path) {
+        Ok(audit) => audit,
+        Err(error) => {
+            eprintln!("codex-autoapprover: local compatibility observation unavailable ({error})");
+            return;
+        }
+    };
+    // A Codex child exit status is not independent command evidence. Keep the
+    // command outcome explicitly unknown unless a future trusted observer
+    // supplies a typed command result.
+    audit.record_command_outcome(outcome::CommandOutcome::Unknown);
+    let session = audit.finish();
+    let Some(path) = state::user_state_path() else {
+        eprintln!(
+            "codex-autoapprover: local compatibility observation unavailable (state storage path unavailable)"
+        );
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        eprintln!(
+            "codex-autoapprover: local compatibility observation unavailable (state storage path unavailable)"
+        );
+        return;
+    };
+    if !parent.is_dir() {
+        eprintln!(
+            "codex-autoapprover: local compatibility observation unavailable (state storage is not initialized)"
+        );
+        return;
+    }
+    let autoapprover_version = match StableVersion::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) => version,
+        Err(_) => {
+            eprintln!(
+                "codex-autoapprover: local compatibility observation unavailable (autoapprover version unavailable)"
+            );
+            return;
+        }
+    };
+    let codex_version = match StableVersion::parse(codex_version) {
+        Ok(version) => version,
+        Err(_) => {
+            eprintln!(
+                "codex-autoapprover: local compatibility observation unavailable (Codex version unavailable)"
+            );
+            return;
+        }
+    };
+    let observation = CompatibilityObservation::from_session(
+        autoapprover_version,
+        codex_version,
+        compatibility::OperatingSystem::current(),
+        compatibility::Surface::LocalCliLauncher,
+        session,
+    );
+    if let Err(error) =
+        state::StateStore::new(path).record_compatibility_observation(observation, &SystemClock)
+    {
+        eprintln!("codex-autoapprover: local compatibility observation not recorded ({error})");
+    }
 }
 
 fn resolve_compatibility_mode(args: &RunArgs) -> Result<CompatibilityMode> {
@@ -316,7 +394,43 @@ pub fn diagnose() -> Result<i32> {
         }
     }
 
+    print_local_compatibility_observation();
+
     Ok(0)
+}
+
+fn print_local_compatibility_observation() {
+    let Some(path) = state::user_state_path() else {
+        println!("local compatibility observation: unavailable (state storage path unavailable)");
+        return;
+    };
+    match state::StateStore::new(path).load() {
+        Ok(state::LoadState::Missing) => {
+            println!("local compatibility observation: none recorded")
+        }
+        Ok(state::LoadState::Present(state)) => {
+            if let Some(observation) = state.compatibility_observations.last() {
+                println!(
+                    "local compatibility observation: codex={} autoapprover={} platform={} surface={} hook={} command={} entries={} validated_requests={} allows={} no_decisions={} emissions={}",
+                    observation.codex_version,
+                    observation.autoapprover_version,
+                    observation.operating_system.as_str(),
+                    observation.surface.as_str(),
+                    observation.hook_outcome.as_str(),
+                    observation.command_outcome.as_str(),
+                    observation.counts.entry_count,
+                    observation.counts.validated_request_count,
+                    observation.counts.allow_count,
+                    observation.counts.no_decision_count,
+                    observation.counts.structured_emission_count,
+                );
+                println!("local compatibility observation is not project-wide reviewed support");
+            } else {
+                println!("local compatibility observation: none recorded");
+            }
+        }
+        Err(error) => println!("local compatibility observation: unavailable ({error})"),
+    }
 }
 
 pub fn print_hook_config() -> Result<i32> {
