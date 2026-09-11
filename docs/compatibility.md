@@ -31,6 +31,24 @@ cryptography; it only compares the parsed bytes with a TUF-supplied SHA-256
 target digest. Selection, network fetching, persistent state, installation,
 and startup prompting are later milestones.
 
+M1-T2 selection consumes only a TUF-authenticated manifest wrapper and typed
+installed-version/Codex/platform/architecture/runtime/surface/policy inputs.
+It ranks all applicable candidates by numeric autoapprover release version and
+rejects equal-release, conflicting-asset, overlapping-compatibility, and
+equal-ranked-asset ambiguity. It never ranks by input order or publication
+date. A newer incompatible release is skipped in favor of an older release
+that is still newer than the installed version.
+
+Under automatic mode, the newest applicable exact tuple may be reviewed or
+explicitly experimental; the result retains its experimental label. Under
+strict mode, experimental records are rejected and the newest applicable exact
+reviewed tuple is selected instead. Therefore, when a newer experimental
+release and an older reviewed release are both applicable, automatic mode
+selects the newer experimental release while strict mode selects the older
+reviewed release. Exact exclusions take precedence over any overlapping
+experimental eligibility. Selection does not authorize downloading,
+execution, activation, or broker decisions.
+
 | Compatibility area | Evidence | Status | Supported claim |
 | --- | --- | --- | --- |
 | Legacy UI proof of concept | Ubuntu Linux; external Expect script; Codex CLI 0.151.0; option 1 accepted harmless `curl -I https://example.com` network escalation | Historical proof only | Option 1 worked in that exact test; numeric ordering is not a supported interface |

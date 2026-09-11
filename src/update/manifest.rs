@@ -3,8 +3,8 @@
 //! A parsed manifest is untrusted application metadata. It becomes an
 //! TufAuthenticatedManifest only when a later TUF adapter supplies a
 //! crate-private proof for the exact manifest target and bytes. This module
-//! does not implement signatures, hashing, network access, release selection,
-//! installation, or compatibility arming.
+//! does not implement signature verification or custom hashing, network access,
+//! release selection, installation, or compatibility arming.
 
 use std::{collections::BTreeSet, fmt};
 
@@ -106,7 +106,7 @@ impl<'de> Deserialize<'de> for StableVersion {
 pub struct Sha256Digest([u8; 32]);
 
 impl Sha256Digest {
-    fn from_bytes(value: &[u8]) -> Self {
+    pub(crate) fn from_bytes(value: &[u8]) -> Self {
         let digest: [u8; 32] = Sha256::digest(value).into();
         Self(digest)
     }

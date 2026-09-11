@@ -9,11 +9,12 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Roadmap base commit before this M0 update: `cd82e224e9084b6c8cc8f479e2e932e13c97c96c`
 - Roadmap source branch: `main`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
-- Roadmap revision: `3`
+- Roadmap revision: `4`
 - Current milestone: `M1 — Compatibility manifest and release selection`
-- First executable task: `M1-T2 — Deterministic applicable-release selection`
+- First executable task: `M1-T3 — Compatibility and authorization boundary`
 - M0 is complete as a design milestone. No updater, installer, release workflow, dependency, persistent Codex configuration, or live verification changed.
 - M1-T1 is complete: the descriptive schema, strict bounded parser, synthetic fixtures, deterministic serialization, and crate-private TUF verification seam are implemented in `src/update/manifest.rs`.
+- M1-T2 is complete: pure deterministic applicable-release selection is implemented in `src/update/selection.rs`; no updater, network, installation, or hook behavior was wired.
 - Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 compatibility records and authorization behavior remain unchanged.
 
 ## Read first
@@ -27,7 +28,7 @@ This is a planning handoff, not an updater implementation, installer, release ap
    cargo run --bin validate_distribution_roadmap -- --check
    ```
 
-5. Execute the first task whose dependencies are complete. The next ready task is `M1-T2`.
+5. Execute the first task whose dependencies are complete. The next ready task is `M1-T3`.
 
 ## M0 decisions completed
 
@@ -49,6 +50,14 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Canonical serialization deterministically sorts asset and compatibility arrays. Parsing alone is untrusted; only a later successful TUF verification adapter may expose authenticated metadata, using the TUF target's authenticated bytes, length, and hash.
 - Synthetic fixtures are under `tests/fixtures/distribution_manifest/`. They use no production trust anchors and do not establish reviewed support or native runtime-floor validation.
 - This task did not implement selection, network fetching, persistent state, installation, startup prompts, release publication, or TUF cryptography.
+
+## M1-T2 selection contract completed
+
+- Selection accepts typed installed autoapprover/Codex versions, native target OS and architecture, runtime environment, local CLI surface, and the existing automatic/strict compatibility mode.
+- It consumes only TUF-authenticated manifest wrappers, searches every supplied candidate, compares stable release versions numerically, rejects equal release versions and ambiguity, and never uses input order or publication date.
+- It skips incompatible newer releases when an older release is still newer than installed and applicable. Empty catalogs, equal/older releases, missing platform/architecture assets, runtime floors, unknown runtime, malformed Codex versions, exclusions, and policy failures produce fixed-category outcomes.
+- Automatic mode selects the newest applicable reviewed or explicitly experimental tuple and preserves its experimental classification. Strict mode rejects experimental records and selects the newest applicable exact-reviewed tuple. Exact exclusions take precedence over overlapping eligibility.
+- The selector returns release notes and current/new version data for a future consent UI, but it does not fetch, download, execute, install, activate, authorize, persist state, or modify the compatibility registry.
 
 ## Update protocol
 
@@ -74,7 +83,7 @@ After each session:
 
 ## Next task
 
-`M1-T2` should implement deterministic applicable-release selection over the manifest and actual installed Codex/platform/runtime inputs, including newer-inapplicable versus older-applicable releases, prerelease filtering, downgrade refusal, no-applicable-release output, and an explanation that preserves the existing automatic/strict hook policy.
+`M1-T3` should review and test the compatibility/authorization boundary: manifest selection and local observations must remain separate from reviewed support and runtime broker authorization, with no updater path inside hook protocol execution or hook stdout.
 
 ## Boundaries
 

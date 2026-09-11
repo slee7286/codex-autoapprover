@@ -8,3 +8,8 @@
 // runtime fetching and selection do not consume it until those milestones land.
 #[allow(dead_code)]
 pub(crate) mod manifest;
+
+// Selection is a pure interface seam for later startup-check work; it is not
+// called by the existing launcher until the subsequent updater milestones.
+#[allow(dead_code)]
+pub(crate) mod selection;

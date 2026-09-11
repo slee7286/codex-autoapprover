@@ -3,13 +3,13 @@
 # Distribution roadmap
 
 - Schema version: `1.0`
-- Roadmap revision: `3`
+- Roadmap revision: `4`
 - Repository: `slee7286/codex-autoapprover`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
 - Source branch: `main`
 - Roadmap branch: `feat/distribution-roadmap`
 - Current milestone: `M1`
-- Next executable task: `M1-T2`
+- Next executable task: `M1-T3`
 
 ## Objective
 
@@ -340,7 +340,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 #### M1-T2 — Deterministic applicable-release selection
 
-- Status: `planned`
+- Status: `completed`
 - Dependencies: `M0-T2`, `M1-T1`
 - Objective: Select the newest applicable stable release, not merely the newest overall release, using bounded metadata and explicit platform/runtime rules.
 - User-visible outcome: Users are offered only a release that matches the current wrapper target, architecture, runtime, install channel, and downgrade policy.
@@ -348,28 +348,34 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 **Expected implementation areas**
 
 - `src/codex.rs` (`existing`): Supply actual installed Codex executable and version detection to the selection input.
-- `src/update/selection.rs` (`planned`): Implement deterministic stable-version, platform, architecture, runtime, channel, and downgrade selection.
+- `src/update/selection.rs` (`existing`): Implement pure deterministic numeric release selection over TUF-authenticated manifests and typed platform/runtime/policy inputs.
 - `src/launcher.rs` (`existing`): Invoke selection before Codex starts while preserving current arguments, cwd, I/O, and policy gates.
 
 **Deliverables**
 
-- A pure selection function with deterministic tie-breaking and explicit no-applicable-release output.
-- Rules for the latest overall release being inapplicable, prerelease filtering, unsupported targets, same-version responses, and downgrade attempts.
-- A user-facing applicability explanation containing current/new versions, compatibility status, and release-notes link.
+- A pure selector that consumes TUF-authenticated manifests and explicit installed-version, Codex, platform, architecture, runtime, surface, and compatibility-policy inputs.
+- Numeric release ordering across every supplied candidate, with newer-inapplicable versus older-applicable behavior, prerelease filtering at manifest/input parsing, unsupported-target/runtime handling, same-version responses, and downgrade refusal.
+- A typed outcome with fixed-category candidate/catalog rejection reasons, reviewed versus experimental classification, and a user-facing applicability explanation containing current/new versions, compatibility status, and release-notes metadata.
 
 **Validation**
 
-- Table-driven tests for applicable update, newer incompatible release plus older applicable release, prerelease, unsupported asset, downgrade, same version, and malformed version.
-- Assert the selected release never changes the existing automatic/strict hook policy.
+- Focused selector tests cover Windows and Linux candidates, numeric 0.9.0 versus 0.10.0 ordering, newer-incompatible/older-applicable candidates, reviewed versus experimental automatic/strict policy, exact exclusions, runtime floors and unknown runtime, duplicate/conflicting records, equal-ranked assets, input permutations, empty/current/downgrade catalogs, malformed Codex versions, and read-only hook-registry behavior.
+- Selection requires the TUF-authenticated manifest wrapper, never treats a hash/length match alone as publisher authentication, and cannot download, execute, install, activate, or authorize a hook.
+- The selected result preserves an experimental classification; automatic mode chooses the newest applicable release, while strict mode chooses the newest exact-reviewed applicable release.
 
 **Completion evidence**
 
-- Not complete; evidence must be recorded before status becomes `completed`.
+- src/update/selection.rs implements the pure selector, typed runtime floors for Windows 10/11-style Hx requirements and Linux glibc requirements, numeric StableVersion ordering, fixed-category outcomes, ambiguity rejection, and applicability explanations.
+- Focused selector tests pass for the synthetic valid manifest and cover Windows/Linux, numeric ordering, incompatible latest release, policy classification, exact exclusions, runtime boundaries, ambiguity, permutation invariance, no downgrade/current release, malformed Codex versions, and unchanged compatibility-registry length.
+- docs/compatibility.md documents the explicit M1-T2 decision: automatic mode selects the newest applicable reviewed or explicitly experimental release; strict mode selects the newest applicable exact-reviewed release; exact exclusions and ambiguity fail closed.
+- cargo fmt --check, cargo test --all-targets, cargo clippy --all-targets --all-features -- -D warnings, and cargo build --all-targets passed in the native Windows checkout.
+- cargo run --bin validate_distribution_roadmap -- --write and --check, plus git diff --check, passed after roadmap regeneration.
 
 **Risks and unresolved decisions**
 
-- Whether applicability is based on wrapper release channel, Codex version, or both must be explicit in the manifest contract.
-- Server-directed minimum-version or emergency block policy must fail closed without silently disabling ordinary Codex.
+- Selection is deliberately not wired into startup, network, state, consent, installation, rollback, or release publication; those remain later milestones.
+- The typed runtime model covers the proposed initial native Windows x64 and Linux x64/glibc targets only. Native installer/runtime-floor acceptance remains a later M4/M6 blocker.
+- TUF authentication and selection remain separate from hook authorization; a selected release still cannot change the existing compatibility registry or broker checks.
 
 **Required access or action**
 
