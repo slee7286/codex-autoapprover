@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0",
-  "roadmap_revision": 1,
+  "roadmap_revision": 2,
   "repository": "slee7286/codex-autoapprover",
   "inspected_source_commit": "296008527103e98b9d9f9f20fe6d4e8508346b21",
   "source_branch": "main",
   "roadmap_branch": "feat/distribution-roadmap",
-  "overall_objective": "Plan and then implement a trustworthy, user-scoped, installable Windows x64 and Linux x64 release of codex-autoapprover with an opt-in startup updater that preserves the existing Codex wrapper, hook authorization, fallback, arguments, cwd, terminal I/O, configuration, and exit-status behavior.",
+  "overall_objective": "Plan and then implement a trustworthy, user-scoped, installable Windows x64 and Linux x64 release of codex-autoapprover with startup update checks enabled by default but update installation requiring explicit consent, while preserving the existing Codex wrapper, hook authorization, fallback, arguments, cwd, terminal I/O, configuration, and exit-status behavior.",
   "scope": [
     "Prebuilt native Windows x64 and Linux x64 packages that do not require Rust, Cargo, Git, or administrator privileges at runtime or installation.",
     "A documented codexa or codex-autoapprover run wrapper; the original codex command remains untouched and is never shadowed or replaced.",
@@ -20,25 +20,244 @@
     "Treating local observations, successful Codex exit, capability probes, or roadmap completion as project-wide reviewed compatibility.",
     "Starting live verification, installing anything, publishing a release, tagging a release, or changing persistent Codex configuration during roadmap work."
   ],
-  "current_milestone": "M0",
-  "next_executable_task": "M0-T1",
-  "blockers": [
+  "startup_decision_table": [
     {
-      "id": "B-M0-PLATFORM-MATRIX",
-      "status": "blocked",
-      "description": "The initial supported Windows build/runtime floor and Linux x64 libc/minimum-runtime strategy must be selected and then verified on the named native targets; the repository currently has native implementation evidence but no installable distribution contract.",
-      "unblocks": [
-        "M0-T2",
+      "state": "Wrapper launch",
+      "condition": "codexa or codex-autoapprover run starts before the official Codex child",
+      "action": "Resolve the actual installed codex executable, version, platform, local-CLI surface, arguments, cwd, and whether startup checks are disabled; updater logic stays in the wrapper process.",
+      "codex_action": "Codex has not started.",
+      "outcome": "Continue to version-change, unresolved-state, explicit-check, or disabled-check handling."
+    },
+    {
+      "state": "Startup check eligibility",
+      "condition": "Checks are enabled and the Codex version changed, compatibility is unresolved, or the user requested update --check; otherwise a backoff window suppresses the network request.",
+      "action": "Coordinate with other launches, consult the bounded cache/validator state, and check the fixed release origin for a newer applicable release.",
+      "codex_action": "Codex has not started.",
+      "outcome": "A check may produce applicable, no-applicable-release, unavailable, malformed, incompatible, or backoff results."
+    },
+    {
+      "state": "Applicable release found",
+      "condition": "Authenticated metadata selects a newer stable asset for the exact native target and supported Codex tuple.",
+      "action": "In an interactive terminal offer Install, Continue this time, and Skip this release with current/new versions, compatibility status, and release-notes link.",
+      "codex_action": "Codex has not started.",
+      "outcome": "Install enters bounded verification/activation; the other choices continue with the installed implementation."
+    },
+    {
+      "state": "Noninteractive or no consent",
+      "condition": "Input is noninteractive, the user chooses Continue this time, or the user declines installation.",
+      "action": "Do not prompt or consume Codex input; record only a fixed local update outcome and continue with the installed automatic compatibility policy.",
+      "codex_action": "Start Codex normally after the wrapper decision.",
+      "outcome": "No update is installed and normal approval fallback remains available."
+    },
+    {
+      "state": "Skip this release",
+      "condition": "The user explicitly skips the offered release.",
+      "action": "Persist a skip scoped to the exact installed Codex version and release version; do not suppress later Codex-version changes or a different applicable release.",
+      "codex_action": "Start Codex normally after the wrapper decision.",
+      "outcome": "The same release is not offered again for that Codex version unless explicitly requested; a Codex version change reconsiders applicability."
+    },
+    {
+      "state": "Unavailable, malformed, incompatible, or backoff result",
+      "condition": "The service times out/is unavailable, metadata is invalid, no applicable asset exists, the release is a prerelease/unsupported target, or a server-directed backoff is active.",
+      "action": "Keep the installed version and record a fixed-category local update-check result without treating it as hook compatibility evidence.",
+      "codex_action": "Start Codex normally after the wrapper decision.",
+      "outcome": "The installed automatic compatibility policy is attempted if eligible; otherwise Codex uses ordinary approval behavior."
+    },
+    {
+      "state": "Update activation failure",
+      "condition": "Download, authentication, hash, extraction, health check, atomic activation, or rollback preparation fails before Codex starts.",
+      "action": "Discard incomplete staging, retain the known-good active version, and report a fixed-category local update failure.",
+      "codex_action": "Start Codex with the known-good installed version.",
+      "outcome": "A failed update never blocks ordinary Codex startup or replaces the active payload."
+    },
+    {
+      "state": "Capability check",
+      "condition": "The installed Codex/version tuple is eligible for an automatic attempt and the bounded non-live hook capability probe is run.",
+      "action": "Arm the existing broker/hook path only when its existing identity, ancestry, session, cwd, schema, tool, and exact authorization checks pass.",
+      "codex_action": "Start Codex with the wrapper's inherited arguments, cwd, terminal I/O, environment, and exit propagation.",
+      "outcome": "Capability success is not hook success and does not promote project-wide verified support."
+    },
+    {
+      "state": "Hook/session outcome",
+      "condition": "A session either produces a genuine hook exchange, produces no hook invocation, or encounters a compatibility/transport/protocol rejection after Codex starts.",
+      "action": "Record one fixed local category distinguishing capability success, hook success, no hook invocation, hook incompatibility, and command execution failure.",
+      "codex_action": "Never restart Codex, replay a command, or change the started session; preserve ordinary approval fallback.",
+      "outcome": "Only a genuine authenticated hook exchange is hook success; a successful Codex exit alone is insufficient."
+    },
+    {
+      "state": "Command execution failure",
+      "condition": "The Codex child or requested command exits unsuccessfully after startup.",
+      "action": "Propagate the child exit status and retain the local outcome category; do not retry by replaying the session or command.",
+      "codex_action": "The already-started Codex session ends once.",
+      "outcome": "Command failure is never converted into compatibility success or an update decision."
+    }
+  ],
+  "startup_state_transitions": [
+    {
+      "from": "wrapper_start",
+      "event": "resolve official codex and version",
+      "to": "startup_check_or_compatibility",
+      "effect": "Capture the version-change and unresolved-state inputs before the child starts."
+    },
+    {
+      "from": "startup_check_or_compatibility",
+      "event": "check enabled and eligible, with no active backoff or another owner",
+      "to": "release_selection",
+      "effect": "Perform one bounded coordinated check; a Codex-version change and unresolved state take precedence over the normal cache interval."
+    },
+    {
+      "from": "startup_check_or_compatibility",
+      "event": "check disabled, unchanged resolved state, or backoff",
+      "to": "compatibility_policy",
+      "effect": "Skip network and retain the installed compatibility policy."
+    },
+    {
+      "from": "release_selection",
+      "event": "applicable release and interactive consent",
+      "to": "activation_or_compatibility_policy",
+      "effect": "Install only after explicit consent; Continue this time and Skip this release continue without installation."
+    },
+    {
+      "from": "release_selection",
+      "event": "noninteractive, unavailable, malformed, incompatible, or declined",
+      "to": "compatibility_policy",
+      "effect": "Do not prompt or consume Codex input; continue with the installed version."
+    },
+    {
+      "from": "activation_or_compatibility_policy",
+      "event": "activation succeeds before Codex launch",
+      "to": "codex_launch",
+      "effect": "If activation needs a restart, pass one one-shot internal wrapper marker bound to the candidate release/digest; the restarted wrapper consumes and clears it before launching exactly one Codex child with preserved args/cwd/stdio, and a repeated or invalid marker bypasses restart and uses the known-good payload."
+    },
+    {
+      "from": "activation_or_compatibility_policy",
+      "event": "activation fails or capability check is inconclusive",
+      "to": "codex_launch",
+      "effect": "Use the known-good installed version and leave automatic approval unarmed when capability checks fail."
+    },
+    {
+      "from": "codex_launch",
+      "event": "hook success, no hook invocation, hook incompatibility, or child command failure",
+      "to": "session_exit",
+      "effect": "Record the fixed category, preserve ordinary approval fallback, and never replay or restart the started session."
+    }
+  ],
+  "initial_support_targets": [
+    {
+      "target": "native Windows x64 local CLI",
+      "triple": "x86_64-pc-windows-msvc",
+      "runtime_floor": "Windows 10 22H2 (build 19045) or later, user-scoped installation, no administrator privilege",
+      "package_format": "zip archive plus PowerShell installer",
+      "status": "proposed_not_validated",
+      "validation_milestones": [
         "M4-T3",
         "M6-T2"
       ]
     },
     {
-      "id": "B-M0-TRUST-BOOTSTRAP",
+      "target": "native Linux x64 local CLI",
+      "triple": "x86_64-unknown-linux-gnu",
+      "runtime_floor": "glibc 2.31 or later on a Linux system with /proc and flock; musl, other libc families, and other architectures are outside the initial target",
+      "package_format": "tar.gz archive plus POSIX shell installer",
+      "status": "proposed_not_validated",
+      "validation_milestones": [
+        "M4-T3",
+        "M6-T2"
+      ]
+    }
+  ],
+  "installation_ownership": [
+    {
+      "platform": "Windows",
+      "entry_point": "%LOCALAPPDATA%/codex-autoapprover/bin/codexa.exe",
+      "payloads": "%LOCALAPPDATA%/codex-autoapprover/versions/<release>/",
+      "active_pointer": "%LOCALAPPDATA%/codex-autoapprover/state/active.json",
+      "staging": "%LOCALAPPDATA%/codex-autoapprover/staging/",
+      "cache": "%LOCALAPPDATA%/codex-autoapprover/cache/",
+      "rollback": "%LOCALAPPDATA%/codex-autoapprover/rollback/",
+      "ownership": "The stable launcher is owned by the installer and never replaced while a child runs; immutable versioned payloads are added, and active.json is atomically replaced."
+    },
+    {
+      "platform": "Linux",
+      "entry_point": "${XDG_DATA_HOME:-~/.local/share}/codex-autoapprover/bin/codexa",
+      "payloads": "${XDG_DATA_HOME:-~/.local/share}/codex-autoapprover/versions/<release>/",
+      "active_pointer": "${XDG_STATE_HOME:-~/.local/state}/codex-autoapprover/active.json",
+      "staging": "${XDG_DATA_HOME:-~/.local/share}/codex-autoapprover/staging/",
+      "cache": "${XDG_CACHE_HOME:-~/.cache}/codex-autoapprover/",
+      "rollback": "${XDG_DATA_HOME:-~/.local/share}/codex-autoapprover/rollback/",
+      "ownership": "The stable launcher is owned by the installer; immutable versioned payloads and an atomically replaced active pointer avoid replacing a running executable."
+    }
+  ],
+  "release_trust_model": {
+    "metadata": "Use TUF 1.0 repository metadata with a pinned root.json, signed timestamp/snapshot/targets roles, bounded metadata/target sizes, and a persistent metadata datastore. The metadata selects an asset; it never authorizes a hook.",
+    "bootstrap": "The initial installer and wrapper are obtained from the documented GitHub release origin over HTTPS and carry the reviewed public TUF root. Bootstrap provenance is an explicit user-visible trust boundary; a checksum fetched from the same origin as a binary is not independent publisher authentication.",
+    "signing_thresholds": "Use a 2-of-3 offline root-key threshold and a 2-of-3 targets-key threshold; timestamp/snapshot metadata may be produced by a restricted release workflow but cannot change a target hash or authorize an unlisted asset.",
+    "asset_integrity": "Accept only a target whose authenticated metadata matches exact length, hash, OS, architecture, runtime, package format, release version, provenance, and release-notes origin; reject redirects/origins outside the allowlist.",
+    "expiration_and_replay": "Enforce safe metadata expiration, retain the highest trusted metadata versions in persistent state, and reject expired metadata, version rollback, stale snapshots, and downgrade attempts. A network failure continues with the installed version but never installs cached expired metadata.",
+    "key_rotation_and_revocation": "Rotate root keys through a new root metadata version signed by the existing and replacement threshold; remove compromised keys in that chain. If the trusted root chain cannot be advanced, stop updates and require a manually obtained wrapper/root refresh rather than silently resetting trust.",
+    "rollback": "Rollback is an explicit user action to a retained locally installed payload whose authenticated metadata and health record are still available; remote downgrade is rejected and rollback never replays a Codex session.",
+    "authorization_boundary": "Release metadata and update state cannot change the compatibility registry, process/session binding, cwd, schema, tool, exact-command, broker, or fail-closed authorization checks.",
+    "maintainer_actions": [
+      "Choose the release owners and record the public root-key fingerprints in a reviewed bootstrap artifact; do not generate or store keys in this repository task.",
+      "Generate root and targets keys offline with the chosen 2-of-3 threshold and document secure backup, rotation, and emergency revocation procedures.",
+      "Configure a least-privilege GitHub Actions environment for restricted timestamp/snapshot signing and release publication only after the implementation and workflow review; upload secrets only as a separate maintainer action.",
+      "Run a staging rotation/revocation drill and publish the initial authenticated metadata only after M5 release automation and M6 validation are complete."
+    ]
+  },
+  "release_library_review": [
+    {
+      "purpose": "Release metadata verification",
+      "crate": "tough",
+      "observed_documented_version": "0.24.0",
+      "official_documentation": "https://docs.rs/tough/0.24.0/tough/",
+      "decision": "Select for TUF repository loading, root-chain verification, expiration enforcement, metadata limits, persistent datastore, and target hash/length verification. Its documented lack of delegated roles/TAP 3/TAP 4 is acceptable for one bounded targets role in the initial release and must remain an explicit scope limit."
+    },
+    {
+      "purpose": "Bounded HTTPS metadata and asset transport",
+      "crate": "ureq",
+      "observed_documented_version": "3.4.0",
+      "official_documentation": "https://docs.rs/ureq/3.4.0/ureq/",
+      "decision": "Select its blocking API with explicit global, resolve, connect, response, and body timeouts and an allowlisted HTTPS origin; configure certificate verification deliberately and never follow an unallowlisted redirect."
+    },
+    {
+      "purpose": "Windows archive extraction",
+      "crate": "zip",
+      "observed_documented_version": "8.6.0",
+      "official_documentation": "https://docs.rs/zip/8.6.0/zip/read/struct.ZipFile.html",
+      "decision": "Select only with enclosed_name/path-component checks, entry-count/expanded-size limits, symlink/reparse-point rejection, and extraction into a private staging directory; the library warning about unsafe names remains part of the implementation acceptance criteria."
+    },
+    {
+      "purpose": "Linux archive extraction",
+      "crate": "tar plus flate2",
+      "observed_documented_version": "tar 0.4.46; flate2 1.1.9",
+      "official_documentation": "https://docs.rs/tar/0.4.46/tar/ and https://docs.rs/flate2/1.1.9/flate2/",
+      "decision": "Select tar.gz with bounded streaming extraction, explicit entry/path/symlink checks, and a private staging directory; tar's documented best-effort traversal protection is not treated as sufficient against concurrent destination mutation."
+    },
+    {
+      "purpose": "Cross-platform startup-check coordination",
+      "crate": "fs4",
+      "observed_documented_version": "1.1.0",
+      "official_documentation": "https://docs.rs/fs4/1.1.0/fs4/",
+      "decision": "Select synchronous advisory file locks for one user-scoped check/activation coordinator; use atomic state replacement and platform-specific activation rules because an advisory lock is coordination, not authorization or crash proof."
+    }
+  ],
+  "current_milestone": "M1",
+  "next_executable_task": "M1-T1",
+  "blockers": [
+    {
+      "id": "B-M4-M6-NATIVE-ACCEPTANCE",
       "status": "blocked",
-      "description": "Release signing, bootstrap trust, key rotation, and the one-time GitHub signing setup require a maintainer decision and authenticated publication access.",
+      "description": "The initial Windows 10 22H2 x64 and Linux x86_64-unknown-linux-gnu with glibc 2.31+ targets are design proposals; native installer, locked-binary, runtime-floor, rollback, and uninstall acceptance remain future M4/M6 work and do not block the completed M0 design.",
       "unblocks": [
-        "M0-T3",
+        "M4-T3",
+        "M6-T2"
+      ]
+    },
+    {
+      "id": "B-M5-TRUST-SETUP",
+      "status": "blocked",
+      "description": "The trust design is complete, but generating offline keys, storing signing material, configuring GitHub environments, and publishing the bootstrap root require a maintainer with credentials; no such setup was performed here.",
+      "unblocks": [
         "M5-T2",
         "M5-T3"
       ]
@@ -66,15 +285,15 @@
     {
       "id": "M0",
       "title": "Product contract and installation/update design",
-      "status": "in_progress",
+      "status": "completed",
       "objective": "Freeze the user-visible startup, installation, coexistence, trust, platform, and state-machine contract before implementation.",
       "tasks": [
         {
           "id": "M0-T1",
           "title": "Contract and startup state machine",
-          "objective": "Document the startup decision table and state transitions for version detection, applicable release checking, consent, activation, fallback, and session outcomes.",
-          "user_visible_outcome": "Users get a predictable explanation of whether an update is checked, offered, skipped, installed, declined, unavailable, or bypassed, and Codex still starts normally when automatic approval is unavailable.",
-          "status": "in_progress",
+          "objective": "Define the startup decision table and state transitions for default update checks, version-change and unresolved-state rechecks, explicit consent, activation, fallback, and session outcomes.",
+          "user_visible_outcome": "Users get predictable default update checks without automatic installation: they can Install, Continue this time, or Skip this release, while Codex starts normally with ordinary approval fallback whenever updating or automatic approval is unavailable.",
+          "status": "completed",
           "dependencies": [],
           "expected_implementation_areas": [
             {
@@ -99,32 +318,37 @@
             }
           ],
           "deliverables": [
-            "A startup decision table covering applicable update, no update, decline, skip, unavailable service, backoff, incompatible asset, failed capability check, hook failure, and command failure.",
-            "A state transition description separating wrapper startup, update check, consent, activation, Codex launch, hook outcome, and final exit.",
-            "A rule that no startup updater check or prompt runs in the hook protocol process or writes hook stdout."
+            "The structured startup_decision_table in this roadmap: checks are enabled by default; a changed Codex version and unresolved compatibility state trigger a bounded check before the installed implementation is attempted; disabled checks, backoff, no applicable release, unavailable service, declined installation, and Skip this release continue with the installed policy.",
+            "The structured startup_state_transitions in this roadmap: Install is explicit and completes before Codex starts; Continue this time and Skip this release do not install; noninteractive sessions never prompt or consume Codex input; failed activation uses the known-good payload; and a started session is never replayed or restarted.",
+            "A fixed local outcome taxonomy separating capability success, genuine hook success, no hook invocation, hook incompatibility, and command execution failure; successful Codex exit alone cannot establish hook compatibility or project-wide verified support.",
+            "A rule that no startup updater check or prompt runs in the hook protocol process or writes hook stdout, and that normal arguments, cwd, terminal I/O, ordinary approval fallback, and child exit status are preserved."
           ],
           "validation": [
-            "Review every transition against the existing run and hook call paths in src/main.rs, src/launcher.rs, src/hook.rs, and src/broker/.",
-            "Exercise a table-driven decision test for interactive, noninteractive, unavailable, declined, skipped, and fallback outcomes once implementation begins."
+            "Review the decision table and transitions against the existing run and hook call paths in src/main.rs, src/launcher.rs, src/hook.rs, and src/broker/ at inspected source commit 296008527103e98b9d9f9f20fe6d4e8508346b21.",
+            "Validate the canonical JSON and generated Markdown with cargo run --bin validate_distribution_roadmap -- --write and --check; defer executable table-driven behavior tests to M2/M3/M6 rather than making future implementation tests a design completion condition."
           ],
-          "completion_evidence": [],
+          "completion_evidence": [
+            "docs/distribution-roadmap.json revision 2 contains the concrete startup_decision_table and startup_state_transitions, and docs/distribution-roadmap.md is regenerated from them.",
+            "The design was reviewed against existing src/main.rs, src/launcher.rs, src/hook.rs, src/broker/, docs/product-contract.md, and docs/architecture.md without changing runtime authorization behavior.",
+            "The roadmap validator write/check commands and git diff --check pass for this design change."
+          ],
           "risks_or_unresolved_decisions": [
-            "Whether the first release presents update consent before or after the compatibility capability probe must be fixed without delaying normal Codex startup indefinitely.",
+            "The implementation must keep the bounded startup check outside the hook process and must not let a slow or unavailable service delay Codex beyond its fixed budget.",
             "The exact startup issue mentioned in supplied 0.154.0 evidence is unknown and is not evidence for this roadmap."
           ],
           "requirements": {
             "native_windows": false,
             "native_linux": false,
             "github_access": false,
-            "human_action": true
+            "human_action": false
           }
         },
         {
           "id": "M0-T2",
           "title": "Platform, package, path, and coexistence contract",
-          "objective": "Define the initial Windows x64 and Linux x64 package/runtime support floor, user-scoped paths, wrapper entry point, and ownership rules for existing Cargo or package-manager installations.",
+          "objective": "Select the initial Windows x64 and Linux x64 package/runtime targets from the current Cargo and CI constraints, define user-scoped paths and stable-launcher/versioned-payload ownership, and document explicit coexistence and migration for Cargo or package-manager installations.",
           "user_visible_outcome": "Users can tell exactly which native targets are supported, where files are owned, how codexa is found, and what happens when an existing Cargo-managed installation is present.",
-          "status": "planned",
+          "status": "completed",
           "dependencies": [
             "M0-T1"
           ],
@@ -151,33 +375,38 @@
             }
           ],
           "deliverables": [
-            "A support matrix naming the initial native Windows x64 target and the selected Linux x64 libc/minimum-runtime target, with unsupported architectures and runtimes explicit.",
-            "A user-scoped ownership map for immutable version directories, active wrapper, staging, state, cache, logs, and uninstall metadata.",
-            "A coexistence and migration rule: Cargo/package-manager installations are detected, never silently overwritten, and receive instructions or an explicit migration offer.",
-            "An entry-point decision for codexa and codex-autoapprover run that does not shadow or replace codex."
+            "The structured initial_support_targets decision selects x86_64-pc-windows-msvc with a proposed Windows 10 22H2 (build 19045) floor and x86_64-unknown-linux-gnu with a proposed glibc 2.31+ floor; musl, other libc families, other architectures, macOS, WSL, containers, and IDE/remote surfaces remain outside the initial target.",
+            "The structured installation_ownership decision assigns user-scoped Windows %LOCALAPPDATA% and Linux XDG data/state/cache locations for codexa, immutable versions/<release>, staging, cache, state/active.json, rollback, and logs; no administrator privilege or Codex user-data ownership is required.",
+            "The stable launcher reads an atomically replaced active pointer and starts immutable versioned payloads, so a running Windows executable is never replaced; the same ownership rule applies on Linux and old payloads remain available for explicit rollback until no active session uses them.",
+            "The documented entry point is codexa or codex-autoapprover run; direct codex is never shadowed or replaced. Existing Cargo/package-manager installations remain usable, are detected by ownership/path, are never overwritten, and receive an explicit migration offer or instructions rather than silent adoption."
           ],
           "validation": [
-            "Review the support matrix against actual GitHub runner targets and the native host acceptance plan.",
-            "Test executable resolution, spaced/non-ASCII paths, PATH/profile changes, recursive self-resolution, and a Cargo-managed installation fixture."
+            "Review Cargo.toml target-specific dependencies and .github/workflows/ci.yml: current Windows and ubuntu-latest jobs establish build/test coverage only, not the proposed runtime floors.",
+            "Review src/codex.rs and the existing launcher boundary for recursive self-resolution, preserved arguments/cwd/stdio/exit status, and no codex command shadowing.",
+            "Record spaced/non-ASCII paths, PATH/profile changes, Cargo-managed coexistence, locked binaries, and runtime-floor checks as M4-T3/M6-T2 acceptance work; their absence does not block this design completion."
           ],
-          "completion_evidence": [],
+          "completion_evidence": [
+            "docs/distribution-roadmap.json revision 2 contains the concrete initial_support_targets and installation_ownership maps, including proposed-versus-validated status and exact entry-point/coexistence rules.",
+            "Cargo.toml, .github/workflows/ci.yml, src/codex.rs, and the existing launcher/docs were inspected; no claim is made that current CI or existing live verification validates the proposed installable runtime floors.",
+            "Native acceptance is explicitly retained under M4-T3 and M6-T2, while the M0 design decision is complete."
+          ],
           "risks_or_unresolved_decisions": [
-            "The Linux glibc baseline or a separately packaged musl target is not selected yet; do not claim every Linux distribution.",
-            "Windows minimum version/build and whether a portable archive or installer is the primary bootstrap still require an explicit decision."
+            "The proposed Windows and glibc floors must be validated by oldest-target builds and native acceptance before any public support claim; current ubuntu-latest/windows-latest CI is insufficient evidence.",
+            "A later implementation must preserve user-owned Codex configuration and distinguish an autoapprover-owned path from Cargo/package-manager ownership before offering migration."
           ],
           "requirements": {
-            "native_windows": true,
-            "native_linux": true,
+            "native_windows": false,
+            "native_linux": false,
             "github_access": false,
-            "human_action": true
+            "human_action": false
           }
         },
         {
           "id": "M0-T3",
           "title": "Release trust, bootstrap, and maintained-library decision",
-          "objective": "Choose a release trust model and existing maintained libraries after reviewing their official documentation; prohibit custom cryptography and define bootstrap trust and key rotation.",
+          "objective": "Choose a concrete authenticated release trust model and maintained libraries after reviewing primary documentation; define bootstrap trust, expiration/replay handling, key rotation/revocation, explicit rollback, and the future maintainer setup without creating secrets or weakening runtime authorization.",
           "user_visible_outcome": "Users can understand what authenticates an update, how an initial trust anchor is installed, how keys rotate, and why an untrusted update is never activated.",
-          "status": "planned",
+          "status": "completed",
           "dependencies": [
             "M0-T1"
           ],
@@ -204,24 +433,31 @@
             }
           ],
           "deliverables": [
-            "A trust decision covering signed release metadata, asset hashes, provenance, bootstrap trust, rollback/downgrade policy, and key rotation/revocation.",
-            "A short official-documentation review for the selected maintained HTTP, signature, archive, and filesystem-locking libraries, with versions deferred until implementation.",
-            "A rule that metadata can select an asset but cannot authorize a hook or bypass existing broker/runtime checks."
+            "The structured release_trust_model selects TUF 1.0 metadata with a pinned root, 2-of-3 offline root and targets thresholds, bounded HTTPS origin/redirect policy, exact target hashes and lengths, safe expiry, monotonic metadata versions, explicit key rotation/revocation, and explicit local rollback only.",
+            "Bootstrap trust is documented as a user-visible boundary: the initial installer/wrapper comes from the documented GitHub HTTPS origin and carries the reviewed public root; a checksum fetched beside a binary is never treated as independent publisher authentication.",
+            "The structured release_library_review records primary documentation and decisions for tough 0.24.0, ureq 3.4.0, zip 8.6.0, tar 0.4.46, flate2 1.1.9, and fs4 1.1.0. No new dependency or cryptographic key is added by this design change.",
+            "Metadata may select an asset but can never authorize a hook, modify the compatibility registry, bypass process/session/cwd/schema/tool/exact-command checks, or override fail-closed broker behavior.",
+            "Future maintainer actions are explicit: choose owners, generate and protect offline keys, configure least-privilege GitHub signing/release environments, record fingerprints, perform a rotation/revocation drill, and publish the bootstrap root only after M5/M6 review."
           ],
           "validation": [
-            "Threat-model review of compromised server, stale metadata, key compromise, redirect abuse, downgrade, and interrupted activation.",
-            "A negative fixture plan for invalid signatures, mismatched hashes, expired/revoked metadata, and unknown key identifiers."
+            "Review the trust decision against docs/threat-model.md and the existing compatibility/broker boundary for compromised origin, stale metadata, key compromise, redirect abuse, downgrade, interrupted activation, and metadata/runtime authorization separation.",
+            "Consult the primary crate documentation recorded in release_library_review and preserve each documented limitation as an implementation acceptance condition; negative fixtures remain under M1/M3/M6."
           ],
-          "completion_evidence": [],
+          "completion_evidence": [
+            "docs/distribution-roadmap.json revision 2 contains the concrete release_trust_model, maintainer action list, and release_library_review with observed documentation versions and URLs.",
+            "Primary documentation consulted: https://docs.rs/tough/0.24.0/tough/, https://docs.rs/ureq/3.4.0/ureq/, https://docs.rs/zip/8.6.0/zip/read/struct.ZipFile.html, https://docs.rs/tar/0.4.46/tar/, https://docs.rs/flate2/1.1.9/flate2/, and https://docs.rs/fs4/1.1.0/fs4/.",
+            "No keys, signing secrets, GitHub settings, dependency changes, release assets, or persistent configuration were created or changed."
+          ],
           "risks_or_unresolved_decisions": [
-            "Bootstrap trust is a release/security decision requiring maintainer approval and one-time GitHub secret/setup work.",
-            "Do not invent a signing scheme or write cryptography; select maintained libraries only after official documentation review."
+            "Tough 0.24.0 documents no delegated roles/TAP 3/TAP 4; the initial design therefore uses one bounded targets role and must not imply broader TUF feature coverage.",
+            "The initial installer still has a bootstrap trust boundary that requires a maintainer-selected publication process; until M5/M6 complete, no public release or support claim is authorized.",
+            "The implementation must re-audit current crate versions and APIs when dependencies are added; observed documentation versions are design evidence, not a lockfile or release claim."
           ],
           "requirements": {
             "native_windows": false,
             "native_linux": false,
-            "github_access": true,
-            "human_action": true
+            "github_access": false,
+            "human_action": false
           }
         }
       ]

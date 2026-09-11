@@ -178,6 +178,7 @@ fn validate(roadmap: &Value) -> Result<()> {
     validate_strings(object, "scope")?;
     validate_strings(object, "non_goals")?;
     validate_strings(object, "operating_rules")?;
+    validate_design_contract(object)?;
     reject_private_evidence(roadmap)?;
     Ok(())
 }
@@ -239,6 +240,103 @@ fn validate_blockers(value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn validate_design_contract(object: &serde_json::Map<String, Value>) -> Result<()> {
+    for field in ["startup_decision_table", "startup_state_transitions"] {
+        let rows = required_array(object, field)?;
+        if rows.is_empty() {
+            bail!("{field} must not be empty");
+        }
+        for row in rows {
+            let row = row
+                .as_object()
+                .with_context(|| format!("{field} rows must be objects"))?;
+            for column in if field == "startup_decision_table" {
+                ["state", "condition", "action", "codex_action", "outcome"].as_slice()
+            } else {
+                ["from", "event", "to", "effect"].as_slice()
+            } {
+                required_string(row, column)?;
+            }
+        }
+    }
+
+    for target in required_array(object, "initial_support_targets")? {
+        let target = target
+            .as_object()
+            .context("support target must be an object")?;
+        for field in [
+            "target",
+            "triple",
+            "runtime_floor",
+            "package_format",
+            "status",
+        ] {
+            required_string(target, field)?;
+        }
+        string_array(target, "validation_milestones")?;
+    }
+
+    for ownership in required_array(object, "installation_ownership")? {
+        let ownership = ownership
+            .as_object()
+            .context("installation ownership must be an object")?;
+        for field in [
+            "platform",
+            "entry_point",
+            "payloads",
+            "active_pointer",
+            "staging",
+            "cache",
+            "rollback",
+            "ownership",
+        ] {
+            required_string(ownership, field)?;
+        }
+    }
+
+    let trust = object
+        .get("release_trust_model")
+        .and_then(Value::as_object)
+        .context("release_trust_model must be an object")?;
+    for field in [
+        "metadata",
+        "bootstrap",
+        "signing_thresholds",
+        "asset_integrity",
+        "expiration_and_replay",
+        "key_rotation_and_revocation",
+        "rollback",
+        "authorization_boundary",
+    ] {
+        required_string(trust, field)?;
+    }
+    validate_string_array(trust, "maintainer_actions")?;
+
+    for library in required_array(object, "release_library_review")? {
+        let library = library
+            .as_object()
+            .context("release library review must be an object")?;
+        for field in [
+            "purpose",
+            "crate",
+            "observed_documented_version",
+            "official_documentation",
+            "decision",
+        ] {
+            required_string(library, field)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_string_array(object: &serde_json::Map<String, Value>, field: &str) -> Result<()> {
+    let values = string_array(object, field)?;
+    if values.is_empty() {
+        bail!("{field} must not be empty");
+    }
+    Ok(())
+}
+
 fn detect_cycles(dependencies: &BTreeMap<String, Vec<String>>) -> Result<()> {
     fn visit(
         task: &str,
@@ -293,6 +391,16 @@ fn required_string<'a>(object: &'a serde_json::Map<String, Value>, field: &str) 
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .with_context(|| format!("{field} must be a non-empty string"))
+}
+
+fn required_object<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a serde_json::Map<String, Value>> {
+    object
+        .get(field)
+        .and_then(Value::as_object)
+        .with_context(|| format!("{field} must be an object"))
 }
 
 fn required_array<'a>(
@@ -358,6 +466,7 @@ fn render(roadmap: &Value) -> Result<String> {
         "Non-goals",
         string_array(object, "non_goals")?,
     );
+    render_design_contract(&mut markdown, object)?;
 
     markdown.push_str("## Blockers\n\n");
     for blocker in required_array(object, "blockers")? {
@@ -405,6 +514,115 @@ fn render(roadmap: &Value) -> Result<String> {
         markdown.push_str(&format!("- {item}\n"));
     }
     Ok(format!("{}\n", markdown.trim_end()))
+}
+
+fn render_design_contract(
+    markdown: &mut String,
+    object: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    markdown.push_str("## Startup decision table\n\n");
+    markdown.push_str("| State | Condition | Wrapper action | Codex action | Outcome |\n| --- | --- | --- | --- | --- |\n");
+    for row in required_array(object, "startup_decision_table")? {
+        let row = row.as_object().context("startup decision row")?;
+        markdown.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            table_cell(required_string(row, "state")?),
+            table_cell(required_string(row, "condition")?),
+            table_cell(required_string(row, "action")?),
+            table_cell(required_string(row, "codex_action")?),
+            table_cell(required_string(row, "outcome")?),
+        ));
+    }
+    markdown.push('\n');
+
+    markdown.push_str("## Startup state transitions\n\n");
+    markdown.push_str("| From | Event | To | Effect |\n| --- | --- | --- | --- |\n");
+    for row in required_array(object, "startup_state_transitions")? {
+        let row = row.as_object().context("startup transition row")?;
+        markdown.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            table_cell(required_string(row, "from")?),
+            table_cell(required_string(row, "event")?),
+            table_cell(required_string(row, "to")?),
+            table_cell(required_string(row, "effect")?),
+        ));
+    }
+    markdown.push('\n');
+
+    markdown.push_str("## Initial support targets\n\n");
+    markdown.push_str("| Target | Triple | Proposed runtime floor | Package | Status | Native validation |\n| --- | --- | --- | --- | --- | --- |\n");
+    for target in required_array(object, "initial_support_targets")? {
+        let target = target.as_object().context("support target")?;
+        markdown.push_str(&format!(
+            "| {} | `{}` | {} | {} | `{}` | {} |\n",
+            table_cell(required_string(target, "target")?),
+            table_cell(required_string(target, "triple")?),
+            table_cell(required_string(target, "runtime_floor")?),
+            table_cell(required_string(target, "package_format")?),
+            table_cell(required_string(target, "status")?),
+            display_list(string_array(target, "validation_milestones")?),
+        ));
+    }
+    markdown.push('\n');
+
+    markdown.push_str("## Installation ownership\n\n");
+    for ownership in required_array(object, "installation_ownership")? {
+        let ownership = ownership.as_object().context("installation ownership")?;
+        markdown.push_str(&format!(
+            "### {}\n\n- Entry point: `{}`\n- Immutable payloads: `{}`\n- Active pointer: `{}`\n- Staging: `{}`\n- Cache: `{}`\n- Rollback: `{}`\n- Ownership: {}\n\n",
+            required_string(ownership, "platform")?,
+            required_string(ownership, "entry_point")?,
+            required_string(ownership, "payloads")?,
+            required_string(ownership, "active_pointer")?,
+            required_string(ownership, "staging")?,
+            required_string(ownership, "cache")?,
+            required_string(ownership, "rollback")?,
+            required_string(ownership, "ownership")?,
+        ));
+    }
+
+    let trust = required_object(object, "release_trust_model")?;
+    markdown.push_str("## Release trust model\n\n");
+    for (field, label) in [
+        ("metadata", "Metadata"),
+        ("bootstrap", "Bootstrap"),
+        ("signing_thresholds", "Signing thresholds"),
+        ("asset_integrity", "Asset integrity"),
+        ("expiration_and_replay", "Expiration and replay"),
+        ("key_rotation_and_revocation", "Key rotation and revocation"),
+        ("rollback", "Rollback"),
+        ("authorization_boundary", "Authorization boundary"),
+    ] {
+        markdown.push_str(&format!(
+            "- **{label}:** {}\n",
+            required_string(trust, field)?
+        ));
+    }
+    markdown.push_str("- **Future maintainer actions:**\n");
+    for action in string_array(trust, "maintainer_actions")? {
+        markdown.push_str(&format!("  - {action}\n"));
+    }
+    markdown.push('\n');
+
+    markdown.push_str("## Reviewed release libraries\n\n");
+    markdown.push_str("| Purpose | Crate | Observed docs version | Official documentation | Decision |\n| --- | --- | --- | --- | --- |\n");
+    for library in required_array(object, "release_library_review")? {
+        let library = library.as_object().context("release library")?;
+        markdown.push_str(&format!(
+            "| {} | `{}` | `{}` | {} | {} |\n",
+            table_cell(required_string(library, "purpose")?),
+            table_cell(required_string(library, "crate")?),
+            table_cell(required_string(library, "observed_documented_version")?),
+            table_cell(required_string(library, "official_documentation")?),
+            table_cell(required_string(library, "decision")?),
+        ));
+    }
+    markdown.push('\n');
+    Ok(())
+}
+
+fn table_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace(['\r', '\n'], " ")
 }
 
 fn render_task(markdown: &mut String, task: &serde_json::Map<String, Value>) -> Result<()> {
