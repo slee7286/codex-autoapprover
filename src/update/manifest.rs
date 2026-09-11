@@ -1,10 +1,11 @@
 //! Strict, descriptive release-manifest schema for the future updater.
 //!
 //! A parsed manifest is untrusted application metadata. It becomes an
-//! TufAuthenticatedManifest only when a later TUF adapter supplies a
-//! crate-private proof for the exact manifest target and bytes. This module
-//! does not implement signature verification or custom hashing, network access,
-//! release selection, installation, or compatibility arming.
+//! An authenticated wrapper is created only by the narrow verification module
+//! after a future TUF adapter supplies proof for the exact manifest target and
+//! bytes. This module does not implement signature verification or custom
+//! hashing, network access, release selection, installation, or compatibility
+//! arming.
 
 use std::{collections::BTreeSet, fmt};
 
@@ -322,69 +323,12 @@ impl ParsedManifest {
         canonical_json(&self.manifest)
     }
 
-    pub(crate) fn authenticate_tuf(
-        self,
-        target: TufVerifiedTarget,
-    ) -> Result<TufAuthenticatedManifest, ManifestError> {
-        if target.target_name != self.manifest.manifest_target {
-            return Err(ManifestError::Invalid(
-                "TUF target name does not match manifest_target".into(),
-            ));
-        }
-        if target.length != self.byte_length as u64 {
-            return Err(ManifestError::Invalid(
-                "TUF target length does not match parsed manifest bytes".into(),
-            ));
-        }
-        if target.sha256 != self.sha256 {
-            return Err(ManifestError::Invalid(
-                "TUF target hash does not match parsed manifest bytes".into(),
-            ));
-        }
-        Ok(TufAuthenticatedManifest {
-            manifest: self.manifest,
-            tuf_target: target,
-        })
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TufVerifiedTarget {
-    target_name: String,
-    length: u64,
-    sha256: Sha256Digest,
-}
-
-impl TufVerifiedTarget {
-    /// The future TUF adapter must call this only after the TUF client has
-    /// verified the target metadata and exact target bytes. It is crate-private
-    /// so parsing callers cannot claim authenticity directly.
-    pub(crate) fn from_verified_metadata(
-        target_name: String,
-        length: u64,
-        sha256: Sha256Digest,
-    ) -> Self {
-        Self {
-            target_name,
-            length,
-            sha256,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TufAuthenticatedManifest {
-    manifest: ReleaseManifest,
-    tuf_target: TufVerifiedTarget,
-}
-
-impl TufAuthenticatedManifest {
-    pub(crate) fn manifest(&self) -> &ReleaseManifest {
-        &self.manifest
+    pub(crate) fn raw_sha256(&self) -> &Sha256Digest {
+        &self.sha256
     }
 
-    pub(crate) fn tuf_target(&self) -> &TufVerifiedTarget {
-        &self.tuf_target
+    pub(crate) fn into_manifest(self) -> ReleaseManifest {
+        self.manifest
     }
 }
 
@@ -922,42 +866,5 @@ mod tests {
             .push(first_record);
         let duplicate_record = serde_json::to_vec(&value).expect("duplicate record JSON");
         assert!(parse_manifest(&duplicate_record).is_err());
-    }
-
-    #[test]
-    fn tuf_authentication_requires_matching_verified_target() {
-        let parsed = parse_manifest(VALID_FIXTURE.as_bytes()).expect("valid fixture");
-        let asset = parsed.manifest().manifest_target.clone();
-        let wrong_digest =
-            Sha256Digest::parse("0000000000000000000000000000000000000000000000000000000000000000")
-                .expect("test digest");
-        let wrong = TufVerifiedTarget::from_verified_metadata(
-            "metadata/releases/other.json".into(),
-            VALID_FIXTURE.len() as u64,
-            wrong_digest.clone(),
-        );
-        assert!(parsed.clone().authenticate_tuf(wrong).is_err());
-
-        let wrong_hash = TufVerifiedTarget::from_verified_metadata(
-            asset.clone(),
-            VALID_FIXTURE.len() as u64,
-            wrong_digest,
-        );
-        assert!(parsed.clone().authenticate_tuf(wrong_hash).is_err());
-
-        let digest = Sha256Digest::from_bytes(VALID_FIXTURE.as_bytes());
-        let correct =
-            TufVerifiedTarget::from_verified_metadata(asset, VALID_FIXTURE.len() as u64, digest);
-        let authenticated = parsed
-            .authenticate_tuf(correct)
-            .expect("matching TUF proof");
-        assert_eq!(
-            authenticated.manifest().release_version.to_string(),
-            "0.2.0"
-        );
-        assert_eq!(
-            authenticated.tuf_target().length,
-            VALID_FIXTURE.len() as u64
-        );
     }
 }

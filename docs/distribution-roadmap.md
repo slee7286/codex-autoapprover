@@ -3,13 +3,13 @@
 # Distribution roadmap
 
 - Schema version: `1.0`
-- Roadmap revision: `4`
+- Roadmap revision: `5`
 - Repository: `slee7286/codex-autoapprover`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
 - Source branch: `main`
 - Roadmap branch: `feat/distribution-roadmap`
-- Current milestone: `M1`
-- Next executable task: `M1-T3`
+- Current milestone: `M2`
+- Next executable task: `M2-T1`
 
 ## Objective
 
@@ -386,7 +386,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 #### M1-T3 — Compatibility and authorization boundary
 
-- Status: `planned`
+- Status: `completed`
 - Dependencies: `M1-T1`, `M1-T2`
 - Objective: Specify how installed release metadata, local observations, reviewed support, experimental eligibility, and runtime hook authorization remain distinct.
 - User-visible outcome: A newer installed wrapper or locally successful session never silently becomes project-wide reviewed support or weakens broker checks.
@@ -396,31 +396,41 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 - `src/compatibility.rs` (`existing`): Extend typed status and tuple metadata without converting local success into Verified automatically.
 - `src/decision.rs` (`existing`): Preserve exact request/schema/command decisions independent of release metadata.
 - `src/broker/` (`existing`): Retain Windows and Linux identity, ancestry, session, cwd, schema, and tool authorization checks.
-- `docs/compatibility.md` (`existing`): Record reviewed evidence separately from experimental runtime observations.
+- `src/update/verify.rs` (`planned`): Own the authenticated-manifest type boundary; keep its production constructor absent until the real TUF verifier is implemented and expose only an explicitly test-only synthetic seam.
+- `src/update/selection.rs` (`existing`): Accept only verifier-owned authenticated manifests, preserve reviewed/experimental classification, and remain side-effect free.
+- `docs/compatibility.md` (`existing`): Record the six-stage metadata-to-runtime boundary and keep reviewed evidence separate from experimental observations.
 
 **Deliverables**
 
-- A compatibility status model for reviewed, experimental, candidate, incompatible, and unknown states.
-- A decision table showing metadata selection never authorizes a request and local success never promotes a registry tuple.
-- Explicit downgrade, exclusion, schema, and unsupported-surface behavior.
+- A six-stage boundary from untrusted bytes through structural parsing, future TUF authentication, selection, consented installation, and runtime broker authorization.
+- A production authenticated-manifest type with no production constructor, public deserialization, or Clone implementation; synthetic selector construction is compiled only for tests and is explicitly not TUF verification.
+- A decision table and focused tests showing metadata selection cannot arm a hook, edit the reviewed registry, override strict mode/exclusions, broaden exact-command authorization, or bypass runtime checks.
 
 **Validation**
 
-- Regression tests for strict mode, automatic mode, exact reviewed entries, experimental entries, exclusions, and forged metadata.
-- Review that no updater path runs inside hook protocol execution or emits on hook stdout.
+- Focused tests cover the synthetic byte-binding seam, wrong target name/length/hash, read-only authenticated content, automatic versus strict selection, exact exclusions, and unchanged runtime rejection behavior.
+- Compile-time API boundaries make selection accept only AuthenticatedManifest; ParsedManifest and arbitrary target metadata have no production conversion into that input type.
+- Review confirms no updater path runs inside hook protocol execution or emits on hook stdout.
 
 **Completion evidence**
 
-- Not complete; evidence must be recorded before status becomes `completed`.
+- src/update/verify.rs defines the verifier-owned read-only wrapper with private fields, no production constructor, no public deserialization, no Clone implementation, and a #[cfg(test)] synthetic constructor that is documented as byte binding only.
+- src/update/selection.rs accepts only AuthenticatedManifest; its existing focused tests continue to cover strict/automatic policy, exact exclusions, runtime/schema/tool behavior, and unchanged compatibility-registry boundaries.
+- docs/compatibility.md documents the six stages and explicitly states that structural parsing, a matching caller-supplied hash/length, selection, or local success cannot establish publisher authentication or runtime authorization.
+- The boundary tests are synthetic type/byte-binding tests; no test in this milestone executes real TUF verification. Real root/role/expiry/target verification is deferred to M5-T2.
+- Native Windows focused validation passed in this checkout: cargo fmt --check and cargo test --all-targets (79 unit tests and 13 integration tests).
+- Native Windows cargo clippy --all-targets --all-features -- -D warnings, cargo build --all-targets, roadmap --write/--check, and git diff --check passed.
 
 **Risks and unresolved decisions**
 
+- Real TUF root-chain, role, expiry, target-length, target-hash, provenance, rollback, and key-rotation verification remains intentionally unimplemented and is owned by M5-T2; this milestone creates no production trust constructor.
 - The release manifest may describe compatibility claims but cannot be the source of truth for reviewed support without a separate maintainer review.
+- Native installer/update acceptance remains later M4/M6 work and is not a prerequisite for this compile-time boundary.
 
 **Required access or action**
 
-- Native Windows: `true`
-- Native Linux: `true`
+- Native Windows: `false`
+- Native Linux: `false`
 - GitHub access: `false`
 - Human action: `false`
 
@@ -855,7 +865,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 **Expected implementation areas**
 
 - `.github/workflows/release.yml` (`planned`): Generate metadata and provenance using protected signing secrets with least privilege.
-- `src/update/verify.rs` (`planned`): Verify metadata, hashes, signatures, provenance, origin, and downgrade policy.
+- `src/update/verify.rs` (`planned`): Implement the real TUF verifier deferred by M1-T3: establish the authenticated-manifest constructor only after root-chain, role, expiry, target-length/hash, provenance, origin, and downgrade checks.
 - `docs/threat-model.md` (`existing`): Document signing-secret handling, bootstrap trust, key rotation, and compromise response.
 
 **Deliverables**
@@ -866,7 +876,7 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 **Validation**
 
-- Verify generated metadata with the updater verifier and reject altered metadata/assets.
+- Verify generated metadata with the updater verifier and reject altered metadata/assets; this is the first milestone permitted to claim actual TUF verification.
 - Review workflow permissions, secret exposure, provenance links, and incomplete-release behavior.
 
 **Completion evidence**

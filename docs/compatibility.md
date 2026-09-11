@@ -49,6 +49,41 @@ reviewed release. Exact exclusions take precedence over any overlapping
 experimental eligibility. Selection does not authorize downloading,
 execution, activation, or broker decisions.
 
+## M1-T3 metadata and authorization boundary
+
+The update path has six deliberately separate stages:
+
+1. Untrusted bytes are bounded input and have no metadata or compatibility
+   authority.
+2. `ParsedManifest` is a structurally validated, descriptive value. It has
+   strict schema, duplicate, length, and hash-field checks, but it is not
+   publisher authenticated.
+3. `AuthenticatedManifest` is a verifier-owned, read-only wrapper. Its
+   production constructor is intentionally absent until the future TUF
+   verifier is implemented. The current `#[cfg(test)]` `synthetic_for_tests`
+   constructor only checks that caller-supplied target name, length, and
+   SHA-256 match the fixture bytes; it executes no TUF verification and is not
+   publisher-authentication evidence.
+4. Applicable-release selection accepts only that wrapper and typed runtime
+   inputs. Selection preserves reviewed versus experimental status but cannot
+   download, execute, install, activate, or authorize a hook.
+5. User-approved installation is a later consent and activation stage. Its
+   authenticated target must come from the repository's TUF chain; a matching
+   hash/length or a parsed manifest alone is never an independent trust system.
+6. Runtime Codex compatibility and broker authorization remain the existing
+   authority. Metadata cannot arm a hook, edit the compiled reviewed registry,
+   override strict mode/exclusions, broaden the exact command, or bypass
+   version, schema, tool, cwd, secret, process-identity, ancestry, or session
+   checks. Local success cannot promote project-wide reviewed support.
+
+The wrapper is not deserializable or cloneable as a trusted value. Callers can
+clone a read-only manifest view only as an ordinary descriptive copy; mutating
+that copy does not mutate or retain the authenticated wrapper. No updater path
+runs inside hook protocol execution or writes diagnostics to hook stdout.
+Real TUF root/role/expiry/target verification remains deferred to M5-T2;
+the boundary tests are synthetic type/byte-binding tests, not TUF
+verification tests.
+
 | Compatibility area | Evidence | Status | Supported claim |
 | --- | --- | --- | --- |
 | Legacy UI proof of concept | Ubuntu Linux; external Expect script; Codex CLI 0.151.0; option 1 accepted harmless `curl -I https://example.com` network escalation | Historical proof only | Option 1 worked in that exact test; numeric ordering is not a supported interface |

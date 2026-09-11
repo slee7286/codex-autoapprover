@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "roadmap_revision": 4,
+  "roadmap_revision": 5,
   "repository": "slee7286/codex-autoapprover",
   "inspected_source_commit": "296008527103e98b9d9f9f20fe6d4e8508346b21",
   "source_branch": "main",
@@ -241,8 +241,8 @@
       "decision": "Select synchronous advisory file locks for one user-scoped check/activation coordinator; use atomic state replacement and platform-specific activation rules because an advisory lock is coordination, not authorization or crash proof."
     }
   ],
-  "current_milestone": "M1",
-  "next_executable_task": "M1-T3",
+  "current_milestone": "M2",
+  "next_executable_task": "M2-T1",
   "blockers": [
     {
       "id": "B-M4-M6-NATIVE-ACCEPTANCE",
@@ -586,7 +586,7 @@
           "title": "Compatibility and authorization boundary",
           "objective": "Specify how installed release metadata, local observations, reviewed support, experimental eligibility, and runtime hook authorization remain distinct.",
           "user_visible_outcome": "A newer installed wrapper or locally successful session never silently becomes project-wide reviewed support or weakens broker checks.",
-          "status": "planned",
+          "status": "completed",
           "dependencies": [
             "M1-T1",
             "M1-T2"
@@ -608,27 +608,47 @@
               "purpose": "Retain Windows and Linux identity, ancestry, session, cwd, schema, and tool authorization checks."
             },
             {
+              "path": "src/update/verify.rs",
+              "kind": "planned",
+              "purpose": "Own the authenticated-manifest type boundary; keep its production constructor absent until the real TUF verifier is implemented and expose only an explicitly test-only synthetic seam."
+            },
+            {
+              "path": "src/update/selection.rs",
+              "kind": "existing",
+              "purpose": "Accept only verifier-owned authenticated manifests, preserve reviewed/experimental classification, and remain side-effect free."
+            },
+            {
               "path": "docs/compatibility.md",
               "kind": "existing",
-              "purpose": "Record reviewed evidence separately from experimental runtime observations."
+              "purpose": "Record the six-stage metadata-to-runtime boundary and keep reviewed evidence separate from experimental observations."
             }
           ],
           "deliverables": [
-            "A compatibility status model for reviewed, experimental, candidate, incompatible, and unknown states.",
-            "A decision table showing metadata selection never authorizes a request and local success never promotes a registry tuple.",
-            "Explicit downgrade, exclusion, schema, and unsupported-surface behavior."
+            "A six-stage boundary from untrusted bytes through structural parsing, future TUF authentication, selection, consented installation, and runtime broker authorization.",
+            "A production authenticated-manifest type with no production constructor, public deserialization, or Clone implementation; synthetic selector construction is compiled only for tests and is explicitly not TUF verification.",
+            "A decision table and focused tests showing metadata selection cannot arm a hook, edit the reviewed registry, override strict mode/exclusions, broaden exact-command authorization, or bypass runtime checks."
           ],
           "validation": [
-            "Regression tests for strict mode, automatic mode, exact reviewed entries, experimental entries, exclusions, and forged metadata.",
-            "Review that no updater path runs inside hook protocol execution or emits on hook stdout."
+            "Focused tests cover the synthetic byte-binding seam, wrong target name/length/hash, read-only authenticated content, automatic versus strict selection, exact exclusions, and unchanged runtime rejection behavior.",
+            "Compile-time API boundaries make selection accept only AuthenticatedManifest; ParsedManifest and arbitrary target metadata have no production conversion into that input type.",
+            "Review confirms no updater path runs inside hook protocol execution or emits on hook stdout."
           ],
-          "completion_evidence": [],
+          "completion_evidence": [
+            "src/update/verify.rs defines the verifier-owned read-only wrapper with private fields, no production constructor, no public deserialization, no Clone implementation, and a #[cfg(test)] synthetic constructor that is documented as byte binding only.",
+            "src/update/selection.rs accepts only AuthenticatedManifest; its existing focused tests continue to cover strict/automatic policy, exact exclusions, runtime/schema/tool behavior, and unchanged compatibility-registry boundaries.",
+            "docs/compatibility.md documents the six stages and explicitly states that structural parsing, a matching caller-supplied hash/length, selection, or local success cannot establish publisher authentication or runtime authorization.",
+            "The boundary tests are synthetic type/byte-binding tests; no test in this milestone executes real TUF verification. Real root/role/expiry/target verification is deferred to M5-T2.",
+            "Native Windows focused validation passed in this checkout: cargo fmt --check and cargo test --all-targets (79 unit tests and 13 integration tests).",
+            "Native Windows cargo clippy --all-targets --all-features -- -D warnings, cargo build --all-targets, roadmap --write/--check, and git diff --check passed."
+          ],
           "risks_or_unresolved_decisions": [
-            "The release manifest may describe compatibility claims but cannot be the source of truth for reviewed support without a separate maintainer review."
+            "Real TUF root-chain, role, expiry, target-length, target-hash, provenance, rollback, and key-rotation verification remains intentionally unimplemented and is owned by M5-T2; this milestone creates no production trust constructor.",
+            "The release manifest may describe compatibility claims but cannot be the source of truth for reviewed support without a separate maintainer review.",
+            "Native installer/update acceptance remains later M4/M6 work and is not a prerequisite for this compile-time boundary."
           ],
           "requirements": {
-            "native_windows": true,
-            "native_linux": true,
+            "native_windows": false,
+            "native_linux": false,
             "github_access": false,
             "human_action": false
           }
@@ -1179,7 +1199,7 @@
             {
               "path": "src/update/verify.rs",
               "kind": "planned",
-              "purpose": "Verify metadata, hashes, signatures, provenance, origin, and downgrade policy."
+              "purpose": "Implement the real TUF verifier deferred by M1-T3: establish the authenticated-manifest constructor only after root-chain, role, expiry, target-length/hash, provenance, origin, and downgrade checks."
             },
             {
               "path": "docs/threat-model.md",
@@ -1193,7 +1213,7 @@
             "Release visibility rules distinguishing draft, prerelease, stable, and incomplete asset sets."
           ],
           "validation": [
-            "Verify generated metadata with the updater verifier and reject altered metadata/assets.",
+            "Verify generated metadata with the updater verifier and reject altered metadata/assets; this is the first milestone permitted to claim actual TUF verification.",
             "Review workflow permissions, secret exposure, provenance links, and incomplete-release behavior."
           ],
           "completion_evidence": [],

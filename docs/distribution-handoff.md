@@ -9,12 +9,13 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Roadmap base commit before this M0 update: `cd82e224e9084b6c8cc8f479e2e932e13c97c96c`
 - Roadmap source branch: `main`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
-- Roadmap revision: `4`
-- Current milestone: `M1 — Compatibility manifest and release selection`
-- First executable task: `M1-T3 — Compatibility and authorization boundary`
+- Roadmap revision: `5`
+- Current milestone: `M2 - Startup check and persistent state`
+- First executable task: `M2-T1 - Atomic state and concurrent-check coordination`
 - M0 is complete as a design milestone. No updater, installer, release workflow, dependency, persistent Codex configuration, or live verification changed.
 - M1-T1 is complete: the descriptive schema, strict bounded parser, synthetic fixtures, deterministic serialization, and crate-private TUF verification seam are implemented in `src/update/manifest.rs`.
 - M1-T2 is complete: pure deterministic applicable-release selection is implemented in `src/update/selection.rs`; no updater, network, installation, or hook behavior was wired.
+- M1-T3 is complete: `src/update/verify.rs` now provides a verifier-owned read-only authenticated-manifest boundary with no production constructor. The only constructor compiled for tests is explicitly synthetic byte binding and does not execute TUF verification. Selection accepts only this wrapper, and the runtime compatibility/broker authority remains unchanged.
 - Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 compatibility records and authorization behavior remain unchanged.
 
 ## Read first
@@ -28,7 +29,7 @@ This is a planning handoff, not an updater implementation, installer, release ap
    cargo run --bin validate_distribution_roadmap -- --check
    ```
 
-5. Execute the first task whose dependencies are complete. The next ready task is `M1-T3`.
+5. Execute the first task whose dependencies are complete. The next ready task is `M2-T1`.
 
 ## M0 decisions completed
 
@@ -58,6 +59,14 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - It skips incompatible newer releases when an older release is still newer than installed and applicable. Empty catalogs, equal/older releases, missing platform/architecture assets, runtime floors, unknown runtime, malformed Codex versions, exclusions, and policy failures produce fixed-category outcomes.
 - Automatic mode selects the newest applicable reviewed or explicitly experimental tuple and preserves its experimental classification. Strict mode rejects experimental records and selects the newest applicable exact-reviewed tuple. Exact exclusions take precedence over overlapping eligibility.
 - The selector returns release notes and current/new version data for a future consent UI, but it does not fetch, download, execute, install, activate, authorize, persist state, or modify the compatibility registry.
+
+## M1-T3 compatibility and authorization boundary completed
+
+- The documented stages are separate: untrusted bytes, structurally validated `ParsedManifest`, future TUF-authenticated `AuthenticatedManifest`, pure applicable-release selection, consented installation, and existing runtime Codex/broker authorization.
+- `AuthenticatedManifest` has private content, no public deserialization or `Clone`, and no production constructor. Its test-only synthetic helper checks exact target name/length/SHA-256 byte binding only; it is not publisher-authentication evidence and does not claim to execute TUF.
+- A parsed manifest, matching caller-supplied hash/length, selected release, user-approved update, or local observed success cannot arm the hook, edit the compiled reviewed registry, override strict mode/exclusions, broaden the exact command, bypass identity/ancestry/session/cwd/schema/tool/version checks, or promote project-wide support.
+- Focused tests retain automatic/strict policy, exact exclusion, runtime rejection, and read-only-content coverage. Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 evidence and authorization behavior are unchanged.
+- Real TUF root/role/expiry/target verification is explicitly deferred to M5-T2. No network, installer, state, prompt, release publication, or live verification was added.
 
 ## Update protocol
 

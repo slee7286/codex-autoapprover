@@ -1,17 +1,20 @@
 //! Pure, deterministic selection of an applicable authenticated release.
 //!
-//! Selection consumes only the crate-private TUF-authenticated manifest
-//! wrapper. It does not fetch, install, execute, activate, or authorize
-//! anything, and it does not modify the existing hook compatibility registry.
+//! Selection consumes only the verifier-owned authenticated manifest wrapper.
+//! The current test-only synthetic constructor does not perform TUF
+//! verification. Selection does not fetch, install, execute, activate, or
+//! authorize anything, and it does not modify the existing hook compatibility
+//! registry.
 
 use std::{cmp::Reverse, collections::BTreeSet};
 
+use super::verify::AuthenticatedManifest;
 use crate::{
     cli::CompatibilityMode,
     update::manifest::{
         CompatibilityArchitecture, CompatibilityEligibility, CompatibilityOperatingSystem,
         CompatibilitySurface, ExperimentalBasis, Libc, ReleaseAsset, ReleaseManifest, ReleaseNotes,
-        StableVersion, TargetArchitecture, TargetOperatingSystem, TufAuthenticatedManifest,
+        StableVersion, TargetArchitecture, TargetOperatingSystem,
     },
 };
 
@@ -126,7 +129,7 @@ pub struct ApplicabilityExplanation {
 }
 
 pub struct SelectedRelease<'a> {
-    release: &'a TufAuthenticatedManifest,
+    release: &'a AuthenticatedManifest,
     asset: &'a ReleaseAsset,
     compatibility: SelectedCompatibility,
     explanation: ApplicabilityExplanation,
@@ -156,8 +159,10 @@ pub enum SelectionOutcome<'a> {
     Rejected { reason: SelectionRejectionReason },
 }
 
+/// Select from authenticated metadata only. A `ParsedManifest` or arbitrary
+/// release metadata has no conversion into this function's input type.
 pub fn select_applicable<'a>(
-    candidates: &'a [TufAuthenticatedManifest],
+    candidates: &'a [AuthenticatedManifest],
     input: &SelectionInput,
 ) -> SelectionOutcome<'a> {
     if candidates.is_empty() {
@@ -230,7 +235,7 @@ pub fn select_applicable<'a>(
 }
 
 fn validate_catalog_ambiguity(
-    candidates: &[TufAuthenticatedManifest],
+    candidates: &[AuthenticatedManifest],
 ) -> Result<(), SelectionRejectionReason> {
     let mut release_versions = BTreeSet::new();
     for candidate in candidates {
@@ -493,9 +498,8 @@ fn compatibility_os(operating_system: &TargetOperatingSystem) -> CompatibilityOp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::manifest::{
-        ParsedManifest, Sha256Digest, TufVerifiedTarget, parse_manifest,
-    };
+    use crate::update::manifest::{ParsedManifest, Sha256Digest, parse_manifest};
+    use crate::update::verify::{AuthenticatedManifest, SyntheticTarget, synthetic_for_tests};
     use serde_json::Value;
 
     const VALID_FIXTURE: &str = include_str!(concat!(
@@ -506,7 +510,7 @@ mod tests {
     fn authenticated_manifest(
         release_version: &str,
         include_windows_compatibility: bool,
-    ) -> TufAuthenticatedManifest {
+    ) -> AuthenticatedManifest {
         let mut value: Value = serde_json::from_str(VALID_FIXTURE).expect("fixture JSON");
         value["release_version"] = Value::String(release_version.to_owned());
         if !include_windows_compatibility {
@@ -523,14 +527,12 @@ mod tests {
         let bytes = serde_json::to_vec(&value).expect("synthetic manifest JSON");
         let parsed: ParsedManifest = parse_manifest(&bytes).expect("validated manifest");
         let target_name = parsed.manifest().manifest_target.clone();
-        let target = TufVerifiedTarget::from_verified_metadata(
+        let target = SyntheticTarget::from_untrusted_metadata(
             target_name,
             bytes.len() as u64,
             Sha256Digest::from_bytes(&bytes),
         );
-        parsed
-            .authenticate_tuf(target)
-            .expect("TUF-authenticated fixture")
+        synthetic_for_tests(parsed, target).expect("synthetic test boundary")
     }
 
     fn input(
