@@ -3,13 +3,13 @@
 # Distribution roadmap
 
 - Schema version: `1.0`
-- Roadmap revision: `2`
+- Roadmap revision: `3`
 - Repository: `slee7286/codex-autoapprover`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
 - Source branch: `main`
 - Roadmap branch: `feat/distribution-roadmap`
 - Current milestone: `M1`
-- Next executable task: `M1-T1`
+- Next executable task: `M1-T2`
 
 ## Objective
 
@@ -288,12 +288,12 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 
 ### M1 — Compatibility manifest and release selection
 
-- Status: `planned`
+- Status: `in_progress`
 - Objective: Define bounded, authenticated, deterministic release metadata and keep release applicability separate from hook authorization.
 
 #### M1-T1 — Versioned release manifest schema
 
-- Status: `planned`
+- Status: `completed`
 - Dependencies: `M0-T2`, `M0-T3`
 - Objective: Define and strictly validate machine-readable release metadata containing release version, supported assets, OS/architecture/runtime requirements, hashes, provenance, release notes, and compatibility information.
 - User-visible outcome: The updater can reject malformed, incomplete, prerelease, unsigned, incompatible, or downgrade metadata before any download or activation.
@@ -301,35 +301,42 @@ Plan and then implement a trustworthy, user-scoped, installable Windows x64 and 
 **Expected implementation areas**
 
 - `src/compatibility.rs` (`existing`): Reuse exact platform/surface/protocol/tool compatibility concepts without conflating release selection with verified support.
-- `src/update/manifest.rs` (`planned`): Add bounded schema parsing, strict field validation, signature/provenance references, and asset records.
+- `src/update/manifest.rs` (`existing`): Implement bounded schema parsing, strict nested validation, deterministic serialization, synthetic fixtures, and the crate-private TUF verification seam.
 - `docs/compatibility.md` (`existing`): Document exact reviewed tuples, experimental eligibility, exclusions, and the boundary between evidence and metadata.
 
 **Deliverables**
 
 - A versioned manifest schema with bounded sizes, required fields, canonical serialization rules, and explicit schema evolution policy.
-- Asset records for OS, architecture, runtime/libc, package format, download origin, size bound, digest, signature/provenance, and release notes URL.
+- Asset records for OS, architecture, runtime/libc, package format, download origin, size bound, digest, provenance, and release notes URL; TUF authenticates the manifest target and its hash/length without a competing manifest signature format.
 - Compatibility records for exact reviewed tuples, experimental eligibility, exclusions, hook protocol, tool schema, and response behavior.
 
 **Validation**
 
-- Unit tests for missing/unknown fields, duplicate fields, oversized metadata, malformed versions, prereleases, invalid hashes, unsupported runtime, and downgrade candidates.
-- Verify manifest metadata cannot set arming state or replace broker authorization checks.
+- Focused unit tests cover synthetic valid metadata, nested unknown fields, duplicate JSON keys, duplicate assets, contradictory compatibility identities, oversized input, unsupported schema versions, malformed stable versions, prereleases, invalid hashes and lengths, unsupported hook/tool schemas, inconsistent runtime/archive pairs, canonical ordering, and the TUF proof boundary.
+- The typed parser has no path to arming state or broker authorization; the descriptive manifest remains separate from src/compatibility.rs and runtime decision checks.
+- The repository test and lint gates run on the native Windows checkout; native Linux execution remains CI evidence for a later pushed commit.
 
 **Completion evidence**
 
-- Not complete; evidence must be recorded before status becomes `completed`.
+- src/update/manifest.rs implements schema version 1 with bounded parsing, strict nested fields, duplicate-key rejection, duplicate identity checks, stable-version/hash/length/runtime validation, deterministic serialization, and a crate-private TUF-verified-target adapter.
+- tests/fixtures/distribution_manifest/valid.json is a synthetic three-status manifest; duplicate-key.json and unknown-field.json plus focused mutations exercise rejected inputs. Fixtures contain no production trust anchors or live evidence.
+- docs/compatibility.md records the manifest field contract, proposed runtime-floor boundary, deterministic serialization, and TUF authentication boundary without changing the reviewed Windows 0.153.2/0.154.0 or Linux 0.151.0 registry entries.
+- cargo fmt --check, cargo test --all-targets, cargo clippy --all-targets --all-features -- -D warnings, and cargo build --all-targets passed in this checkout after the implementation.
+- cargo run --bin validate_distribution_roadmap -- --write and --check, plus git diff --check, passed after roadmap regeneration.
 
 **Risks and unresolved decisions**
 
-- Manifest schema evolution and canonical signing representation must be fixed before release automation.
-- A release asset may be applicable while its Codex compatibility remains experimental; the UI must show both facts.
+- Schema version 1 uses snake_case field names and kebab-case enum values; future schema changes require an explicit versioned decoder or migration rather than permissive fallback.
+- TUF verification remains a later integration task: this parser accepts no signatures and parsing never produces an authenticity status. The future adapter must authenticate the exact target bytes and TUF target length/hash before exposing trusted metadata.
+- A release asset may be applicable while its Codex compatibility remains experimental; later selection and UI work must show both facts.
+- Proposed Windows 10 22H2 and Linux glibc 2.31 runtime floors remain unvalidated until native M4/M6 acceptance.
 
 **Required access or action**
 
 - Native Windows: `false`
 - Native Linux: `false`
 - GitHub access: `false`
-- Human action: `true`
+- Human action: `false`
 
 #### M1-T2 — Deterministic applicable-release selection
 

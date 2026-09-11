@@ -2,6 +2,35 @@
 
 This matrix distinguishes reviewed production compatibility from the experimental verification mechanism and historical UI evidence. Compatibility is an exact tuple, not a version-only claim.
 
+## Release-manifest compatibility metadata
+
+M1-T1 defines the descriptive release-manifest schema implemented in
+src/update/manifest.rs. The canonical JSON uses schema version 1 and
+snake_case field names. It contains bounded release metadata, HTTPS release
+notes, native x86_64 asset records, proposed runtime requirements, archive
+format, byte length, lowercase SHA-256 text, download origin, and build
+provenance. Compatibility entries contain an exact Codex version, operating
+system, architecture, launcher surface, hook event/protocol, required tool and
+input schema, response behavior, and one of reviewed, experimental, or
+excluded eligibility records.
+
+Parsing rejects duplicate keys, unknown nested fields, duplicate asset or
+compatibility identities, malformed stable versions, invalid lengths/hashes,
+unsupported schema versions, and contradictory compatibility entries. Canonical
+serialization sorts asset and compatibility arrays by identity. The proposed
+Windows and Linux runtime floors remain unvalidated until the native M4/M6
+acceptance work; synthetic fixtures do not promote compatibility.
+
+This metadata is descriptive only. It cannot arm the broker, bypass runtime
+identity/session/cwd/tool/schema/command checks, or promote an installed Codex
+version to reviewed support. A parsed manifest is untrusted until a later TUF
+adapter authenticates the exact target bytes and target length/hash using the
+repository's selected TUF trust model. The schema contains no competing
+signature format and does not implement signature verification or custom
+cryptography; it only compares the parsed bytes with a TUF-supplied SHA-256
+target digest. Selection, network fetching, persistent state, installation,
+and startup prompting are later milestones.
+
 | Compatibility area | Evidence | Status | Supported claim |
 | --- | --- | --- | --- |
 | Legacy UI proof of concept | Ubuntu Linux; external Expect script; Codex CLI 0.151.0; option 1 accepted harmless `curl -I https://example.com` network escalation | Historical proof only | Option 1 worked in that exact test; numeric ordering is not a supported interface |

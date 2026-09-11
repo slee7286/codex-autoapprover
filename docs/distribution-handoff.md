@@ -9,10 +9,11 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Roadmap base commit before this M0 update: `cd82e224e9084b6c8cc8f479e2e932e13c97c96c`
 - Roadmap source branch: `main`
 - Inspected source commit: `296008527103e98b9d9f9f20fe6d4e8508346b21`
-- Roadmap revision: `2`
+- Roadmap revision: `3`
 - Current milestone: `M1 — Compatibility manifest and release selection`
-- First executable task: `M1-T1 — Versioned release manifest schema`
+- First executable task: `M1-T2 — Deterministic applicable-release selection`
 - M0 is complete as a design milestone. No updater, installer, release workflow, dependency, persistent Codex configuration, or live verification changed.
+- M1-T1 is complete: the descriptive schema, strict bounded parser, synthetic fixtures, deterministic serialization, and crate-private TUF verification seam are implemented in `src/update/manifest.rs`.
 - Existing Linux 0.151.0 and native Windows 0.153.2/0.154.0 compatibility records and authorization behavior remain unchanged.
 
 ## Read first
@@ -26,7 +27,7 @@ This is a planning handoff, not an updater implementation, installer, release ap
    cargo run --bin validate_distribution_roadmap -- --check
    ```
 
-5. Execute the first task whose dependencies are complete. The next ready task is `M1-T1`.
+5. Execute the first task whose dependencies are complete. The next ready task is `M1-T2`.
 
 ## M0 decisions completed
 
@@ -39,6 +40,15 @@ This is a planning handoff, not an updater implementation, installer, release ap
 - Initial proposed targets are native Windows x64 `x86_64-pc-windows-msvc` with Windows 10 22H2+ and native Linux x64 `x86_64-unknown-linux-gnu` with glibc 2.31+. These are not validated installable support yet.
 - The design uses user-scoped paths, a stable launcher, immutable versioned payloads, and an active pointer. Existing Cargo/package-manager installations are never silently overwritten and require explicit migration or instructions.
 - Trust uses a pinned-root TUF design with bounded authenticated metadata, target hashes/lengths, expiry and rollback protection, threshold key rotation, explicit local rollback, and no authority over hook authorization. The reviewed library choices are recorded in the JSON.
+
+## M1-T1 schema contract completed
+
+- Manifest schema version 1 uses bounded snake_case fields and kebab-case enum values for release version, release notes, native asset target/OS/architecture/runtime/archive/length/SHA-256/origin/provenance, and exact compatibility records.
+- Compatibility records explicitly nest the tuple and reviewed/experimental/excluded eligibility. Required hook event, protocol, tool, input schema, and response behavior are descriptive and do not change the runtime broker registry.
+- Parsing rejects duplicate keys at any nesting level, unknown nested fields, duplicate asset or compatibility identities, malformed stable versions/prereleases, invalid hashes or lengths, unsupported schema versions, and contradictory runtime/compatibility records.
+- Canonical serialization deterministically sorts asset and compatibility arrays. Parsing alone is untrusted; only a later successful TUF verification adapter may expose authenticated metadata, using the TUF target's authenticated bytes, length, and hash.
+- Synthetic fixtures are under `tests/fixtures/distribution_manifest/`. They use no production trust anchors and do not establish reviewed support or native runtime-floor validation.
+- This task did not implement selection, network fetching, persistent state, installation, startup prompts, release publication, or TUF cryptography.
 
 ## Update protocol
 
@@ -64,7 +74,7 @@ After each session:
 
 ## Next task
 
-`M1-T1` should define the bounded, strictly validated release manifest: target OS/architecture/runtime, exact Codex compatibility tuple, version, release notes, provenance, authenticated hashes/lengths, prerelease/downgrade rules, and the rule that metadata cannot authorize runtime hooks.
+`M1-T2` should implement deterministic applicable-release selection over the manifest and actual installed Codex/platform/runtime inputs, including newer-inapplicable versus older-applicable releases, prerelease filtering, downgrade refusal, no-applicable-release output, and an explanation that preserves the existing automatic/strict hook policy.
 
 ## Boundaries
 

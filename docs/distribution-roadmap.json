@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "roadmap_revision": 2,
+  "roadmap_revision": 3,
   "repository": "slee7286/codex-autoapprover",
   "inspected_source_commit": "296008527103e98b9d9f9f20fe6d4e8508346b21",
   "source_branch": "main",
@@ -242,7 +242,7 @@
     }
   ],
   "current_milestone": "M1",
-  "next_executable_task": "M1-T1",
+  "next_executable_task": "M1-T2",
   "blockers": [
     {
       "id": "B-M4-M6-NATIVE-ACCEPTANCE",
@@ -465,7 +465,7 @@
     {
       "id": "M1",
       "title": "Compatibility manifest and release selection",
-      "status": "planned",
+      "status": "in_progress",
       "objective": "Define bounded, authenticated, deterministic release metadata and keep release applicability separate from hook authorization.",
       "tasks": [
         {
@@ -473,7 +473,7 @@
           "title": "Versioned release manifest schema",
           "objective": "Define and strictly validate machine-readable release metadata containing release version, supported assets, OS/architecture/runtime requirements, hashes, provenance, release notes, and compatibility information.",
           "user_visible_outcome": "The updater can reject malformed, incomplete, prerelease, unsigned, incompatible, or downgrade metadata before any download or activation.",
-          "status": "planned",
+          "status": "completed",
           "dependencies": [
             "M0-T2",
             "M0-T3"
@@ -486,8 +486,8 @@
             },
             {
               "path": "src/update/manifest.rs",
-              "kind": "planned",
-              "purpose": "Add bounded schema parsing, strict field validation, signature/provenance references, and asset records."
+              "kind": "existing",
+              "purpose": "Implement bounded schema parsing, strict nested validation, deterministic serialization, synthetic fixtures, and the crate-private TUF verification seam."
             },
             {
               "path": "docs/compatibility.md",
@@ -497,23 +497,32 @@
           ],
           "deliverables": [
             "A versioned manifest schema with bounded sizes, required fields, canonical serialization rules, and explicit schema evolution policy.",
-            "Asset records for OS, architecture, runtime/libc, package format, download origin, size bound, digest, signature/provenance, and release notes URL.",
+            "Asset records for OS, architecture, runtime/libc, package format, download origin, size bound, digest, provenance, and release notes URL; TUF authenticates the manifest target and its hash/length without a competing manifest signature format.",
             "Compatibility records for exact reviewed tuples, experimental eligibility, exclusions, hook protocol, tool schema, and response behavior."
           ],
           "validation": [
-            "Unit tests for missing/unknown fields, duplicate fields, oversized metadata, malformed versions, prereleases, invalid hashes, unsupported runtime, and downgrade candidates.",
-            "Verify manifest metadata cannot set arming state or replace broker authorization checks."
+            "Focused unit tests cover synthetic valid metadata, nested unknown fields, duplicate JSON keys, duplicate assets, contradictory compatibility identities, oversized input, unsupported schema versions, malformed stable versions, prereleases, invalid hashes and lengths, unsupported hook/tool schemas, inconsistent runtime/archive pairs, canonical ordering, and the TUF proof boundary.",
+            "The typed parser has no path to arming state or broker authorization; the descriptive manifest remains separate from src/compatibility.rs and runtime decision checks.",
+            "The repository test and lint gates run on the native Windows checkout; native Linux execution remains CI evidence for a later pushed commit."
           ],
-          "completion_evidence": [],
+          "completion_evidence": [
+            "src/update/manifest.rs implements schema version 1 with bounded parsing, strict nested fields, duplicate-key rejection, duplicate identity checks, stable-version/hash/length/runtime validation, deterministic serialization, and a crate-private TUF-verified-target adapter.",
+            "tests/fixtures/distribution_manifest/valid.json is a synthetic three-status manifest; duplicate-key.json and unknown-field.json plus focused mutations exercise rejected inputs. Fixtures contain no production trust anchors or live evidence.",
+            "docs/compatibility.md records the manifest field contract, proposed runtime-floor boundary, deterministic serialization, and TUF authentication boundary without changing the reviewed Windows 0.153.2/0.154.0 or Linux 0.151.0 registry entries.",
+            "cargo fmt --check, cargo test --all-targets, cargo clippy --all-targets --all-features -- -D warnings, and cargo build --all-targets passed in this checkout after the implementation.",
+            "cargo run --bin validate_distribution_roadmap -- --write and --check, plus git diff --check, passed after roadmap regeneration."
+          ],
           "risks_or_unresolved_decisions": [
-            "Manifest schema evolution and canonical signing representation must be fixed before release automation.",
-            "A release asset may be applicable while its Codex compatibility remains experimental; the UI must show both facts."
+            "Schema version 1 uses snake_case field names and kebab-case enum values; future schema changes require an explicit versioned decoder or migration rather than permissive fallback.",
+            "TUF verification remains a later integration task: this parser accepts no signatures and parsing never produces an authenticity status. The future adapter must authenticate the exact target bytes and TUF target length/hash before exposing trusted metadata.",
+            "A release asset may be applicable while its Codex compatibility remains experimental; later selection and UI work must show both facts.",
+            "Proposed Windows 10 22H2 and Linux glibc 2.31 runtime floors remain unvalidated until native M4/M6 acceptance."
           ],
           "requirements": {
             "native_windows": false,
             "native_linux": false,
             "github_access": false,
-            "human_action": true
+            "human_action": false
           }
         },
         {
