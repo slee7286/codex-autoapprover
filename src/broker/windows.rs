@@ -672,7 +672,7 @@ mod security {
     // `descriptor` and `acl` are kept alive while `attributes` references the descriptor.
     #[allow(dead_code)]
     pub struct PipeSecurityAttributes {
-        descriptor: SECURITY_DESCRIPTOR,
+        descriptor: Box<SECURITY_DESCRIPTOR>,
         acl: Vec<u8>,
         sid: *mut std::ffi::c_void,
         attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
@@ -686,10 +686,10 @@ mod security {
             if ok == 0 || sid.is_null() {
                 anyhow::bail!("convert launcher SID for broker pipe DACL")
             }
-            let mut descriptor = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
+            let mut descriptor = Box::new(unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() });
             let ok = unsafe {
                 InitializeSecurityDescriptor(
-                    &mut descriptor as *mut _ as *mut _,
+                    &mut *descriptor as *mut _ as *mut _,
                     SECURITY_DESCRIPTOR_REVISION,
                 )
             };
@@ -700,7 +700,7 @@ mod security {
             let acl = build_dacl(sid)?;
             let ok = unsafe {
                 SetSecurityDescriptorDacl(
-                    &mut descriptor as *mut _ as *mut _,
+                    &mut *descriptor as *mut _ as *mut _,
                     1,
                     acl.as_ptr() as *mut ACL,
                     0,
@@ -713,7 +713,7 @@ mod security {
             let attributes = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>()
                     as u32,
-                lpSecurityDescriptor: &mut descriptor as *mut _ as *mut _,
+                lpSecurityDescriptor: &mut *descriptor as *mut _ as *mut _,
                 bInheritHandle: 0,
             };
             Ok(Self {
