@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/cross-platform-session-binding-v1]
+    branches: [test/windows-codex-0.155.1]
   pull_request:
 
 permissions:
@@ -38,3 +38,19 @@ jobs:
       - run: cargo build
       - run: cargo run -- diagnose
       - run: git diff --check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install exact Codex release
+        run: npm install --global @openai/codex@0.155.1
+      - name: Check Codex 0.155.1 capability and launcher arming
+        shell: pwsh
+        run: |
+          $version = & codex --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'codex-cli 0.155.1') { throw "Unexpected Codex version: $version" }
+          $diagnosis = & ./target/debug/codex-autoapprover.exe diagnose 2>&1 | Out-String
+          $diagnosis
+          if ($LASTEXITCODE -ne 0 -or $diagnosis -notmatch 'supported by non-live configuration probe') { throw 'Capability probe failed' }
+          $launch = & ./target/debug/codex-autoapprover.exe run -- --version 2>&1 | Out-String
+          $launch
+          if ($LASTEXITCODE -ne 0 -or $launch -notmatch 'approvals ARMED' -or $launch -notmatch 'codex-cli 0.155.1') { throw 'Launcher did not arm with Codex 0.155.1' }

@@ -17,6 +17,7 @@ use clap::Parser;
 fn main() {
     let cli = cli::Cli::parse();
     let result = match cli.command.unwrap_or(cli::Command::Run(cli::RunArgs {
+        compatibility: None,
         codex_args: Vec::new(),
     })) {
         cli::Command::Run(args) => launcher::run(&args),

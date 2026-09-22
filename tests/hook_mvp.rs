@@ -199,7 +199,7 @@ fn print_hook_config_succeeds_for_verified_linux_cli_without_writing_home_config
     let fake = temp.path().join("codex");
     let home = temp.path().join("home");
     fs::create_dir(&home).expect("home directory");
-    fs::write(&fake, "#!/bin/sh\nprintf 'codex-cli 0.151.0\\n'\n").expect("fake codex");
+    fs::write(&fake, "#!/bin/sh\nprintf 'codex-cli 0.153.0\\n'\n").expect("fake codex");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("executable fake codex");
 
     Command::cargo_bin("codex-autoapprover")
@@ -225,7 +225,7 @@ fn production_run_arms_only_after_exact_compatibility_succeeds() {
     fs::create_dir(&home).expect("home directory");
     fs::write(
         &fake,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.151.0\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf 'socket=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_SOCKET:+yes}\"\nprintf 'args=%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\nprintf '{\"session_id\":\"fake\",\"cwd\":\"%s\",\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"printf synthetic\"}}\\n' \"$(pwd)\" | \"$FAKE_HOOK_BIN\" hook\nexit 17\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.151.0\\n'; exit 0; fi\nif [ \"$1\" = \"--help\" ]; then printf '%s\\n' '-c, --config'; exit 0; fi\nif [ \"$1\" = \"features\" ] && [ \"$2\" = \"list\" ]; then printf 'hooks stable true\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf 'socket=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_SOCKET:+yes}\"\nprintf 'args=%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\nprintf '{\"session_id\":\"fake\",\"cwd\":\"%s\",\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"printf synthetic\"}}\\n' \"$(pwd)\" | \"$FAKE_HOOK_BIN\" hook\nexit 17\n",
     )
     .expect("fake codex");
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("executable fake codex");
@@ -246,6 +246,95 @@ fn production_run_arms_only_after_exact_compatibility_succeeds() {
         .stdout(predicate::str::contains("{\"hookSpecificOutput\":{"))
         .stdout(predicate::str::contains("args=-c|hooks.PermissionRequest="));
     assert!(!home.join(".codex/config.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn newer_stable_version_is_attempted_by_default_but_remains_experimental() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temporary directory");
+    let fake = temp.path().join("codex");
+    fs::write(
+        &fake,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.153.4\\n'; exit 0; fi\nif [ \"$1\" = \"--help\" ]; then printf '%s\\n' '-c, --config'; exit 0; fi\nif [ \"$1\" = \"features\" ] && [ \"$2\" = \"list\" ]; then printf 'hooks stable true\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf 'arg0=%s\\n' \"$1\"\nexit 19\n",
+    )
+    .expect("fake codex");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("fake executable");
+
+    Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", temp.path())
+        .args(["run", "--", "--model", "synthetic"])
+        .assert()
+        .code(19)
+        .stdout(predicate::str::contains("armed=yes\n"))
+        .stdout(predicate::str::contains("arg0=-c\n"))
+        .stderr(predicate::str::contains(
+            "Experimental automatic approvals: Codex 0.153.4 on Linux has not been live-verified",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+fn strict_mode_leaves_an_unverified_newer_version_unarmed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temporary directory");
+    let fake = temp.path().join("codex");
+    fs::write(
+        &fake,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.153.4\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf 'arg0=%s\\n' \"$1\"\nexit 21\n",
+    )
+    .expect("fake codex");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("fake executable");
+
+    Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", temp.path())
+        .args([
+            "run",
+            "--compatibility",
+            "strict",
+            "--",
+            "--model",
+            "synthetic",
+        ])
+        .assert()
+        .code(21)
+        .stdout(predicate::str::contains("armed=\n"))
+        .stdout(predicate::str::contains("arg0=--model\n"))
+        .stderr(predicate::str::contains(
+            "strict compatibility policy requires a reviewed exact tuple",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+fn compatibility_environment_selects_strict_mode_when_flag_is_absent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temporary directory");
+    let fake = temp.path().join("codex");
+    fs::write(
+        &fake,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.153.4\\n'; exit 0; fi\nprintf 'armed=%s\\n' \"${CODEX_AUTOAPPROVER_SESSION_TOKEN:+yes}\"\nprintf '%s\\n' \"$@\"\nexit 22\n",
+    )
+    .expect("fake codex");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).expect("fake executable");
+
+    Command::cargo_bin("codex-autoapprover")
+        .expect("binary built")
+        .env("PATH", temp.path())
+        .env("CODEX_AUTOAPPROVER_COMPATIBILITY", "strict")
+        .args(["run", "--", "--model", "synthetic"])
+        .assert()
+        .code(22)
+        .stdout(predicate::str::contains("armed=\n"))
+        .stdout(predicate::str::contains("--model\nsynthetic\n"))
+        .stderr(predicate::str::contains(
+            "strict compatibility policy requires a reviewed exact tuple",
+        ));
 }
 
 #[cfg(unix)]

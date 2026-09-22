@@ -160,8 +160,8 @@ pub struct BrokerConfig {
     pub codex_version: String,
     pub expected_cwd: PathBuf,
     pub expected_command: Option<String>,
+    pub expected_tool_name: Option<String>,
     pub audit_path: Option<PathBuf>,
-    pub verification_only: bool,
 }
 
 struct SharedState {
@@ -314,10 +314,11 @@ fn handle_connection(mut stream: UnixStream, shared: &SharedState) {
     let allowed = verify_request(shared, credentials, &request, &proc_reader);
     if allowed {
         if let Some(path) = shared.config.audit_path.as_deref()
-            && (audit::hook_invoked_at(
+            && (audit::hook_request_at(
                 path,
                 request.hook_input.tool_name.as_deref(),
                 request.hook_input.hook_event_name.as_deref(),
+                request.hook_input.tool_input.as_ref(),
             )
             .is_err()
                 || audit::hook_allow_at(
@@ -330,7 +331,15 @@ fn handle_connection(mut stream: UnixStream, shared: &SharedState) {
             let _ = write_response_until(&mut stream, BrokerDecision::NoDecision, deadline);
             return;
         }
-        let _ = write_response_until(&mut stream, BrokerDecision::Allow, deadline);
+        if write_response_until(&mut stream, BrokerDecision::Allow, deadline).is_ok()
+            && let Some(path) = shared.config.audit_path.as_deref()
+        {
+            let _ = audit::hook_allow_emitted_at(
+                path,
+                request.hook_input.tool_name.as_deref().unwrap_or("unknown"),
+                request.hook_input.tool_input.as_ref(),
+            );
+        }
     } else {
         let _ = write_response_until(&mut stream, BrokerDecision::NoDecision, deadline);
     }
@@ -390,7 +399,7 @@ fn verify_request(
         codex_version: &shared.config.codex_version,
         expected_cwd: expected_cwd.as_ref(),
         expected_command: shared.config.expected_command.as_deref(),
-        verification_only: shared.config.verification_only,
+        expected_tool_name: shared.config.expected_tool_name.as_deref(),
     };
     matches!(
         decision::decide(&request.hook_input, context),
@@ -655,8 +664,8 @@ mod tests {
                 codex_version: "0.151.0".into(),
                 expected_cwd: "/tmp/work".into(),
                 expected_command: None,
+                expected_tool_name: None,
                 audit_path: None,
-                verification_only: false,
             },
             session_secret: secret.into(),
         }
@@ -839,8 +848,8 @@ mod tests {
                 codex_version: "0.151.0".into(),
                 expected_cwd: cwd.clone(),
                 expected_command: None,
+                expected_tool_name: None,
                 audit_path: None,
-                verification_only: false,
             },
         )
         .unwrap();

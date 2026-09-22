@@ -27,9 +27,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
+    SetNamedPipeHandleState,
 };
 
 const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
+const PIPE_NOWAIT: u32 = 0x0000_0001;
 
 use crate::{
     arming, audit,
@@ -49,8 +51,8 @@ pub struct BrokerConfig {
     pub codex_version: String,
     pub expected_cwd: PathBuf,
     pub expected_command: Option<String>,
+    pub expected_tool_name: Option<String>,
     pub audit_path: Option<PathBuf>,
-    pub verification_only: bool,
 }
 
 #[derive(Debug)]
@@ -194,6 +196,18 @@ fn serve(
             break;
         }
         if connected != 0 || last_error == ERROR_PIPE_CONNECTED {
+            let mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+            if unsafe {
+                SetNamedPipeHandleState(pipe_handle, &mode, ptr::null_mut(), ptr::null_mut())
+            } == 0
+            {
+                close_handle(pipe_handle);
+                pipe_handle = match create_server_pipe(&shared.pipe_name, &security) {
+                    Ok(handle) => handle,
+                    Err(_) => break,
+                };
+                continue;
+            }
             if shared.active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_ACTIVE_CONNECTIONS {
                 shared.active_connections.fetch_sub(1, Ordering::AcqRel);
                 close_handle(pipe_handle);
@@ -230,7 +244,7 @@ fn create_server_pipe(
         CreateNamedPipeW(
             wide.as_ptr(),
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
             MAX_ACTIVE_CONNECTIONS as u32,
             MAX_BROKER_MESSAGE_BYTES as u32,
             MAX_BROKER_RESPONSE_BYTES as u32,
@@ -278,10 +292,11 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
     let allowed = verify_request(shared, client_pid, &request, &reader, peer_user_matches);
     if allowed {
         if let Some(path) = shared.config.audit_path.as_deref()
-            && (audit::hook_invoked_at(
+            && (audit::hook_request_at(
                 path,
                 request.hook_input.tool_name.as_deref(),
                 request.hook_input.hook_event_name.as_deref(),
+                request.hook_input.tool_input.as_ref(),
             )
             .is_err()
                 || audit::hook_allow_at(
@@ -295,7 +310,15 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
             close_handle(pipe);
             return;
         }
-        let _ = write_response_until(pipe, BrokerDecision::Allow, deadline);
+        if write_response_until(pipe, BrokerDecision::Allow, deadline).is_ok()
+            && let Some(path) = shared.config.audit_path.as_deref()
+        {
+            let _ = audit::hook_allow_emitted_at(
+                path,
+                request.hook_input.tool_name.as_deref().unwrap_or("unknown"),
+                request.hook_input.tool_input.as_ref(),
+            );
+        }
     } else {
         let _ = write_response_until(pipe, BrokerDecision::NoDecision, deadline);
     }
@@ -349,7 +372,7 @@ fn verify_request(
         codex_version: &shared.config.codex_version,
         expected_cwd: expected_cwd.as_ref(),
         expected_command: shared.config.expected_command.as_deref(),
-        verification_only: shared.config.verification_only,
+        expected_tool_name: shared.config.expected_tool_name.as_deref(),
     };
     matches!(
         decision::decide(&request.hook_input, context),
@@ -751,5 +774,75 @@ mod tests {
     fn constant_time_comparison_requires_equal_secret() {
         assert!(constant_time_equal("abcd", "abcd"));
         assert!(!constant_time_equal("abcd", "abce"));
+    }
+
+    #[test]
+    fn response_delivery_writes_a_complete_structured_frame() {
+        use std::sync::mpsc;
+
+        let session = Session::create().expect("test pipe name");
+        let sid = process::launcher_user_sid().expect("current user SID");
+        let security = security::PipeSecurityAttributes::new(&sid).expect("pipe security");
+        let server = create_server_pipe(session.pipe_name(), &security).expect("server pipe");
+        let (sender, receiver) = mpsc::channel();
+        let name = session.pipe_name().to_owned();
+        let client = thread::spawn(move || {
+            let wide = encode_wide(name);
+            let deadline = Instant::now() + CONNECTION_TIMEOUT;
+            let handle = loop {
+                let handle = unsafe {
+                    CreateFileW(
+                        wide.as_ptr(),
+                        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                        0,
+                        ptr::null_mut(),
+                        OPEN_EXISTING,
+                        0,
+                        ptr::null_mut(),
+                    )
+                };
+                if handle != INVALID_HANDLE_VALUE {
+                    break handle;
+                }
+                if Instant::now() >= deadline {
+                    break INVALID_HANDLE_VALUE;
+                }
+                thread::sleep(Duration::from_millis(5));
+            };
+            sender
+                .send((handle != INVALID_HANDLE_VALUE).then_some(handle as usize))
+                .expect("send client handle");
+        });
+
+        let connect_deadline = Instant::now() + CONNECTION_TIMEOUT;
+        loop {
+            let connected = unsafe { ConnectNamedPipe(server, ptr::null_mut()) };
+            let last_error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            if connected != 0 || last_error == ERROR_PIPE_CONNECTED {
+                break;
+            }
+            assert!(
+                Instant::now() < connect_deadline,
+                "named-pipe client did not connect"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let client_handle = receiver
+            .recv_timeout(CONNECTION_TIMEOUT)
+            .expect("connected client")
+            .expect("client failed to open named pipe") as HANDLE;
+        let mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+        assert_ne!(
+            unsafe { SetNamedPipeHandleState(server, &mode, ptr::null_mut(), ptr::null_mut()) },
+            0
+        );
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
+        write_response_until(server, BrokerDecision::Allow, deadline).expect("write response");
+        let response = read_frame_until(client_handle, MAX_BROKER_RESPONSE_BYTES, deadline)
+            .expect("read complete response");
+        assert!(parse_response(&response).expect("parse response"));
+        close_handle(client_handle);
+        close_handle(server);
+        client.join().expect("client thread");
     }
 }

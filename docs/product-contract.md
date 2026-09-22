@@ -1,18 +1,22 @@
 # Product contract
 
-This is the intended normative contract for `codex-autoapprover`. **MUST** and **MUST NOT** are mandatory requirements. **SHOULD** and **SHOULD NOT** are strong defaults that require a documented reason to change. **MAY** describes an optional capability. The only verified production tuple is Linux + local CLI launcher + Codex CLI 0.151.0.
+This is the intended normative contract for `codex-autoapprover`. **MUST** and **MUST NOT** are mandatory requirements. **SHOULD** and **SHOULD NOT** are strong defaults that require a documented reason to change. **MAY** describes an optional capability. The verified production tuples are Linux + local CLI launcher + Codex CLI 0.151.0 and 0.153.0. Linux 0.153.4 and native Windows 0.154.0 are requested experimental/unverified tuples, not verified support.
 
 ## Product identity and status
 
 The product MUST be an unofficial, independent launcher around a user's existing official Codex CLI. It MUST NOT present itself as Codex or OpenAI software and MUST NOT replace, patch, or reimplement the official agent runtime.
 
-The repository is pre-alpha. The current implementation provides launcher plumbing, a hook handler, diagnostics, configuration rendering, synthetic tests, and one narrowly reviewed production compatibility entry. It MUST NOT generalize that entry to other versions, operating systems, or surfaces.
+The repository is pre-alpha. The current implementation provides launcher plumbing, a hook handler, diagnostics, configuration rendering, synthetic tests, and narrowly reviewed production compatibility entries. It MUST NOT generalize a verified entry to other versions, operating systems, or surfaces; automatic experimental attempts are a separate, explicitly warned policy.
 
 The external legacy evidence is limited to Ubuntu Linux, Codex CLI 0.151.0, an Expect proof of concept, and option 1 accepting a harmless `curl -I https://example.com` network escalation. Numeric option order MUST NOT be treated as an interface or hook support evidence.
 
 ## Launcher behavior
 
-`run` MUST resolve the user's existing official `codex` executable and MUST refuse recursive self-resolution. It MUST verify the exact compatibility tuple before arming, preserve the user's working directory, inherited environment subject to documented launcher variables, stdin, stdout, stderr, Codex arguments, normal terminal behavior, and exit status as far as the platform permits.
+`run` MUST resolve the user's existing official `codex` executable and MUST refuse recursive self-resolution. Its default automatic policy MUST permit an attempt only for native Linux or native Windows local-CLI targets at or above the inspected adapter baseline, with a stable three-component version and a passing child-local hook/configuration capability probe. It MUST preserve the user's working directory, inherited environment subject to documented launcher variables, stdin, stdout, stderr, Codex arguments, normal terminal behavior, and exit status as far as the platform permits.
+
+Version/platform eligibility, detected hook/configuration capability, runtime request-schema support, reviewed live-verification status, and active session arming MUST be represented and diagnosed separately. A passing capability probe is non-live evidence that an attempt is possible; it MUST NOT be described as live protocol verification. Unknown, malformed, prerelease, explicitly excluded, older-than-baseline, unsupported-platform, unsupported-surface, or capability-inconclusive targets MUST run unarmed with normal Codex approvals.
+
+The wrapper MUST support `--compatibility automatic|strict` before the `--` separator. The default is `automatic`; `CODEX_AUTOAPPROVER_COMPATIBILITY=automatic|strict` supplies the mode when the flag is absent, and the flag takes precedence. Strict mode MUST arm automatic approval only for reviewed exact registry tuples. Wrapper options MUST never consume, reorder, or reinterpret arguments after `--`.
 
 The launcher MUST start Codex as an ordinary child process with inherited terminal I/O by default. It MUST NOT allocate a second PTY unless a later compatibility investigation proves that inheritance is insufficient. It MUST support normal terminal interruption, including Ctrl-C behavior appropriate to the platform.
 
@@ -36,17 +40,17 @@ Codex may invoke matching command hooks concurrently. The hook MUST be stateless
 
 The child environment MAY be inherited by commands launched by Codex. The secret and socket are defense in depth, not a privilege boundary. A malicious process already running as the same user inside the exact authorized descendant tree remains in scope and may cause denial of service or invoke the hook binary.
 
-The experimental `verify-local-hook` command MUST remain separate from `run`. It MUST detect the local official executable and exact version, accept only the current milestone target `0.151.0`, require an interactive exact confirmation phrase generated from that detected version, and use a temporary Git repository as cwd. It MUST pass the user's existing authentication context through inheritance without copying, printing, or modifying authentication data. It MUST use only child-local `-c` hook configuration and MUST remove its temporary state after the child exits.
+The experimental `verify-local-hook` command MUST remain separate from `run`. It MUST detect the local official executable and resolve its eligible stable version into one verification target. The target MUST supply the displayed platform command, confirmation phrase, child version binding, prompt, and broker authorization. Linux's exact probe is `curl -I https://example.com`; native Windows's exact probe is `curl.exe -I https://example.com`. It MUST require an interactive exact confirmation phrase generated from that target and use a temporary Git repository as cwd. It MUST pass the user's existing authentication context through inheritance without copying, printing, or modifying authentication data. It MUST use only child-local `-c` hook configuration and MUST remove its temporary state after the child exits.
 
-The verification prompt MUST authorize only `curl -I https://example.com`. The verification hook MUST decline unless the request exposes a `tool_input.command` string equal to that exact action. The verifier MUST set `workspace-write` sandboxing, `on-request` approvals, and no full-access or never-approve option. Incorrect confirmation, EOF, non-interactive input, timeout, interruption, version mismatch, missing hook evidence, multiple allows, dirty temporary state, or a non-success child exit MUST prevent compatibility promotion.
+The verification prompt MUST authorize only the resolved platform probe: `curl -I https://example.com` on Linux or `curl.exe -I https://example.com` on native Windows. The verification hook MUST decline unless the request exposes a `tool_input.command` string equal to that exact action. The verifier MUST set `workspace-write` sandboxing, `on-request` approvals, and no full-access or never-approve option. Incorrect confirmation, EOF, non-interactive input, timeout, interruption, version mismatch, missing hook evidence, zero PermissionRequest invocations, multiple allows, dirty temporary state, or a non-success child exit MUST prevent compatibility promotion.
 
 ## Compatibility rules
 
-The project MUST maintain a typed compatibility registry across Codex version, operating system, surface, hook event/protocol, observed tool type, response behavior, verification status/method, and autoapprover release. A Codex version MUST NOT be called supported because its UI resembles an earlier version, its generic feature flag is enabled, or a legacy option-numbering proof exists.
+The project MUST maintain a typed compatibility registry across Codex version, operating system, surface, hook event/protocol, observed tool type, response behavior, verification status/method, and autoapprover release. A Codex version MUST NOT be called verified because its UI resembles an earlier version, its generic feature flag is enabled, a non-live capability probe passes, or a legacy option-numbering proof exists. Experimental automatic approval MUST be warned prominently with: “Experimental automatic approvals: Codex VERSION on PLATFORM has not been live-verified. Eligible permission requests will be approved automatically; incompatible requests fall back to normal approval.” The warning MUST explain the compatibility and command-execution risk and MUST NOT require an extra confirmation on each launch.
 
-Unsupported or unverified versions MUST run with automation disabled or fail with a clear error. Exactly Linux local CLI Codex 0.151.0 is verified. The broker applies the version, surface, protocol, and observed `Bash` checks independently of inherited environment metadata, so a forged or stale environment receives no decision.
+Unarmed or rejected targets MUST run with automation disabled or fail with a clear error. Exactly Linux local CLI Codex 0.151.0 and 0.153.0 are verified. Newer eligible stable versions MAY be attempted automatically but remain experimental/unverified. The broker applies the bound version, platform, surface, protocol, and observed `Bash` checks independently of inherited environment metadata, so a forged, stale, malformed, or runtime-incompatible request receives no decision and falls back to normal approval.
 
-The verified entry records release `0.1.0`, hook event `PermissionRequest`, project protocol/schema marker `permission-request-v1`, response behavior one-request structured allow, and isolated live end-to-end verification. Compatibility with this release MUST NOT be inferred for 0.150.x, 0.152.x, any other version, macOS, Windows, VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, or Codex cloud.
+The verified entries record release `0.1.0`, hook event `PermissionRequest`, project protocol/schema marker `permission-request-v1`, response behavior one-request structured allow, and isolated live end-to-end verification. Compatibility with these releases MUST NOT be inferred for another release, macOS, Windows as a verified surface, VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, or Codex cloud. The maintained exclusion mechanism MUST be used for explicitly incompatible tuples; it MUST not be replaced by an undocumented numeric exception.
 
 Numeric approval ordering, terminal wording, ANSI sequences, cursor position, and screen scraping MUST NOT be compatibility inputs for the authoritative implementation.
 
@@ -60,15 +64,15 @@ Audit output MUST be protected against unsafe symlink following and unexpected p
 
 The product MUST provide these conceptual operations:
 
-- `run`: launch the official Codex child and arm only when the exact version is verified;
+- `run`: launch the official Codex child and attempt automatic arming for an eligible stable target, or exact reviewed-tuple arming in strict mode;
 - `hook`: handle one Codex `PermissionRequest` invocation;
 - `diagnose`: report non-sensitive local facts;
 - `print-hook-config`: print, but never write, the exact configuration snippet for a verified installation;
 - `verify-local-hook`: run one explicit, isolated, non-promoting local verification.
 
-There MUST be a visible warning when automatic approval is armed. `diagnose` MUST report whether the current process is armed, the resolved path, installed version, compatibility result, platform status, and whether configuration was checked without exposing secrets. An emergency kill switch MUST disarm automatic responses immediately.
+There MUST be a visible warning when experimental automatic approval is armed. `diagnose` MUST report policy eligibility, detected capability, runtime schema status, reviewed live-verification status, active process arming, the resolved path, installed version, platform/surface status, and whether persistent configuration was checked without exposing secrets. An emergency kill switch MUST disarm automatic responses immediately.
 
-The verifier MUST print the exact harmless action and its confirmation phrase before launch. It MUST report distinct redacted evidence for hook invocation/allow, child result, temporary repository state, and cleanup. It MUST NOT print the arming token or persist full commands, tool input, credentials, or environment contents.
+The verifier MUST print the exact harmless action and its confirmation phrase before launch. It MUST report distinct redacted evidence for the actual request hash, structured allow emission, exact command result as evidenced by the successful child, temporary repository state, child exit, and cleanup. A successful network command with zero PermissionRequest invocations is inconclusive. It MUST NOT print the arming token or persist full commands, tool input, credentials, or environment contents.
 
 ## Installation and uninstallation invariants
 
