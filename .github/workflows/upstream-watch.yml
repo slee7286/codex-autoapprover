@@ -53,6 +53,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: automation/codex-${{ needs.detect.outputs.version }}
+          path: candidate
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -64,10 +70,10 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/watch_codex.py --output candidate-runner.json
+        run: python trusted/scripts/watch_codex.py --output candidate-runner.json
       - name: Verify native release asset digest
         shell: pwsh
-        run: python scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json
+        run: python trusted/scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json
       - name: Install exact candidate on disposable runner
         shell: pwsh
         run: |
@@ -76,11 +82,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Candidate installation failed' }
       - name: Inspect without credentials or a live approval session
         shell: pwsh
-        run: python scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
+        run: python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: "1.98.0"
       - run: cargo test --locked --all-targets
+        working-directory: candidate
       - name: Summarize candidate evidence
         shell: pwsh
         run: |
@@ -199,7 +206,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
           ref: automation/codex-${{ needs.detect.outputs.version }}
+          path: candidate
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -211,22 +223,26 @@ jobs:
         with:
           toolchain: '1.98.0'
           components: rustfmt, clippy
-      - name: Refresh and verify native asset identity after repair
+      - name: Refresh official release metadata after repair
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          python scripts/watch_codex.py --output candidate-runner.json
-          python scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json
+        run: python trusted/scripts/watch_codex.py --output candidate-runner.json
+      - name: Verify candidate metadata and native asset after repair
+        shell: pwsh
+        run: python trusted/scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json
       - name: Inspect exact candidate without credentials
         shell: pwsh
         run: |
           npm install --global --ignore-scripts "@openai/codex@$env:CANDIDATE_VERSION"
           if ($LASTEXITCODE -ne 0) { throw 'Candidate installation failed' }
-          python scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
+          python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
       - run: cargo fmt --check
+        working-directory: candidate
       - run: cargo test --locked --all-targets
+        working-directory: candidate
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        working-directory: candidate
       - name: State remaining qualification
         shell: pwsh
         run: '"Repair checks remain non-live; native PermissionRequest evidence and independent review are still required." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8'

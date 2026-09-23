@@ -3,9 +3,11 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
+import stat
 import urllib.parse
 import urllib.request
 
@@ -16,6 +18,7 @@ ASSET_BY_OS = {"Linux": REQUIRED_ASSETS[0], "Windows": REQUIRED_ASSETS[1]}
 FINAL_HOSTS = {"github.com", "release-assets.githubusercontent.com"}
 MAX_DOWNLOAD = 2 * 1024**3
 CHUNK = 1024 * 1024
+MAX_CANDIDATE_BYTES = 1024 * 1024
 
 
 class AllowedAssetRedirect(urllib.request.HTTPRedirectHandler):
@@ -24,6 +27,46 @@ class AllowedAssetRedirect(urllib.request.HTTPRedirectHandler):
         if target.scheme != "https" or target.hostname not in FINAL_HOSTS:
             raise ValueError("unexpected release asset redirect")
         return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate candidate metadata key")
+        result[key] = value
+    return result
+
+
+def load_candidate(path):
+    entry = os.lstat(path)
+    if (not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1
+            or entry.st_size > MAX_CANDIDATE_BYTES):
+        raise ValueError("candidate metadata must be a bounded regular file")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    with os.fdopen(os.open(path, flags), "rb") as source:
+        before = os.fstat(source.fileno())
+        if ((before.st_dev, before.st_ino) != (entry.st_dev, entry.st_ino)
+                or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_size > MAX_CANDIDATE_BYTES):
+            raise ValueError("candidate metadata changed before inspection")
+        body = source.read(MAX_CANDIDATE_BYTES + 1)
+        after = os.fstat(source.fileno())
+        if (len(body) != before.st_size or (before.st_dev, before.st_ino, before.st_size,
+                before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise ValueError("candidate metadata changed during inspection")
+    return json.loads(body, object_pairs_hook=unique_object)
+
+
+def require_recorded_candidate_matches_official(official, recorded):
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                       allow_nan=False)
+    if canonical(recorded) != canonical(official):
+        raise ValueError("candidate branch metadata differs from current official release")
 
 
 def selected_asset(candidate, system, version):
@@ -88,9 +131,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version")
     parser.add_argument("--candidate", type=Path, default=Path("candidate-runner.json"))
+    parser.add_argument("--recorded-candidate", type=Path,
+                        help="Require checked-out candidate branch metadata to match the refreshed official record")
     parser.add_argument("--output", type=Path, default=Path("asset-verification.json"))
     args = parser.parse_args()
-    candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
+    candidate = load_candidate(args.candidate)
+    if args.recorded_candidate:
+        require_recorded_candidate_matches_official(candidate, load_candidate(args.recorded_candidate))
     result = verify(candidate, platform.system(), args.version)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 

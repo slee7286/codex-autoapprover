@@ -1,7 +1,12 @@
 """Download integrity fixtures are not native approval evidence."""
 import hashlib
 import io
+import json
+from pathlib import Path
+import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import verify_candidate_asset as check
 
@@ -69,6 +74,53 @@ class VerifyCandidateAssetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected release asset redirect"):
             check.AllowedAssetRedirect().redirect_request(
                 None, None, 302, "redirect", {}, "https://example.invalid/synthetic")
+
+    def test_candidate_branch_metadata_must_match_refreshed_official_identity(self):
+        official = candidate()
+        check.require_recorded_candidate_matches_official(official, candidate())
+        changed = candidate()
+        changed["assets"][0]["digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(ValueError, "differs from current official release"):
+            check.require_recorded_candidate_matches_official(official, changed)
+        changed = candidate()
+        changed["assets"][0]["id"] = float(changed["assets"][0]["id"])
+        with self.assertRaisesRegex(ValueError, "differs from current official release"):
+            check.require_recorded_candidate_matches_official(official, changed)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "candidate.json"
+            path.write_text(json.dumps(official))
+            self.assertEqual(check.load_candidate(path), official)
+            path.write_text('{"schema_version":2,"schema_version":2}')
+            with self.assertRaisesRegex(ValueError, "duplicate candidate metadata key"):
+                check.load_candidate(path)
+            path.unlink()
+            try:
+                path.symlink_to(Path(directory) / "target.json")
+            except OSError:
+                pass  # Some native Windows runners disallow creating symlinks.
+            else:
+                with self.assertRaisesRegex(ValueError, "bounded regular file"):
+                    check.load_candidate(path)
+                path.unlink()
+            path.write_bytes(b" " * (check.MAX_CANDIDATE_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "bounded regular file"):
+                check.load_candidate(path)
+
+    def test_cli_rejects_changed_branch_metadata_before_downloading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            official = root / "official.json"
+            recorded = root / "recorded.json"
+            official.write_text(json.dumps(candidate()))
+            changed = candidate()
+            changed["assets"][1]["id"] += 1
+            recorded.write_text(json.dumps(changed))
+            argv = ["verify_candidate_asset.py", VERSION, "--candidate", str(official),
+                    "--recorded-candidate", str(recorded), "--output", str(root / "result.json")]
+            with patch.object(sys, "argv", argv), patch.object(check, "verify",
+                    side_effect=AssertionError("download started before metadata equality")):
+                with self.assertRaisesRegex(ValueError, "differs from current official release"):
+                    check.main()
 
 
 if __name__ == "__main__":

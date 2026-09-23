@@ -75,6 +75,12 @@ made additional code, gate, test and documentation changes.
   targets, includes the manifest in source hashing, requires consumer/upstream
   digests, retained artifact hashes, independent review identities and all
   named checks. Reports expire for release qualification after 30 days.
+- The prepared watcher now checks out the candidate branch separately for
+  Rust tests while running metadata and probe scripts from the trusted
+  default-branch checkout. Initial and post-repair checks require the branch's
+  recorded candidate metadata to equal a freshly fetched official record
+  before downloading either native asset. This has local fixtures and workflow
+  structure checks only; no default-branch run or native approval validation.
 - The Windows source installer verifies that its source manifest equals the
   installed executable's embedded manifest before configuration changes.
 - A Linux prebuilt-artifact installer now checks an expected SHA-256, embedded
@@ -107,7 +113,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 38 tests passed, including synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 40 tests passed, including candidate-branch metadata mismatch and duplicate-key rejection, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -132,15 +138,15 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v10/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `0ab133385149503d42519fc11075f900675d63c20fc5df0980a7a9d52b99a200`.
+`/tmp/autoapprover-dev-package-20260923-v12/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `d08bcb0243e4808c602d251958444cfb78f8eeeb881ae9afdb4dd863d6359f9f`.
 Its recorded source digest is
-`06b7f39f3b161e712fd75e16700812c203563fa134c6dfdc8338527869f333c6`.
+`edd68b0130623c0b3cb6b24e894c840f5a25b9dc74e0720648494be40f9b8f80`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v10.spdx.json`, SHA-256
-`42cd89b36be5d0e9c23cf5a9f6fb74cc1d77c19451575705d4b99f6c04bd86aa`.
+`/tmp/autoapprover-locked-dependencies-v12.spdx.json`, SHA-256
+`fd34df2c72006c07d3b528cecdc373425e01c8969d7ebcfbd38e5ff92663d277`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
@@ -227,7 +233,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
-| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests retained; candidate runners stream and compare downloads; changed metadata and multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
+| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests retained; candidate branch is tested separately from trusted metadata tools; recorded metadata must equal a fresh official record; candidate runners stream and compare downloads; changed metadata and multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
