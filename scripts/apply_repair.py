@@ -2,11 +2,12 @@
 """Apply a bounded untrusted repair patch in a separate trusted workflow job."""
 import argparse
 import hashlib
-import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
+from release_gate import load_json
 from repair_candidate import (MAX_CHANGED_FILES, MAX_PATCH_BYTES, allowed_repair_path,
                               clean_base, collect_patch, validate_candidate)
 from verify_candidate_asset import load_candidate
@@ -15,6 +16,24 @@ from watch_codex import version_key
 
 REPORT_FIELDS = {"schema_version", "codex_version", "base_sha", "upstream_source_sha", "changed_paths",
                  "patch_sha256", "checks", "status", "certified"}
+MAX_REPORT_BYTES = 16 * 1024
+
+
+def read_artifact(path, limit, label):
+    if (any(parent.is_symlink() for parent in [path, *path.parents])
+            or not path.is_file() or path.stat().st_nlink != 1):
+        raise ValueError(f"{label} must be a regular singly linked file")
+    if path.stat().st_size > limit:
+        raise ValueError(f"{label} exceeds its size limit")
+    with path.open("rb") as stream:
+        body = stream.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError(f"{label} exceeds its size limit")
+    return body
+
+
+def load_report(path):
+    return load_json(read_artifact(path, MAX_REPORT_BYTES, "repair report"))
 
 
 def patch_paths(repo, path):
@@ -55,14 +74,17 @@ def apply(repo, patch_path, report, version):
     candidate = load_candidate(repo / "compatibility" / "candidate.json")
     if validate_candidate(candidate) != version or candidate["upstream_source_sha"] != report["upstream_source_sha"]:
         raise ValueError("repair report source differs from the pinned candidate")
-    patch = patch_path.read_bytes()
-    if not patch or len(patch) > MAX_PATCH_BYTES or hashlib.sha256(patch).hexdigest() != report["patch_sha256"]:
+    patch = read_artifact(patch_path, MAX_PATCH_BYTES, "repair patch")
+    if not patch or hashlib.sha256(patch).hexdigest() != report["patch_sha256"]:
         raise ValueError("repair patch integrity failed")
-    paths = patch_paths(repo, patch_path)
-    if report["changed_paths"] != paths:
-        raise ValueError("repair report paths do not match the patch")
-    subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=repo, check=True)
-    subprocess.run(["git", "apply", str(patch_path)], cwd=repo, check=True)
+    with tempfile.TemporaryDirectory(prefix="codex-verified-repair-") as directory:
+        verified_patch = Path(directory) / "repair.patch"
+        verified_patch.write_bytes(patch)
+        paths = patch_paths(repo, verified_patch)
+        if report["changed_paths"] != paths:
+            raise ValueError("repair report paths do not match the patch")
+        subprocess.run(["git", "apply", "--check", str(verified_patch)], cwd=repo, check=True)
+        subprocess.run(["git", "apply", str(verified_patch)], cwd=repo, check=True)
     actual, _ = collect_patch(repo, base)
     if actual != paths:
         raise ValueError("applied repair paths differ from the reviewed patch")
@@ -76,8 +98,8 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--version", required=True)
     args = parser.parse_args()
-    report = json.loads(args.report.read_text(encoding="utf-8"))
-    paths = apply(args.repo.resolve(), args.patch.resolve(), report, args.version)
+    report = load_report(args.report.absolute())
+    paths = apply(args.repo.resolve(), args.patch.absolute(), report, args.version)
     print(f"Applied {len(paths)} bounded Rust files for review; compatibility remains unverified")
 
 

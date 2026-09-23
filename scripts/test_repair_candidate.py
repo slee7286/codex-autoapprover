@@ -102,6 +102,57 @@ class RepairBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden path"):
             apply_repair.patch_paths(self.repo, patch_path)
 
+    def test_write_token_job_rejects_ambiguous_or_unbounded_repair_artifacts(self):
+        report_path = self.root / "repair-report.json"
+        report_path.write_text('{"status":"proposed-unverified","status":"certified"}')
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            apply_repair.load_report(report_path)
+
+        with report_path.open("wb") as stream:
+            stream.seek(apply_repair.MAX_REPORT_BYTES)
+            stream.write(b"x")
+        with self.assertRaisesRegex(ValueError, "repair report exceeds"):
+            apply_repair.load_report(report_path)
+
+        patch_path = self.root / "repair.patch"
+        with patch_path.open("wb") as stream:
+            stream.seek(repair.MAX_PATCH_BYTES)
+            stream.write(b"x")
+        with self.assertRaisesRegex(ValueError, "repair patch exceeds"):
+            apply_repair.read_artifact(patch_path, repair.MAX_PATCH_BYTES, "repair patch")
+
+        report_path.write_text("{}")
+        alias = self.root / "linked-report.json"
+        alias.symlink_to(report_path)
+        with self.assertRaisesRegex(ValueError, "regular singly linked"):
+            apply_repair.load_report(alias)
+
+    def test_trusted_apply_uses_the_verified_patch_bytes_after_artifact_replacement(self):
+        source = self.repo / "src/main.rs"
+        source.write_text('fn main() { println!("reviewed"); }\n')
+        paths, reviewed_patch = repair.collect_patch(self.repo, self.base)
+        source.write_text('fn main() { println!("swapped"); }\n')
+        _, swapped_patch = repair.collect_patch(self.repo, self.base)
+        patch_path = self.root / "repair.patch"
+        patch_path.write_bytes(reviewed_patch)
+        destination = self.root / "apply"
+        subprocess.run(["git", "clone", "-q", str(self.repo), str(destination)], check=True)
+        report = {"schema_version": 1, "codex_version": "0.156.0", "base_sha": self.base,
+                  "upstream_source_sha": "b" * 40,
+                  "changed_paths": paths, "patch_sha256": hashlib.sha256(reviewed_patch).hexdigest(),
+                  "checks": ["format", "rust-tests", "clippy"],
+                  "status": "proposed-unverified", "certified": False}
+        original_patch_paths = apply_repair.patch_paths
+
+        def replace_downloaded_patch(repo, verified_path):
+            patch_path.write_bytes(swapped_patch)
+            return original_patch_paths(repo, verified_path)
+
+        with patch.object(apply_repair, "patch_paths", side_effect=replace_downloaded_patch):
+            self.assertEqual(apply_repair.apply(destination, patch_path, report, "0.156.0"), paths)
+        self.assertIn("reviewed", (destination / "src/main.rs").read_text())
+        self.assertNotIn("swapped", (destination / "src/main.rs").read_text())
+
     def test_repair_paths_exclude_traversal_and_controls(self):
         self.assertTrue(repair.allowed_repair_path("src/broker/linux.rs"))
         for path in ["src/../compatibility/manifest.rs", "src//main.rs",
