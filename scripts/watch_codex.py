@@ -15,8 +15,20 @@ import urllib.error
 import urllib.request
 
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 UPSTREAM = "https://api.github.com/repos/openai/codex/releases"
 LIMIT = 4 * 1024 * 1024
+PAGE_SIZE = 100
+MAX_PAGES = 20
+REQUIRED_ASSETS = (
+    "codex-x86_64-unknown-linux-musl.tar.gz",
+    "codex-x86_64-pc-windows-msvc.exe",
+)
+
+
+class NoApiRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise ValueError("release API redirected unexpectedly")
 
 
 def version_key(value):
@@ -25,10 +37,42 @@ def version_key(value):
     return tuple(map(int, value.split(".")))
 
 
+def required_assets(release, tag):
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise ValueError("stable release is missing asset metadata")
+    selected = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ValueError("invalid release asset record")
+        name = asset.get("name")
+        if name not in REQUIRED_ASSETS:
+            continue
+        if name in selected:
+            raise ValueError("duplicate required release asset")
+        expected_url = f"https://github.com/openai/codex/releases/download/{tag}/{name}"
+        if (type(asset.get("id")) is not int or asset["id"] <= 0
+                or type(asset.get("size")) is not int or not 0 < asset["size"] <= 2 * 1024**3
+                or not isinstance(asset.get("digest"), str) or not DIGEST.fullmatch(asset["digest"])
+                or asset.get("browser_download_url") != expected_url):
+            raise ValueError("required release asset has invalid identity metadata")
+        selected[name] = {
+            "name": name,
+            "id": asset["id"],
+            "size": asset["size"],
+            "digest": asset["digest"],
+            "url": expected_url,
+        }
+    if set(selected) != set(REQUIRED_ASSETS):
+        raise ValueError("stable release is missing a required native asset")
+    return [selected[name] for name in REQUIRED_ASSETS]
+
+
 def candidate_from_releases(releases):
     if not isinstance(releases, list):
         raise ValueError("release API returned an unexpected response")
     candidates = []
+    seen = {}
     for release in releases:
         if not isinstance(release, dict):
             raise ValueError("invalid release record")
@@ -42,29 +86,47 @@ def candidate_from_releases(releases):
             continue
         if type(release.get("id")) is not int or release["id"] <= 0:
             raise ValueError("invalid release id")
-        candidates.append({
-            "schema_version": 1,
-            "codex_version": version,
-            "upstream_release_id": release["id"],
-            "upstream_tag": tag,
-            "upstream_url": f"https://github.com/openai/codex/releases/tag/{tag}",
-            "status": "unverified",
-            "required_platforms": ["linux-x86_64", "windows-x86_64"],
-        })
+        identity = (release["id"], release.get("assets"))
+        if version in seen:
+            if seen[version] != identity:
+                raise ValueError("conflicting duplicate stable release metadata")
+            continue
+        seen[version] = identity
+        candidates.append(release)
     if not candidates:
         raise ValueError("no stable Codex release in the bounded API window")
-    return max(candidates, key=lambda item: version_key(item["codex_version"]))
+    selected = max(candidates, key=lambda item: version_key(item["tag_name"].removeprefix("rust-v")))
+    tag = selected["tag_name"]
+    version = tag.removeprefix("rust-v")
+    return {
+        "schema_version": 2,
+        "codex_version": version,
+        "upstream_release_id": selected["id"],
+        "upstream_tag": tag,
+        "upstream_url": f"https://github.com/openai/codex/releases/tag/{tag}",
+        "assets": required_assets(selected, tag),
+        "status": "unverified",
+        "required_platforms": ["linux-x86_64", "windows-x86_64"],
+    }
 
 
-def fetch_releases():
+def fetch_releases(open_url=None):
     releases = []
+    open_url = open_url or urllib.request.build_opener(NoApiRedirect()).open
     # Bounded pagination accommodates bursts of prereleases without an unbounded crawl.
-    for page in range(1, 21):
+    for page in range(1, MAX_PAGES + 1):
+        headers = {"Accept": "application/vnd.github+json",
+                   "User-Agent": "codex-autoapprover-release-watch"}
+        token = os.environ.get("GH_TOKEN")
+        if token:
+            if "\n" in token or "\r" in token:
+                raise ValueError("invalid GitHub API token format")
+            headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
-            f"{UPSTREAM}?per_page=5&page={page}",
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "codex-autoapprover-release-watch"},
+            f"{UPSTREAM}?per_page={PAGE_SIZE}&page={page}",
+            headers=headers,
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with open_url(request, timeout=30) as response:
             if response.geturl() != request.full_url:
                 raise ValueError("unexpected release API redirect")
             body = response.read(LIMIT + 1)
@@ -74,9 +136,9 @@ def fetch_releases():
         if not isinstance(batch, list):
             raise ValueError("invalid release page")
         releases.extend(batch)
-        if len(batch) < 5:
-            break
-    return releases
+        if len(batch) < PAGE_SIZE:
+            return releases
+    raise ValueError("release API pagination limit reached; refusing a truncated candidate window")
 
 
 def write_candidate(path, candidate):
@@ -90,8 +152,13 @@ def write_candidate(path, candidate):
         if old == new:
             if previous == candidate:
                 return False
-            hydrated = {**previous, "upstream_release_id": candidate["upstream_release_id"]}
-            if previous.get("upstream_release_id") is not None or hydrated != candidate:
+            legacy = {key: value for key, value in candidate.items() if key != "assets"}
+            legacy["schema_version"] = 1
+            previous_id = previous.get("upstream_release_id")
+            if previous_id not in (None, candidate["upstream_release_id"]):
+                raise ValueError("same-version upstream release id changed")
+            legacy["upstream_release_id"] = previous_id
+            if previous.get("schema_version") != 1 or previous != legacy:
                 raise ValueError("same-version upstream metadata changed; manual investigation required")
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as output:
@@ -121,7 +188,18 @@ def prepare_pr(candidate, path):
         print(f"Candidate PR already exists for Codex {version}; left unchanged")
         return
     remote = subprocess.check_output(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"], text=True)
-    if not remote.strip():
+    if remote.strip():
+        subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin",
+                        f"refs/heads/{branch}"], check=True)
+        existing_candidate = subprocess.check_output(
+            ["git", "show", "FETCH_HEAD:compatibility/candidate.json"], text=True)
+        if json.loads(existing_candidate) != candidate:
+            raise ValueError("candidate branch differs from official release metadata; manual recovery required")
+        changed_paths = subprocess.check_output(
+            ["git", "diff", "--name-only", "HEAD", "FETCH_HEAD"], text=True).splitlines()
+        if changed_paths != ["compatibility/candidate.json"]:
+            raise ValueError("candidate branch contains unexpected changes; manual recovery required")
+    else:
         subprocess.run(["git", "switch", "-c", branch], check=True)
         subprocess.run(["git", "add", "--", str(path)], check=True)
         subprocess.run(["git", "-c", "user.name=codex-compatibility-bot", "-c",

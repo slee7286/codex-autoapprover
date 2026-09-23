@@ -1,14 +1,21 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import watch_codex as watch
 
 
 def release(version, **fields):
-    return {"id": 1, "draft": False, "prerelease": False, "tag_name": f"rust-v{version}", **fields}
+    tag = f"rust-v{version}"
+    assets = [dict(id=index + 10, name=name, size=1000 + index,
+                   digest=f"sha256:{index + 1:064x}",
+                   browser_download_url=f"https://github.com/openai/codex/releases/download/{tag}/{name}")
+              for index, name in enumerate(watch.REQUIRED_ASSETS)]
+    return {"id": 1, "draft": False, "prerelease": False, "tag_name": tag,
+            "assets": assets, **fields}
 
 
 class ReleaseWatchTests(unittest.TestCase):
@@ -19,6 +26,8 @@ class ReleaseWatchTests(unittest.TestCase):
             release("9.0.0", prerelease=True), release("0.155.0"),
         ])
         self.assertEqual(result["codex_version"], "0.156.0")
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual({asset["name"] for asset in result["assets"]}, set(watch.REQUIRED_ASSETS))
         self.assertEqual(result["status"], "unverified")
         self.assertNotIn("body", result)
 
@@ -37,7 +46,10 @@ class ReleaseWatchTests(unittest.TestCase):
             self.assertTrue(watch.write_candidate(path, candidate))
             self.assertFalse(watch.write_candidate(path, candidate))
             original = path.read_bytes()
-            for other in [release("0.155.0"), release("0.156.0", id=2)]:
+            changed_assets = release("0.156.0")["assets"]
+            changed_assets[0]["digest"] = "sha256:" + "f" * 64
+            for other in [release("0.155.0"), release("0.156.0", id=2),
+                          release("0.156.0", assets=changed_assets)]:
                 with self.assertRaises(ValueError):
                     watch.write_candidate(path, watch.candidate_from_releases([other]))
                 self.assertEqual(path.read_bytes(), original)
@@ -47,14 +59,88 @@ class ReleaseWatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "candidate.json"
             candidate = watch.candidate_from_releases([release("0.156.0")])
-            path.write_text(json.dumps({**candidate, "upstream_release_id": None}))
+            legacy = {key: value for key, value in candidate.items() if key != "assets"}
+            path.write_text(json.dumps({**legacy, "schema_version": 1, "upstream_release_id": None}))
             self.assertTrue(watch.write_candidate(path, candidate))
             self.assertFalse(watch.write_candidate(path, candidate))
 
+    def test_required_native_asset_identity_is_strict(self):
+        base = release("0.156.0")
+        changes = [
+            base["assets"][:1],
+            base["assets"] + [base["assets"][0]],
+            [{**base["assets"][0], "digest": "sha256:bad"}, base["assets"][1]],
+            [{**base["assets"][0], "browser_download_url": "https://example.invalid/file"},
+             base["assets"][1]],
+        ]
+        for assets in changes:
+            with self.subTest(assets=assets), self.assertRaises(ValueError):
+                watch.candidate_from_releases([release("0.155.0"), release("0.156.0", assets=assets)])
+
+    def test_conflicting_duplicate_release_is_not_selected_by_api_order(self):
+        with self.assertRaisesRegex(ValueError, "conflicting duplicate"):
+            watch.candidate_from_releases([release("0.156.0"), release("0.156.0", id=2)])
+
+    def test_page_limit_fails_instead_of_silently_truncating_release_history(self):
+        class Response:
+            def __init__(self, url):
+                self.url = url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def geturl(self):
+                return self.url
+
+            def read(self, _limit):
+                return json.dumps([release("0.156.0"), release("0.155.0")]).encode()
+
+        with patch.object(watch, "PAGE_SIZE", 2), patch.object(watch, "MAX_PAGES", 2):
+            with self.assertRaisesRegex(ValueError, "pagination limit"):
+                watch.fetch_releases(open_url=lambda request, timeout: Response(request.full_url))
+
     def test_network_failure_is_not_treated_as_no_update(self):
-        with patch.object(watch.urllib.request, "urlopen", side_effect=TimeoutError):
-            with self.assertRaises(TimeoutError):
-                watch.fetch_releases()
+        def fail(_request, timeout):
+            raise TimeoutError
+
+        with self.assertRaises(TimeoutError):
+            watch.fetch_releases(open_url=fail)
+
+    def test_candidate_branch_recovery_checks_metadata_and_changes_before_pr(self):
+        selected = watch.candidate_from_releases([release("0.156.0")])
+        for remote_candidate, paths, permitted in [
+            (selected, "compatibility/candidate.json\n", True),
+            ({**selected, "upstream_release_id": 999}, "compatibility/candidate.json\n", False),
+            (selected, "compatibility/candidate.json\nsrc/main.rs\n", False),
+        ]:
+            with self.subTest(permitted=permitted, paths=paths):
+                def output(command, text):
+                    if command[:3] == ["gh", "pr", "list"]:
+                        return "[]"
+                    if command[:3] == ["git", "ls-remote", "--heads"]:
+                        return "abc refs/heads/automation/codex-0.156.0\n"
+                    if command[:2] == ["git", "show"]:
+                        return json.dumps(remote_candidate)
+                    if command[:3] == ["git", "diff", "--name-only"]:
+                        return paths
+                    self.fail(f"unexpected command: {command}")
+
+                runner = Mock()
+                with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+                     patch.object(watch.subprocess, "check_output", side_effect=output), \
+                     patch.object(watch.subprocess, "run", runner):
+                    if permitted:
+                        watch.prepare_pr(selected, Path("compatibility/candidate.json"))
+                        self.assertTrue(any(call.args[0][:3] == ["gh", "pr", "create"]
+                                            for call in runner.call_args_list))
+                    else:
+                        with self.assertRaisesRegex(ValueError, "manual recovery"):
+                            watch.prepare_pr(selected, Path("compatibility/candidate.json"))
+                        self.assertFalse(any(call.args[0][:3] == ["gh", "pr", "create"]
+                                             for call in runner.call_args_list))
 
 
 if __name__ == "__main__":

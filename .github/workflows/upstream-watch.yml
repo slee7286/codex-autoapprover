@@ -54,6 +54,14 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+      - name: Refresh exact official release metadata
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/watch_codex.py --output candidate-runner.json
+      - name: Verify native release asset digest
+        shell: pwsh
+        run: python scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json
       - name: Install exact candidate on disposable runner
         shell: pwsh
         run: |
@@ -70,5 +78,6 @@ jobs:
       - name: Summarize candidate evidence
         shell: pwsh
         run: |
+          Get-Content asset-verification.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Get-Content candidate-probe.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          'Synthetic tests and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          'Asset checks, synthetic tests and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
