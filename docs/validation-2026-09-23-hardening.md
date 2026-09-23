@@ -35,7 +35,10 @@ made additional code, gate, test and documentation changes.
 - Foreground admission restricts forwarded options and requires explicit
   sandbox-implementation and `workspace-write` choices. A prospective armed
   child receives `workspace-write` and `on-request` settings for that invocation;
-  ordinary fallback preserves the configured permissions. A bounded disposable
+  the broker now declines a hook request unless Codex reports permission mode
+  `default`, as the inspected 0.156.0 hook adapter does for `on-request`.
+  The four other documented modes have synthetic decline coverage only.
+  Ordinary fallback preserves the configured permissions. A bounded disposable
   shell/file health probe uses the same project cwd and sandbox-mode override,
   writes only a temporary child directory, and leaves a policy rejection
   unarmed. It has not qualified a real Codex tuple; effective managed-policy
@@ -252,7 +255,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 85 unit tests and 22 integration tests passed on Linux with host Unix-socket and loopback access; synthetic regression evidence only. The verifier requires a separate test login home, stages only a bounded private auth file into a temporary child home, rejects unsafe auth sources and clears inherited state/auth/startup overrides. New admission cases require an explicit `workspace-write` choice. Other cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection, Unix descendant cleanup, nonblocking worker reaping, whole-frame slow-sender deadlines, the exact loopback witness and redacted diagnostic retention after temporary-state cleanup. |
+| `cargo test --locked --all-targets` | 86 unit tests and 22 integration tests passed on Linux with host Unix-socket and loopback access; synthetic regression evidence only. The verifier requires a separate test login home, stages only a bounded private auth file into a temporary child home, rejects unsafe auth sources and clears inherited state/auth/startup overrides. Admission requires an explicit `workspace-write` choice, and an exact probe in a non-default permission mode now declines. Other cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection, Unix descendant cleanup, nonblocking worker reaping, whole-frame slow-sender deadlines, the exact loopback witness and redacted diagnostic retention after temporary-state cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL, suspended Job Object child-tree module, and native-only descendant and stalled-pipe regressions; compile/lint only, no Windows execution |
@@ -297,34 +300,34 @@ not meet Codex's 0700 ownership-mode requirement. No shell/file health outcome
 was observed, and this is not a live PermissionRequest qualification.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`5fff0fc668fa5a5c05db453d0c9e0c41a4dcecf8554b814918648dc7489afeed`.
+`71fb7aa5728087ebe33cc57c92013166fd77334d883ca35f156ad025169925f9`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-evidence-path-v5/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `c69dc0469765c31f8511a60d997d4b655142eb097f54a7cc9c0826bd06cc1cdc`.
+`/tmp/autoapprover-dev-package-20260923-permission-mode-v6/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `241fe9df17062969d4a70ee8a4940d74a6933c6c023b58615f551bfa8df59fe5`.
 Its recorded source digest is
-`2753db5d04cb821866682d683597daca48fba0249658e83d22b11da2bc4cfe18`.
+`a36b774fb26feab9df56bf6c05cc3e8bf1a6434165f5c2435b3cb91ba7fa8918`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-evidence-path-v5.spdx.json`, SHA-256
-`1bbb8c5d5f2a3d73d77ff9cf26c42d22c1b533fc80c7a4b614d69c2b8d639cfb`.
+`/tmp/autoapprover-locked-dependencies-permission-mode-v6.spdx.json`, SHA-256
+`33bdbd1902fb3e3754f5b5f35ef7ae5d0a20b21fc32a69058eab7a7d9410eabf`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The matching Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-evidence-path-v5.spdx.json`, SHA-256
-`fd72ef39d9e6352786db2451f385afc70839f918f395406493cc7d81b6a772f2`.
+`/tmp/autoapprover-binary-linux-permission-mode-v6.spdx.json`, SHA-256
+`82543fdcacd84da89ba4a11c5e89b553242dfea2d68a4d0554e27d31b46c4fb3`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the current development executable and source digests above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-evidence-path-v5.tar.gz`, SHA-256
-`385d48e41f732e8ef2860a15f3f0303fd49c98cf9bb7d531918a422102c8c7a3`.
+`/tmp/autoapprover-locked-licenses-permission-mode-v6.tar.gz`, SHA-256
+`04653ef34efdd5ede5a87f757fe6ac540c9d8532bdcb1e04fa1a244787d319d1`.
 Its indexed source digest matches the archive above.
 
 An earlier Linux candidate build observation is

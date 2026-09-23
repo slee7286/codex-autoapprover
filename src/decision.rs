@@ -10,6 +10,7 @@ pub enum Decision {
 pub enum DeclineReason {
     WrongEvent,
     MissingRequiredField,
+    UnsupportedPermissionMode,
     WorkingDirectoryMismatch,
     UnsupportedCodexCompatibility,
     UnsupportedToolType,
@@ -36,6 +37,13 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         || input.tool_input.is_none()
     {
         return Decision::Decline(DeclineReason::MissingRequiredField);
+    }
+
+    // The armed child requests on-request approval. In the inspected Codex
+    // hook adapter that policy is reported as "default"; any other mode
+    // belongs to a different approval path and must use normal Codex review.
+    if input.permission_mode.as_deref() != Some("default") {
+        return Decision::Decline(DeclineReason::UnsupportedPermissionMode);
     }
 
     if context
@@ -168,6 +176,21 @@ mod tests {
             decide(&wrong_cwd, context()),
             Decision::Decline(DeclineReason::WorkingDirectoryMismatch)
         );
+    }
+
+    #[test]
+    fn declines_non_default_permission_modes_even_for_the_exact_probe() {
+        for mode in ["acceptEdits", "plan", "dontAsk", "bypassPermissions"] {
+            let mut wire = serde_json::to_value(input()).expect("serialize hook input");
+            wire["permission_mode"] = serde_json::json!(mode);
+            let bytes = serde_json::to_vec(&wire).expect("serialize hook fixture");
+            let request = protocol::parse(&bytes).expect("documented permission mode");
+            assert_eq!(
+                decide(&request, context()),
+                Decision::Decline(DeclineReason::UnsupportedPermissionMode),
+                "unexpectedly authorized {mode}"
+            );
+        }
     }
 
     #[test]

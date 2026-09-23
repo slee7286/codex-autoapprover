@@ -57,7 +57,7 @@ The Rust handler currently:
 1. reads at most 1 MiB plus one byte from stdin;
 2. requires a JSON object;
 3. requires `hook_event_name` exactly equal to `PermissionRequest`;
-4. requires the tagged schema's `session_id`, `transcript_path` (string or null), `cwd`, `hook_event_name`, `model`, `turn_id`, `permission_mode`, `tool_name`, and `tool_input`; it additionally requires non-empty `session_id`, `cwd`, and `tool_name` before allowing;
+4. requires the tagged schema's `session_id`, `transcript_path` (string or null), `cwd`, `hook_event_name`, `model`, `turn_id`, `permission_mode`, `tool_name`, and `tool_input`; it additionally requires non-empty `session_id`, `cwd`, and `tool_name` and `permission_mode: "default"` before allowing;
 5. requires the inherited socket location, the exact marker `CODEX_AUTOAPPROVER_HOOK_PROTOCOL=permission-request-v1`, and a valid random session secret only to connect to the broker;
 6. sends an internal `permission-binding-v1` framed request to the broker; the broker alone checks the version bound to the launched child, cwd, `Bash`, secret, `SO_PEERCRED`, and `/proc` ancestry;
 7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal the exact platform-resolved probe;
@@ -66,7 +66,7 @@ The Rust handler currently:
 
 The project does not use numeric options, terminal text, ANSI sequences, or a PTY to make a hook decision.
 
-The marker, version/platform eligibility, local-surface, and cwd checks are project policy, not official Codex fields. Missing, malformed, or unknown top-level fields, subagent fields, and unknown Bash input fields receive no decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
+The marker, version/platform eligibility, local-surface, and cwd checks are project policy, not official Codex fields. The [inspected Codex 0.156.0 hook adapter](https://github.com/openai/codex/blob/rust-v0.156.0/codex-rs/core/src/hook_runtime.rs) reports `on-request` as `default` and `never` as `bypassPermissions`. This project requests `on-request` for the armed child and declines every non-default hook mode; the other [documented modes](https://learn.chatgpt.com/docs/hooks) stay in the parser so they reach a no-decision result rather than a malformed-input error. Missing, malformed, or unknown top-level fields, subagent fields, and unknown Bash input fields receive no decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
 
 The verifier gives the broker an audit path in its own temporary state. The broker records only an allow marker and short hashes of tool name and tool input; the hook does not own the allow decision or audit sink. If the audit sink cannot be written, the broker declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
 

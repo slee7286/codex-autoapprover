@@ -26,8 +26,7 @@ pub struct HookInput {
     pub tool_input: Option<Value>,
     #[serde(rename = "turn_id")]
     pub _turn_id: Option<String>,
-    #[serde(rename = "permission_mode")]
-    pub _permission_mode: Option<String>,
+    pub permission_mode: Option<String>,
 }
 
 // Keep the public/broker shape stable while requiring every field in the
@@ -103,7 +102,7 @@ impl TryFrom<WireHookInput> for HookInput {
             tool_name: Some(input.tool_name),
             tool_input: Some(input.tool_input),
             _turn_id: Some(input.turn_id),
-            _permission_mode: Some(permission_mode.to_owned()),
+            permission_mode: Some(permission_mode.to_owned()),
         })
     }
 }
