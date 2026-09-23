@@ -14,6 +14,7 @@ use tempfile::TempDir;
 use crate::{
     arming, audit,
     broker::{self, Broker, BrokerConfig, Session},
+    child_tree::ChildTree,
     cli::{COMPATIBILITY_ENV, CompatibilityMode, RunArgs},
     codex, compatibility, interrupt, process,
 };
@@ -406,11 +407,6 @@ pub fn verify_local_hook() -> Result<i32> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
     if let Err(error) = session.arm_child(&mut command) {
         let broker_cleanup = broker.shutdown();
         let session_cleanup = session.cleanup();
@@ -451,7 +447,7 @@ pub fn verify_local_hook() -> Result<i32> {
     eprintln!(
         "codex-autoapprover: launching isolated verification child; do not approve any action other than the displayed curl request"
     );
-    let mut child = match command.spawn().with_context(|| {
+    let (mut child, tree) = match ChildTree::spawn(&mut command).with_context(|| {
         format!(
             "launch official Codex {} for isolated verification",
             installation.path.display()
@@ -466,8 +462,7 @@ pub fn verify_local_hook() -> Result<i32> {
     let identity = match process::current_process_identity(child.id()) {
         Ok(identity) => identity,
         Err(error) => {
-            stop_verification_child(&mut child);
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_child_then_verification(&mut child, tree, state, broker, session);
             return Err(with_cleanup_error(
                 anyhow::anyhow!("record exact Codex child process identity: {error}"),
                 cleanup,
@@ -475,15 +470,13 @@ pub fn verify_local_hook() -> Result<i32> {
         }
     };
     if let Err(error) = broker.set_codex_identity(identity) {
-        stop_verification_child(&mut child);
-        let cleanup = cleanup_bound_verification(state, broker, session);
+        let cleanup = cleanup_child_then_verification(&mut child, tree, state, broker, session);
         return Err(with_cleanup_error(error, cleanup));
     }
     let interrupted = match interrupt::register_interrupt_flag() {
         Ok(value) => value,
         Err(error) => {
-            stop_verification_child(&mut child);
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_child_then_verification(&mut child, tree, state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -491,17 +484,22 @@ pub fn verify_local_hook() -> Result<i32> {
         &mut child,
         &broker,
         &interrupted.flag,
-        Some(VERIFICATION_TIMEOUT),
+        Some((&tree, VERIFICATION_TIMEOUT)),
     ) {
         Ok(status) => status,
         Err(error) => {
+            tree.close();
             let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
-    // On Unix, a Codex child can exit while its shell descendants remain
-    // alive. Stop its isolated group before inspecting and deleting state.
-    stop_verification_descendants(&child);
+    // The parent can exit while its shell descendants remain alive.
+    let stop = tree.stop().context("stop verification descendants");
+    tree.close();
+    if let Err(error) = stop {
+        let cleanup = cleanup_bound_verification(state, broker, session);
+        return Err(with_cleanup_error(error, cleanup));
+    }
 
     let attempt_count = match audit::broker_attempt_count(&audit_path)
         .context("read temporary broker connection audit")
@@ -688,44 +686,50 @@ fn wait_for_bound_child(
     child: &mut Child,
     broker: &broker::Broker,
     interrupted: &AtomicBool,
-    verification_limit: Option<Duration>,
+    verification: Option<(&ChildTree, Duration)>,
 ) -> Result<ExitStatus> {
     let started = Instant::now();
     loop {
         if interrupted.load(Ordering::Relaxed) {
             broker.stop_accepting();
-            if verification_limit.is_some() {
-                stop_verification_child(child);
-                bail!("verification interrupted; child stopped before cleanup")
+            if let Some((tree, _)) = verification {
+                let cleanup = stop_verification_child(child, tree);
+                return Err(with_cleanup_error(
+                    anyhow::anyhow!("verification interrupted; child stopped before cleanup"),
+                    cleanup,
+                ));
             }
         }
-        if verification_limit.is_some_and(|limit| started.elapsed() >= limit) {
+        if let Some((tree, _)) = verification.filter(|(_, limit)| started.elapsed() >= *limit) {
             broker.stop_accepting();
-            stop_verification_child(child);
-            bail!("verification timed out; child stopped before cleanup")
+            let cleanup = stop_verification_child(child, tree);
+            return Err(with_cleanup_error(
+                anyhow::anyhow!("verification timed out; child stopped before cleanup"),
+                cleanup,
+            ));
         }
-        if let Some(status) = child.try_wait().context("wait for Codex child")? {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let cleanup = verification
+                    .map(|(tree, _)| stop_verification_child(child, tree))
+                    .unwrap_or(Ok(()));
+                return Err(with_cleanup_error(
+                    anyhow::Error::from(error).context("wait for Codex child"),
+                    cleanup,
+                ));
+            }
+        };
+        if let Some(status) = status {
             return Ok(status);
         }
         thread::sleep(Duration::from_millis(25));
     }
 }
 
-fn stop_verification_child(child: &mut Child) {
-    stop_verification_descendants(child);
-    let _ = child.kill();
-    let _ = child.wait();
+fn stop_verification_child(child: &mut Child, tree: &ChildTree) -> Result<()> {
+    tree.stop_and_reap(child)
 }
-
-#[cfg(unix)]
-fn stop_verification_descendants(child: &Child) {
-    if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
-        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn stop_verification_descendants(_child: &Child) {}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct RepositoryStatus {
@@ -831,6 +835,18 @@ fn cleanup_bound_verification(
         combine_cleanup(broker.shutdown(), session.cleanup()),
         state.cleanup(),
     )
+}
+
+fn cleanup_child_then_verification(
+    child: &mut Child,
+    tree: ChildTree,
+    state: VerificationState,
+    broker: Broker,
+    session: Session,
+) -> Result<()> {
+    let stop = stop_verification_child(child, &tree);
+    tree.close();
+    combine_cleanup(stop, cleanup_bound_verification(state, broker, session))
 }
 
 fn initialize_temporary_repository(path: &Path) -> Result<()> {
@@ -984,17 +1000,31 @@ fn verification_prompt(target: &compatibility::VerificationTarget) -> String {
     )
 }
 
-#[allow(dead_code)]
-fn wait_for_verification_child(mut child: Child, interrupted: &AtomicBool) -> Result<ExitStatus> {
+#[cfg(all(test, unix))]
+fn wait_for_verification_child(
+    mut child: Child,
+    tree: &ChildTree,
+    interrupted: &AtomicBool,
+) -> Result<ExitStatus> {
     let started = Instant::now();
     loop {
         if interrupted.load(Ordering::Relaxed) {
-            stop_verification_child(&mut child);
-            bail!("verification interrupted; child stopped and temporary state will be cleaned up")
+            let cleanup = stop_verification_child(&mut child, tree);
+            return Err(with_cleanup_error(
+                anyhow::anyhow!(
+                    "verification interrupted; child stopped and temporary state will be cleaned up"
+                ),
+                cleanup,
+            ));
         }
         if started.elapsed() >= VERIFICATION_TIMEOUT {
-            stop_verification_child(&mut child);
-            bail!("verification timed out; child stopped and temporary state will be cleaned up")
+            let cleanup = stop_verification_child(&mut child, tree);
+            return Err(with_cleanup_error(
+                anyhow::anyhow!(
+                    "verification timed out; child stopped and temporary state will be cleaned up"
+                ),
+                cleanup,
+            ));
         }
         if let Some(status) = child.try_wait().context("wait for verification child")? {
             return Ok(status);
@@ -1187,21 +1217,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn interrupted_verification_child_is_stopped() {
-        use std::os::unix::process::CommandExt;
-
         let mut command = Command::new("sh");
-        command.args(["-c", "sleep 10"]).process_group(0);
-        let child = command.spawn().expect("spawn interrupt fixture");
+        command.args(["-c", "sleep 10"]);
+        let (child, tree) = ChildTree::spawn(&mut command).expect("spawn interrupt fixture");
         let interrupted = AtomicBool::new(true);
-        let error = wait_for_verification_child(child, &interrupted).expect_err("must stop child");
+        let error =
+            wait_for_verification_child(child, &tree, &interrupted).expect_err("must stop child");
         assert!(error.to_string().contains("verification interrupted"));
     }
 
     #[cfg(unix)]
     #[test]
     fn verification_cleanup_stops_descendants_after_parent_exits() {
-        use std::os::unix::process::CommandExt;
-
         let directory = TempDir::new().expect("temporary fixture directory");
         let marker = directory.path().join("descendant-survived");
         let started = directory.path().join("descendant-started");
@@ -1212,14 +1239,74 @@ mod tests {
                 "(printf ready > \"$VERIFICATION_STARTED\"; sleep 1; printf alive > \"$VERIFICATION_MARKER\") & while [ ! -f \"$VERIFICATION_STARTED\" ]; do sleep 0.01; done",
             ])
             .env("VERIFICATION_MARKER", &marker)
-            .env("VERIFICATION_STARTED", &started)
-            .process_group(0);
-        let mut child = command.spawn().expect("spawn fixture group");
+            .env("VERIFICATION_STARTED", &started);
+        let (mut child, tree) = ChildTree::spawn(&mut command).expect("spawn fixture group");
         assert!(child.wait().expect("wait for group leader").success());
         assert!(started.exists(), "descendant did not start");
-        stop_verification_descendants(&child);
+        tree.stop().expect("stop fixture group");
         thread::sleep(Duration::from_millis(1200));
         assert!(!marker.exists(), "descendant survived verifier cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verification_cleanup_stops_windows_descendants_after_parent_exits() {
+        let directory = TempDir::new().expect("temporary fixture directory");
+        let marker = directory.path().join("descendant-survived");
+        let started = directory.path().join("descendant-started");
+        let mut command = Command::new(env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "launcher::tests::windows_descendant_fixture",
+            ])
+            .env("AA_FIXTURE_ROLE", "parent")
+            .env("AA_FIXTURE_MARKER", &marker)
+            .env("AA_FIXTURE_STARTED", &started)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let (mut child, tree) = ChildTree::spawn(&mut command).expect("spawn fixture job");
+        assert!(child.wait().expect("wait for job leader").success());
+        assert!(started.exists(), "descendant did not start");
+        tree.stop().expect("stop fixture job");
+        thread::sleep(Duration::from_millis(1200));
+        assert!(!marker.exists(), "descendant survived verifier cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    #[allow(clippy::zombie_processes)] // The fixture parent must exit before its descendant.
+    fn windows_descendant_fixture() {
+        let role = env::var("AA_FIXTURE_ROLE").expect("fixture role");
+        let marker = PathBuf::from(env::var_os("AA_FIXTURE_MARKER").expect("fixture marker"));
+        let started = PathBuf::from(env::var_os("AA_FIXTURE_STARTED").expect("fixture started"));
+        if role == "descendant" {
+            fs::write(started, b"ready").expect("mark descendant started");
+            thread::sleep(Duration::from_millis(900));
+            fs::write(marker, b"survived").expect("mark descendant survived");
+        } else {
+            assert_eq!(role, "parent");
+            Command::new(env::current_exe().expect("test executable"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "launcher::tests::windows_descendant_fixture",
+                ])
+                .env("AA_FIXTURE_ROLE", "descendant")
+                .env("AA_FIXTURE_MARKER", &marker)
+                .env("AA_FIXTURE_STARTED", &started)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn descendant fixture");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !started.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(started.exists(), "descendant fixture did not start");
+        }
     }
 
     #[cfg(unix)]

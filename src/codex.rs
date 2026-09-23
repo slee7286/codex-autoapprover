@@ -295,12 +295,8 @@ fn bounded_output_with_timeout(mut command: Command, timeout: Duration) -> Resul
         .stdout(stdout.try_clone()?)
         .stderr(stderr.try_clone()?);
     crate::arming::disarm_child(&mut command);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().context("spawn Codex capability probe")?;
+    let (mut child, tree) = crate::child_tree::ChildTree::spawn(&mut command)
+        .context("spawn Codex capability probe")?;
     let deadline = Instant::now() + timeout;
     let result = loop {
         let size = stdout.metadata().and_then(|out| {
@@ -326,15 +322,18 @@ fn bounded_output_with_timeout(mut command: Command, timeout: Duration) -> Resul
             Err(error) => break Err(error.into()),
         }
     };
-    // Kill only this probe's isolated group, including descendants whose parent
-    // exited successfully while retaining output handles.
-    #[cfg(unix)]
-    if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
-        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    let status = result?;
+    // Stop descendants even when their parent already exited successfully.
+    let stop = tree
+        .stop_and_reap(&mut child)
+        .context("stop Codex capability probe tree");
+    let status = match (result, stop) {
+        (Ok(status), Ok(())) => status,
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Err(stop)) => {
+            return Err(error.context(format!("probe tree cleanup also failed: {stop:#}")));
+        }
+    };
     stdout.seek(SeekFrom::Start(0))?;
     stderr.seek(SeekFrom::Start(0))?;
     let output = Output {

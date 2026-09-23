@@ -4,6 +4,7 @@ mod artifact;
 mod audit;
 mod broker;
 mod certification;
+mod child_tree;
 mod cli;
 mod codex;
 mod compatibility;
