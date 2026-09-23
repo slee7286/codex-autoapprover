@@ -53,7 +53,7 @@ The broker validates kernel peer credentials, process identity and ancestry, a p
 
 [Watch Codex releases](.github/workflows/upstream-watch.yml) polls the official release API every six hours, prepares unverified candidate metadata and a draft PR, and runs disposable-runner CLI probes and synthetic tests. It neither certifies support nor modifies a user's installed Codex. Workflows need activation on the default branch and suitable repository permissions. Scheduled execution is best effort.
 
-A protected repair worker, complete native certification, artifact signing and consumer update/rollback remain required. The [production plan](docs/production-plan.md) records implementation, research, acceptance criteria and remaining work. Use the [ready-to-paste /goal](docs/production-goal.md) to continue through release preparation.
+A bounded repair workflow is prepared locally but has not run on the default branch or produced native approval evidence. Complete native certification, artifact signing and consumer update/rollback remain required. The [production plan](docs/production-plan.md) records implementation, research, acceptance criteria and remaining work. Use the [ready-to-paste /goal](docs/production-goal.md) to continue through release preparation.
 
 ## Development
 

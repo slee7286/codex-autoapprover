@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '23 */6 * * *'
   workflow_dispatch:
+    inputs:
+      repair_existing:
+        description: Retry one bounded repair for an existing unverified candidate after a failed check
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,6 +26,7 @@ jobs:
       pull-requests: write
     outputs:
       version: ${{ steps.watch.outputs.version }}
+      changed: ${{ steps.watch.outputs.changed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -81,3 +87,146 @@ jobs:
           Get-Content asset-verification.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Get-Content candidate-probe.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           'Asset checks, synthetic tests and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+  repair:
+    needs: [detect, candidate-checks]
+    if: ${{ always() && needs.detect.result == 'success' && needs.candidate-checks.result == 'failure' && (needs.detect.outputs.changed == 'true' || inputs.repair_existing) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: automation/codex-${{ needs.detect.outputs.version }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.98.0'
+          components: rustfmt, clippy
+      - name: Require an open candidate PR before spending repair authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "automation/codex-$CANDIDATE_VERSION" --state open --json number --jq length)
+          if [ "$count" != "1" ]; then echo 'No unique open candidate PR; repair stopped'; exit 1; fi
+      - name: Install pinned repair CLI without package scripts
+        run: npm install --global --ignore-scripts @openai/codex@0.156.0
+      - name: Fetch exact upstream source as untrusted read-only context
+        env:
+          CANDIDATE_VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          if ! [[ "$CANDIDATE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then exit 1; fi
+          git clone --quiet --depth=1 --branch "rust-v$CANDIDATE_VERSION" https://github.com/openai/codex.git upstream-source
+          chmod -R a-w upstream-source
+      - name: Attempt one isolated source repair
+        env:
+          CODEX_REPAIR_API_KEY: ${{ secrets.CODEX_REPAIR_API_KEY }}
+        run: python trusted/scripts/repair_candidate.py --repo candidate --candidate candidate/compatibility/candidate.json --upstream-source upstream-source --output repair-output
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codex-repair-${{ needs.detect.outputs.version }}
+          path: repair-output/
+          retention-days: 7
+          if-no-files-found: error
+
+  apply-repair:
+    needs: [detect, repair]
+    if: ${{ always() && needs.repair.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: automation/codex-${{ needs.detect.outputs.version }}
+          path: candidate
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: codex-repair-${{ needs.detect.outputs.version }}
+          path: repair-output
+      - name: Require the candidate PR to remain open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "automation/codex-$CANDIDATE_VERSION" --state open --json number --jq length)
+          if [ "$count" != "1" ]; then echo 'Candidate PR closed or ambiguous; patch not applied'; exit 1; fi
+      - name: Validate and apply the untrusted patch without executing it
+        run: python trusted/scripts/apply_repair.py --repo candidate --patch repair-output/repair.patch --report repair-output/repair-report.json --version "$CANDIDATE_VERSION"
+      - name: Commit a reviewable repair diff
+        run: |
+          git -C candidate add -- src tests
+          git -C candidate -c core.hooksPath=/dev/null -c user.name=codex-compatibility-bot -c user.email=codex-compatibility-bot@users.noreply.github.com commit -m "Propose bounded Codex $CANDIDATE_VERSION repair"
+          git -C candidate -c core.hooksPath=/dev/null push origin "HEAD:refs/heads/automation/codex-$CANDIDATE_VERSION"
+
+  post-repair-checks:
+    needs: [detect, apply-repair]
+    if: ${{ always() && needs.apply-repair.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: automation/codex-${{ needs.detect.outputs.version }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.98.0'
+          components: rustfmt, clippy
+      - name: Refresh and verify native asset identity after repair
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/watch_codex.py --output candidate-runner.json
+          python scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json
+      - name: Inspect exact candidate without credentials
+        shell: pwsh
+        run: |
+          npm install --global --ignore-scripts "@openai/codex@$env:CANDIDATE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate installation failed' }
+          python scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: State remaining qualification
+        shell: pwsh
+        run: '"Repair checks remain non-live; native PermissionRequest evidence and independent review are still required." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8'
