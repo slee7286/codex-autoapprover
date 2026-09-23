@@ -43,6 +43,8 @@ made additional code, gate, test and documentation changes.
   stay consumed if response delivery fails. Identical legitimate retries use
   normal approval. Both brokers now audit each parsed request before deciding;
   a denied or replayed request invalidates the verifier's one-invocation check.
+  Audit event names are reduced to fixed labels before logging, so malformed
+  hook input cannot inject additional audit lines.
   A malformed hook input that never reaches the broker is outside this count.
   Same-user malicious descendants remain an open review item.
 - A bounded, read-only `codex exec --json` trace inspector requires exactly one
@@ -93,7 +95,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 68 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover denied/replayed broker audit accounting and Unix descendant cleanup. |
+| `cargo test --locked --all-targets` | 69 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover denied/replayed broker audit accounting, log-injection rejection and Unix descendant cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
@@ -117,20 +119,20 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`0daef6779eff5e6db82bb5fe04c8143f243ee60943019315a50093aa4d271453`.
+`dc36d00891cd97af4ee769fd834e226a7e6b85c429a37d401269743c2362f558`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v8/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `ab876bf45a43f030ce15a51c37a0be325135426f2a6b5bf1d727642d847f3306`.
+`/tmp/autoapprover-dev-package-20260923-v9/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `c184c323a40a670478e16aa5eae8e4dca8247746c63a8714f34dd1b7b3d11147`.
 Its recorded source digest is
-`cc23252d1cddeb00ba4d15dba9c2a965925aec9ab3b3a2915c7d053d730a9788`.
+`f66bea0fe167a54a5f0b4e6cf91253c5b68b563dfd0e4269ba8b348e9d2c40bc`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v8.spdx.json`, SHA-256
-`9a67f42e9365c7c34a8baec14243e5e0c0a58fed653293f73e3549dfbb96db59`.
+`/tmp/autoapprover-locked-dependencies-v9.spdx.json`, SHA-256
+`df4001c0427fd4c68761fd65cd77d87f11b999e070e1cf7671d499e00ecc2b1b`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 

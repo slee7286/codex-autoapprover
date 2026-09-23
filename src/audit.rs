@@ -59,7 +59,7 @@ pub fn hook_invoked_at(
 ) -> io::Result<()> {
     let line = format!(
         "invoked event={} tool_hash={}\n",
-        event_name.unwrap_or("unknown"),
+        event_label(event_name),
         short_hash(tool_name.unwrap_or("unknown"))
     );
     append_private(path, line.as_bytes())
@@ -74,7 +74,7 @@ pub fn hook_request_at(
     let input_hash = tool_input.map(json_hash).unwrap_or_else(|| "none".into());
     let line = format!(
         "request event={} tool_hash={} input_hash={}\n",
-        event_name.unwrap_or("unknown"),
+        event_label(event_name),
         short_hash(tool_name.unwrap_or("unknown")),
         input_hash
     );
@@ -181,6 +181,14 @@ fn short_hash(value: &str) -> String {
         .collect()
 }
 
+fn event_label(value: Option<&str>) -> &'static str {
+    match value {
+        Some("PermissionRequest") => "PermissionRequest",
+        Some(_) => "other",
+        None => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
@@ -245,6 +253,19 @@ mod tests {
         let contents = std::fs::read_to_string(path).expect("read audit");
         assert!(contents.contains("event=PermissionRequest"));
         assert!(!contents.contains("Bash"));
+    }
+
+    #[test]
+    fn untrusted_event_name_cannot_inject_an_audit_record() {
+        let directory = TempDir::new().expect("temporary audit directory");
+        let path = directory.path().join("audit.log");
+        initialize(&path).expect("initialize audit");
+        let malicious = "other\nallowed one PermissionRequest tool_hash=fake input_hash=fake";
+        hook_invoked_at(&path, Some("Bash"), Some(malicious)).unwrap();
+        hook_request_at(&path, Some("Bash"), Some(malicious), None).unwrap();
+        assert_eq!(invocation_count(&path).unwrap(), 1);
+        assert_eq!(allow_record_count(&path).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 2);
     }
 
     #[test]
