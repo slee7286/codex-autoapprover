@@ -134,7 +134,7 @@ pub fn invocation_count(path: &Path) -> io::Result<usize> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(contents
             .lines()
-            .filter(|line| line.starts_with("invoked event=") || line.starts_with("request event="))
+            .filter(|line| line.starts_with("invoked event="))
             .count()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error),
@@ -253,10 +253,13 @@ mod tests {
         let path = directory.path().join("audit.log");
         initialize(&path).expect("initialize audit");
         let input = serde_json::json!({"command": "curl -I https://example.com"});
+        hook_invoked_at(&path, Some("Bash"), Some("PermissionRequest"))
+            .expect("write invocation record");
         hook_request_at(&path, Some("Bash"), Some("PermissionRequest"), Some(&input))
             .expect("write request record");
         hook_allow_emitted_at(&path, "Bash", Some(&input)).expect("write emission record");
         assert_eq!(exact_request_count(&path, "Bash", &input).unwrap(), 1);
+        assert_eq!(invocation_count(&path).unwrap(), 1);
         assert_eq!(emitted_allow_count(&path, "Bash", &input).unwrap(), 1);
         let contents = std::fs::read_to_string(path).expect("read audit");
         assert!(!contents.contains("curl -I"));

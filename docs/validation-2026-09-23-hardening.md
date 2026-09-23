@@ -41,13 +41,19 @@ made additional code, gate, test and documentation changes.
   once, reject identical request replays, cap the ledger at 4096 invocations,
   and permit **at most one allow** in the isolated verifier. Consumed requests
   stay consumed if response delivery fails. Identical legitimate retries use
-  normal approval. Same-user malicious descendants remain an open review item.
+  normal approval. Both brokers now audit each parsed request before deciding;
+  a denied or replayed request invalidates the verifier's one-invocation check.
+  A malformed hook input that never reaches the broker is outside this count.
+  Same-user malicious descendants remain an open review item.
 - Probe output uses private temporary files rather than unbounded thread joins
   on inherited pipes. Unix probe process groups are terminated on completion or
   timeout. The isolated interactive verifier now requests no shared daemon and
-  bounds and stops its direct child on timeout or interruption. Descendant
-  termination for that interactive verifier still needs native testing on both
-  Linux and Windows.
+  bounds and stops its child on timeout or interruption. On Unix it now starts
+  the verification child in a separate process group and kills its descendants
+  before evidence inspection or cleanup, including when the parent exits first.
+  This has synthetic regression coverage; native Codex testing is still needed.
+  Windows verifier descendant termination still needs implementation and native
+  testing.
 - The schema-2 release gate compares the entire compiled manifest and evidence
   targets, includes the manifest in source hashing, requires consumer/upstream
   digests, retained artifact hashes, independent review identities and all
@@ -80,7 +86,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 67 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only |
+| `cargo test --locked --all-targets` | 68 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover denied/replayed broker audit accounting and Unix descendant cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
@@ -104,20 +110,20 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`27b785639e499855386d57951d1c0e3704a23fb54d5ad9368ab66706922edc40`.
+`0daef6779eff5e6db82bb5fe04c8143f243ee60943019315a50093aa4d271453`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v5/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `7f2701c80f97a7830f086c42e58cf8a5be34eab311cdd137c4ff934c73e6592b`.
+`/tmp/autoapprover-dev-package-20260923-v6/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `59a1614a5ef82e34d00138d3e78dba2ab6103a985ff5b2db99b0e6e5dfc3ab7c`.
 Its recorded source digest is
-`9339179a6984bc7d2e11b1d5f8508cacf470043dd064456ed0d36c374ec2bf43`.
+`400c1f23c0fef1ab9a90273b2ca179e82ee5f72c30b8ac3e3411d54603cf969d`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v5.spdx.json`, SHA-256
-`b2cd3eba64601d7e20f5a3120e3065919d5e8ffadbbdceccc061db406309898b`.
+`/tmp/autoapprover-locked-dependencies-v6.spdx.json`, SHA-256
+`a3207de4d1352494bb7d742701d2ab738464a0a8c6d2e9e6146872549ee38799`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 

@@ -294,6 +294,23 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
             return;
         }
     };
+    if let Some(path) = shared.config.audit_path.as_deref()
+        && audit::hook_invoked_at(
+            path,
+            request.hook_input.tool_name.as_deref(),
+            request.hook_input.hook_event_name.as_deref(),
+        )
+        .is_err()
+    {
+        let _ = write_response_until(
+            pipe,
+            BrokerDecision::NoDecision,
+            deadline,
+            Some(&shared.shutdown),
+        );
+        close_handle(pipe);
+        return;
+    }
     let reader = WinProcess;
     let peer_user_matches = process::peer_user_matches_launcher(client_pid, &shared.launcher_sid);
     let allowed = verify_request(shared, client_pid, &request, &reader, peer_user_matches);

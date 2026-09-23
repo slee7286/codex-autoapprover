@@ -406,6 +406,11 @@ pub fn verify_local_hook() -> Result<i32> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     if let Err(error) = session.arm_child(&mut command) {
         let broker_cleanup = broker.shutdown();
         let session_cleanup = session.cleanup();
@@ -494,6 +499,9 @@ pub fn verify_local_hook() -> Result<i32> {
             return Err(with_cleanup_error(error, cleanup));
         }
     };
+    // On Unix, a Codex child can exit while its shell descendants remain
+    // alive. Stop its isolated group before inspecting and deleting state.
+    stop_verification_descendants(&child);
 
     let invocation_count = match audit::invocation_count(&audit_path)
         .context("read temporary hook invocation audit")
@@ -693,9 +701,20 @@ fn wait_for_bound_child(
 }
 
 fn stop_verification_child(child: &mut Child) {
+    stop_verification_descendants(child);
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[cfg(unix)]
+fn stop_verification_descendants(child: &Child) {
+    if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn stop_verification_descendants(_child: &Child) {}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct RepositoryStatus {
@@ -1157,13 +1176,39 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn interrupted_verification_child_is_stopped() {
-        let child = Command::new("sh")
-            .args(["-c", "sleep 10"])
-            .spawn()
-            .expect("spawn interrupt fixture");
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10"]).process_group(0);
+        let child = command.spawn().expect("spawn interrupt fixture");
         let interrupted = AtomicBool::new(true);
         let error = wait_for_verification_child(child, &interrupted).expect_err("must stop child");
         assert!(error.to_string().contains("verification interrupted"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verification_cleanup_stops_descendants_after_parent_exits() {
+        use std::os::unix::process::CommandExt;
+
+        let directory = TempDir::new().expect("temporary fixture directory");
+        let marker = directory.path().join("descendant-survived");
+        let started = directory.path().join("descendant-started");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "(printf ready > \"$VERIFICATION_STARTED\"; sleep 1; printf alive > \"$VERIFICATION_MARKER\") & while [ ! -f \"$VERIFICATION_STARTED\" ]; do sleep 0.01; done",
+            ])
+            .env("VERIFICATION_MARKER", &marker)
+            .env("VERIFICATION_STARTED", &started)
+            .process_group(0);
+        let mut child = command.spawn().expect("spawn fixture group");
+        assert!(child.wait().expect("wait for group leader").success());
+        assert!(started.exists(), "descendant did not start");
+        stop_verification_descendants(&child);
+        thread::sleep(Duration::from_millis(1200));
+        assert!(!marker.exists(), "descendant survived verifier cleanup");
     }
 
     #[cfg(unix)]

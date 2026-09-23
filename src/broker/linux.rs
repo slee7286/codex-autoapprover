@@ -313,6 +313,19 @@ fn handle_connection(mut stream: UnixStream, shared: &SharedState) {
             return;
         }
     };
+    // Record every well-formed request before authorization. Otherwise a
+    // denied or replayed second request is absent from verification evidence.
+    if let Some(path) = shared.config.audit_path.as_deref()
+        && audit::hook_invoked_at(
+            path,
+            request.hook_input.tool_name.as_deref(),
+            request.hook_input.hook_event_name.as_deref(),
+        )
+        .is_err()
+    {
+        let _ = write_response_until(&mut stream, BrokerDecision::NoDecision, deadline);
+        return;
+    }
     let proc_reader = ProcFs;
     let allowed = verify_request(shared, credentials, &request, &proc_reader);
     if allowed {
@@ -876,6 +889,9 @@ mod tests {
         let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let session = Session::create().unwrap();
         let cwd = std::env::current_dir().unwrap();
+        let audit_dir = tempfile::tempdir().unwrap();
+        let audit_path = audit_dir.path().join("hook-audit.log");
+        audit::initialize(&audit_path).unwrap();
         let broker = Broker::start(
             &session,
             BrokerConfig {
@@ -884,7 +900,7 @@ mod tests {
                 expected_cwd: cwd.clone(),
                 expected_command: Some(crate::compatibility::verification_probe_command().into()),
                 expected_tool_name: Some("Bash".into()),
-                audit_path: None,
+                audit_path: Some(audit_path.clone()),
             },
         )
         .unwrap();
@@ -931,6 +947,18 @@ mod tests {
             env::remove_var(arming::PROTOCOL_ENV);
         }
         broker.shutdown().unwrap();
+        assert_eq!(audit::invocation_count(&audit_path).unwrap(), 6);
+        assert_eq!(audit::allow_record_count(&audit_path).unwrap(), 1);
+        let expected_input =
+            serde_json::json!({"command": crate::compatibility::verification_probe_command()});
+        assert_eq!(
+            audit::exact_request_count(&audit_path, "Bash", &expected_input).unwrap(),
+            1
+        );
+        assert_eq!(
+            audit::emitted_allow_count(&audit_path, "Bash", &expected_input).unwrap(),
+            1
+        );
         let path = session.socket_path().to_path_buf();
         session.cleanup().unwrap();
         assert!(!path.exists());
