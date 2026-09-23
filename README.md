@@ -59,6 +59,8 @@ It manages a private install directory under `LOCALAPPDATA` (default `%LOCALAPPD
 
 `scripts/build_record.py` prepares a bounded, exact-digest native build observation alongside each candidate executable and SPDX file. It records the Rust/Cargo versions, Git revision, clean-tree status and selected OS facts, and the separate qualification runner rechecks its source, binary and toolchain binding. The release gate requires a retained build record for each reviewed native tuple. It is review material, not proof of reproducibility or complete linked-component inventory. The workflow path has not run.
 
+`scripts/check_reproducible_build.py` compares a candidate native executable with two separate offline, locked release builds of its clean source commit. The candidate workflow retains a source/toolchain/binary-bound `reproducibility.json`, and the release gate requires a reviewed reference to it. Linux same-host repeatability passed locally; the prepared Windows workflow has not run. This observation does not replace signed provenance or an independent cross-host build.
+
 `scripts/locked_licenses.py` creates an offline, deterministic bundle of available license and notice texts from those verified archives. Two locked crates lack matching top-level texts; independent license review and a final consumer notice selection remain necessary.
 
 ## Commands
