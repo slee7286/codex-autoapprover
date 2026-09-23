@@ -62,7 +62,7 @@ def strict_json_object(pairs):
     value = {}
     for key, item in pairs:
         if key in value:
-            raise ValueError("duplicate npm registry metadata key")
+            raise ValueError("duplicate JSON metadata key")
         value[key] = item
     return value
 

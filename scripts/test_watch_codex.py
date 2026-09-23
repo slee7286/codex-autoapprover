@@ -88,6 +88,15 @@ class ReleaseWatchTests(unittest.TestCase):
             with self.subTest(assets=assets), self.assertRaises(ValueError):
                 watch.candidate_from_releases([release("0.155.0"), release("0.156.0", assets=assets)])
 
+    def test_duplicate_prior_candidate_keys_are_rejected_before_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "candidate.json"
+            original = b'{"codex_version":"0.156.0","codex_version":"0.156.1"}'
+            path.write_bytes(original)
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                watch.write_candidate(path, watch.candidate_from_releases([release("0.156.1")]))
+            self.assertEqual(path.read_bytes(), original)
+
     def test_conflicting_duplicate_release_is_not_selected_by_api_order(self):
         with self.assertRaisesRegex(ValueError, "conflicting duplicate"):
             watch.candidate_from_releases([release("0.156.0"), release("0.156.0", id=2)])
@@ -196,6 +205,9 @@ class ReleaseWatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected response"):
             watch.fetch_latest_release(open_url=lambda request, timeout:
                                        Response(request.full_url, b"[]"))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            watch.fetch_latest_release(open_url=lambda request, timeout:
+                                       Response(request.full_url, b'{"id":1,"id":2}'))
 
     def test_missed_stable_release_stops_before_candidate_write(self):
         previous = watch.candidate_from_releases([release("0.156.0")])
@@ -219,6 +231,43 @@ class ReleaseWatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "previous release identity"):
             watch.verify_release_gap(previous, watch.candidate_from_releases([latest]),
                                      [latest, changed_old])
+
+    def test_previous_release_asset_drift_stops_the_next_candidate(self):
+        previous = watch.candidate_from_releases([release("0.156.0")])
+        latest = release("0.156.1", id=2)
+        changed_old = release("0.156.0")
+        changed_old["assets"][0]["digest"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(ValueError, "previous release asset"):
+            watch.verify_release_gap(previous, watch.candidate_from_releases([latest]),
+                                     [latest, changed_old])
+        wrong_type = {**previous, "upstream_release_id": True}
+        with self.assertRaises(ValueError):
+            watch.verify_release_gap(wrong_type, watch.candidate_from_releases([latest]),
+                                     [latest, release("0.156.0")])
+
+    def test_previous_npm_drift_stops_before_candidate_write(self):
+        previous = watch.candidate_from_releases([release("0.156.0")])
+        previous["npm_packages"] = npm_records("0.156.0")
+        latest = release("0.156.1", id=2)
+
+        def current_npm(version):
+            records = npm_records(version)
+            if version == "0.156.0":
+                records[0]["integrity"] = "sha512-" + base64.b64encode(b"x" * 64).decode()
+            return records
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "candidate.json"
+            path.write_text(json.dumps(previous))
+            original = path.read_bytes()
+            with patch("sys.argv", ["watch_codex.py", "--output", str(path)]), \
+                 patch.object(watch, "fetch_latest_release", return_value=latest), \
+                 patch.object(watch, "fetch_releases", return_value=[latest, release("0.156.0")]), \
+                 patch.object(watch, "fetch_npm_records", side_effect=current_npm) as fetched:
+                with self.assertRaisesRegex(ValueError, "previous npm package identity changed"):
+                    watch.main()
+                fetched.assert_called_once_with("0.156.0")
+            self.assertEqual(path.read_bytes(), original)
 
     def test_network_failure_is_not_treated_as_no_update(self):
         def fail(_request, timeout):
@@ -336,7 +385,7 @@ class ReleaseWatchTests(unittest.TestCase):
             with patch("sys.argv", ["watch_codex.py", "--output", str(candidate), "--create-pr"]), \
                  patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                  patch.object(watch, "fetch_latest_release", return_value=latest), \
-                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.1")), \
+                 patch.object(watch, "fetch_npm_records", side_effect=npm_records), \
                  patch.object(watch, "fetch_releases", return_value=[latest, release("0.156.0")]), \
                  patch.object(watch, "prepare_pr", return_value=False) as prepare, \
                  patch.object(watch, "candidate_branch_sha", return_value="c" * 40):

@@ -14,7 +14,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
-from npm_candidate import fetch_npm_records
+from npm_candidate import fetch_npm_records, strict_json_object
 
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -50,6 +50,11 @@ def version_key(value):
     if not isinstance(value, str) or not VERSION.fullmatch(value):
         raise ValueError("expected a stable numeric Codex version")
     return tuple(map(int, value.split(".")))
+
+
+def exact_json_equal(left, right):
+    return (json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            == json.dumps(right, sort_keys=True, separators=(",", ":"), allow_nan=False))
 
 
 def required_assets(release, tag):
@@ -135,7 +140,7 @@ def fetch_latest_release(open_url=None):
         body = response.read(LIMIT + 1)
     if len(body) > LIMIT:
         raise ValueError("latest release API response exceeded limit")
-    release = json.loads(body)
+    release = json.loads(body, object_pairs_hook=strict_json_object)
     if not isinstance(release, dict):
         raise ValueError("latest release API returned an unexpected response")
     return release
@@ -161,7 +166,7 @@ def fetch_releases(open_url=None, stop_tag=None):
             body = response.read(LIMIT + 1)
         if len(body) > LIMIT:
             raise ValueError("release API response exceeded limit")
-        batch = json.loads(body)
+        batch = json.loads(body, object_pairs_hook=strict_json_object)
         if not isinstance(batch, list):
             raise ValueError("invalid release page")
         releases.extend(batch)
@@ -182,10 +187,27 @@ def verify_release_gap(previous, candidate, recent):
     old_tag = f"rust-v{old_version}"
     if previous.get("upstream_tag") != old_tag:
         raise ValueError("previous candidate tag/version mismatch")
+    prior_id = previous.get("upstream_release_id")
+    if prior_id is not None and (type(prior_id) is not int or prior_id <= 0):
+        raise ValueError("previous release identity is invalid")
     old = [item for item in recent if isinstance(item, dict) and item.get("tag_name") == old_tag]
-    if len(old) != 1 or (previous.get("upstream_release_id") is not None
-                         and old[0].get("id") != previous["upstream_release_id"]):
+    if len(old) != 1 or (prior_id is not None and old[0].get("id") != prior_id):
         raise ValueError("previous release identity changed or became ambiguous")
+    recorded_old = candidate_from_releases(old)
+    if type(previous.get("schema_version")) is not int:
+        raise ValueError("unsupported previous candidate schema")
+    if previous["schema_version"] == 2:
+        if not exact_json_equal(
+                {key: value for key, value in previous.items() if key != "npm_packages"}, recorded_old):
+            raise ValueError("previous release asset or candidate metadata changed")
+    elif previous["schema_version"] == 1:
+        legacy = {key: value for key, value in recorded_old.items() if key != "assets"}
+        legacy["schema_version"] = 1
+        legacy["upstream_release_id"] = previous.get("upstream_release_id")
+        if not exact_json_equal(previous, legacy):
+            raise ValueError("previous legacy candidate metadata changed")
+    else:
+        raise ValueError("unsupported previous candidate schema")
     selected = candidate_from_releases(recent)
     if selected != candidate:
         raise ValueError("latest release and recent release listing disagree")
@@ -206,22 +228,26 @@ def verify_release_gap(previous, candidate, recent):
 def write_candidate(path, candidate):
     """Idempotent, refuse downgrades and unexpected same-version release replacement."""
     if path.exists():
-        previous = json.loads(path.read_text(encoding="utf-8"))
+        previous = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=strict_json_object)
         old = version_key(previous["codex_version"])
         new = version_key(candidate["codex_version"])
         if old > new:
             raise ValueError("upstream is older than the recorded candidate; refusing downgrade")
         if old == new:
-            if previous == candidate:
+            if exact_json_equal(previous, candidate):
                 return False
             legacy = {key: value for key, value in candidate.items()
                       if key not in {"assets", "npm_packages"}}
             legacy["schema_version"] = 1
             previous_id = previous.get("upstream_release_id")
+            if previous_id is not None and (type(previous_id) is not int or previous_id <= 0):
+                raise ValueError("same-version upstream release id is invalid")
             if previous_id not in (None, candidate["upstream_release_id"]):
                 raise ValueError("same-version upstream release id changed")
             legacy["upstream_release_id"] = previous_id
-            if previous.get("schema_version") != 1 or previous != legacy:
+            if (type(previous.get("schema_version")) is not int
+                    or previous["schema_version"] != 1
+                    or not exact_json_equal(previous, legacy)):
                 raise ValueError("same-version upstream metadata changed; manual investigation required")
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as output:
@@ -247,7 +273,7 @@ def prepare_pr(candidate, path):
         "gh", "pr", "list", "--repo", repository, "--head", branch,
         "--state", "all", "--json", "number", "--limit", "1",
     ], text=True)
-    if json.loads(existing):
+    if json.loads(existing, object_pairs_hook=strict_json_object):
         print(f"Candidate PR already exists for Codex {version}; left unchanged")
         return False
     remote = subprocess.check_output(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"], text=True)
@@ -256,7 +282,8 @@ def prepare_pr(candidate, path):
                         f"refs/heads/{branch}"], check=True)
         existing_candidate = subprocess.check_output(
             ["git", "show", "FETCH_HEAD:compatibility/candidate.json"], text=True)
-        if json.loads(existing_candidate) != candidate:
+        if not exact_json_equal(
+                json.loads(existing_candidate, object_pairs_hook=strict_json_object), candidate):
             raise ValueError("candidate branch differs from official release metadata; manual recovery required")
         changed_paths = subprocess.check_output(
             ["git", "diff", "--name-only", "HEAD", "FETCH_HEAD"], text=True).splitlines()
@@ -315,14 +342,20 @@ def main():
         parser.error("fixtures cannot create PRs")
     if args.require_branch and not args.create_pr:
         parser.error("--require-branch requires --create-pr")
-    releases = json.loads(args.fixture.read_text()) if args.fixture else [fetch_latest_release()]
+    releases = (json.loads(args.fixture.read_text(), object_pairs_hook=strict_json_object)
+                if args.fixture else [fetch_latest_release()])
     candidate = candidate_from_releases(releases)
     if not args.fixture and args.output.exists():
-        previous = json.loads(args.output.read_text(encoding="utf-8"))
+        previous = json.loads(args.output.read_text(encoding="utf-8"),
+                              object_pairs_hook=strict_json_object)
         if version_key(candidate["codex_version"]) > version_key(previous["codex_version"]):
             old_tag = previous.get("upstream_tag")
             recent = fetch_releases(stop_tag=old_tag)
             verify_release_gap(previous, candidate, recent)
+            if previous.get("schema_version") == 2:
+                prior_npm = fetch_npm_records(previous["codex_version"])
+                if not exact_json_equal(previous.get("npm_packages"), prior_npm):
+                    raise ValueError("previous npm package identity changed; manual investigation required")
     if not args.fixture:
         candidate["npm_packages"] = fetch_npm_records(candidate["codex_version"])
     changed = write_candidate(args.output, candidate)

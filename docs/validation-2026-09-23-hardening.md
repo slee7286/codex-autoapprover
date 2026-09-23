@@ -79,7 +79,11 @@ made additional code, gate, test and documentation changes.
   Rust tests while running metadata and probe scripts from the trusted
   default-branch checkout. Initial and post-repair checks require the branch's
   recorded candidate metadata to equal a freshly fetched official record
-  before downloading either native asset. Asset/CLI preflight is now a separate
+  before downloading either native asset. On an update the watcher also
+  rechecks the previously recorded release assets and, for full records, all
+  seven npm package identities before preparing the new candidate. The legacy
+  0.156.0 record lacks those digests, so it cannot be retroactively compared.
+  Asset/CLI preflight is now a separate
   job; its failures cannot reach the repair worker. The official record now
   includes exact SHA-512 registry integrity for the npm parent and six native
   aliases. Candidate runners compare a script-free exact-version npm lock
@@ -130,7 +134,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 51 tests passed, including exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression, explicit retry, pinned candidate-commit output, candidate-branch metadata mismatch and duplicate-key rejection, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 54 tests passed, including prior-release asset/npm drift and duplicate-key rejection, exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression, explicit retry, pinned candidate-commit output, candidate-branch metadata mismatch, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -156,15 +160,15 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v16/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `84b2cd95f785a58d1a1a4fc5368d644ded46a694b0f5449d1ed57443db5e185e`.
+`/tmp/autoapprover-dev-package-20260923-v17/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `875660dc1d4d686a9c530aff6796f981250ac5330f1bcc39caf210e4463b9241`.
 Its recorded source digest is
-`448dff2f2acfdddf89832e27cb9e3ce56b02917bd60638de4773ac618899b9d6`.
+`f7ae2b2ab189b18b801ccd6b02f766ced7e65007e82dded80a70b6cf8791970a`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v16.spdx.json`, SHA-256
-`d93e19ebd50b73a52a6a992c8560ee9e57439a5efde15a9c02e24dc582651b63`.
+`/tmp/autoapprover-locked-dependencies-v17.spdx.json`, SHA-256
+`f0dd9024c65df2b6aa6149520bbbf384755c29a8e3986cb5d8949fd1c85d6e7f`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
@@ -196,6 +200,12 @@ The installed native npm executable had SHA-256
 `0b2e9301d6100dddda3b9d5c80ebaeaa3a2f1962388f2f36f6b96a9f08b1f33f`.
 These are temporary, non-live observations; the registry's signature audit
 does not sign or certify this project's consumer artifact.
+A separate temporary full 0.156.0 candidate record was reconstructed from
+official release and npm metadata, then advanced read-only to 0.156.1. The
+watcher re-fetched and matched that prior record's two native asset identities
+and seven npm identities before writing the new temporary candidate. Synthetic
+asset and npm mutations were rejected before a candidate write. No live
+default-branch workflow or PR exercised this transition.
 
 Primary references: [official release](https://github.com/openai/codex/releases/tag/rust-v0.156.0),
 [hook semantics](https://learn.chatgpt.com/docs/hooks),
@@ -263,7 +273,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
-| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; changed metadata and multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
+| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
