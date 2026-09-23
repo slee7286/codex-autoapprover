@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path, PureWindowsPath
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -296,6 +297,54 @@ class ReleaseGateTests(unittest.TestCase):
                 if change == "artifact-changed": (root / "compatibility/evidence/synthetic/log.txt").write_text("changed")
                 with self.assertRaises(ValueError):
                     gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+    def test_redirected_evidence_directory_fails_even_when_not_reported_as_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "source"
+            evidence = root / "compatibility/evidence"
+            evidence.parent.mkdir(parents=True)
+            outside = base / "outside/synthetic"
+            outside.mkdir(parents=True)
+            (outside / "log.txt").write_text("redirected evidence")
+            try:
+                evidence.symlink_to(outside.parent, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory links unavailable: {error}")
+            # Windows junctions can be reparse points without is_symlink() being true.
+            original_lstat = Path.lstat
+
+            def no_redirected_leaf_lstat(path):
+                if path == evidence / "synthetic/log.txt":
+                    raise AssertionError("gate inspected a file through a redirected directory")
+                return original_lstat(path)
+
+            with patch.object(Path, "is_symlink", return_value=False):
+                with patch.object(Path, "lstat", no_redirected_leaf_lstat):
+                    with self.assertRaisesRegex(ValueError, "links or reparse points"):
+                        gate.regular_file(root, "compatibility/evidence/synthetic/log.txt",
+                                          "compatibility/evidence")
+
+    def test_reparse_flag_on_evidence_directory_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "compatibility/evidence"
+            (evidence / "synthetic").mkdir(parents=True)
+            (evidence / "synthetic/log.txt").write_text("local evidence")
+            original_lstat = Path.lstat
+
+            def junction_lstat(path):
+                info = original_lstat(path)
+                if path == evidence:
+                    return SimpleNamespace(st_mode=info.st_mode, st_nlink=info.st_nlink,
+                                           st_file_attributes=0x400)
+                return info
+
+            with patch.object(gate.stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, create=True):
+                with patch.object(Path, "lstat", junction_lstat):
+                    with self.assertRaisesRegex(ValueError, "links or reparse points"):
+                        gate.regular_file(root, "compatibility/evidence/synthetic/log.txt",
+                                          "compatibility/evidence")
 
     def test_retained_paths_and_evidence_size_are_bounded(self):
         with tempfile.TemporaryDirectory() as directory:

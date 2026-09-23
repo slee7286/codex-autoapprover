@@ -143,15 +143,22 @@ def regular_file(root, relative, directory=None):
             or "\\" in relative or ":" in relative):
         raise ValueError("file reference must be a canonical relative path")
     full = root / path
-    for parent in [full, *full.parents]:
-        if parent == root:
-            break
-        if parent.is_symlink():
-            raise ValueError("file references cannot traverse symlinks")
-    if directory and not full.resolve().is_relative_to((root / directory).resolve()):
+    if directory and not full.is_relative_to(root / directory):
         raise ValueError("evidence must be retained under compatibility/evidence")
-    if not full.is_file() or full.stat().st_nlink != 1:
-        raise ValueError("referenced artifact must be a regular singly linked file")
+    component = root
+    for index, part in enumerate(path.parts):
+        component = component / part
+        try:
+            info = component.lstat()
+        except OSError as error:
+            raise ValueError("referenced artifact is missing or unreadable") from error
+        if is_reparse(info):
+            raise ValueError("file references cannot traverse links or reparse points")
+        if index == len(path.parts) - 1:
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("referenced artifact must be a regular singly linked file")
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ValueError("file references must traverse directories")
     return full
 
 

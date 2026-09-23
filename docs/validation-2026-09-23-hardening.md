@@ -121,7 +121,11 @@ made additional code, gate, test and documentation changes.
   sort by canonical relative UTF-8 path so Linux and Windows runners compute
   the same source digest. The source walk rejects linked, reparse and nonregular
   entries instead of silently skipping linked directories; a regression covers
-  a directory link to unreviewed source bytes. Reports expire for release
+  a directory link to unreviewed source bytes. Retained evidence references
+  now use lexical containment and inspect each component root-to-leaf with `lstat`, rejecting
+  links and reparse points. Synthetic regressions cover a redirected directory
+  hidden from `is_symlink()` and a modeled Windows reparse attribute; native
+  Windows execution and review remain open. Reports expire for release
   qualification after 30 days.
 - Windows bundle directory admission now reads owner and DACL information from
   no-reparse directory handles. It rejects null DACLs, untrusted ownership,
@@ -252,7 +256,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL, suspended Job Object child-tree module, and native-only descendant and stalled-pipe regressions; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 99 tests passed. Reproducibility archive tests reject traversal, links, case collisions and a linked expected binary; release-gate cases check source links and Cargo graph completeness; watcher cases recover a release sorted behind the baseline and reject ambiguous tag-ref data. Synthetic fixtures are not production evidence. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 101 tests passed. Reproducibility archive tests reject traversal, links, case collisions and a linked expected binary; release-gate cases check source links, redirected/reparse evidence directories and Cargo graph completeness; watcher cases recover a release sorted behind the baseline and reject ambiguous tag-ref data. Synthetic fixtures are not production evidence. |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -298,29 +302,29 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-health-policy-v2/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `5cd45d01c8b031393697c77f99e01879549e5b0b0e764f60d3370d28deb60881`.
+`/tmp/autoapprover-dev-package-20260923-evidence-path-v5/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `c69dc0469765c31f8511a60d997d4b655142eb097f54a7cc9c0826bd06cc1cdc`.
 Its recorded source digest is
-`e6a7e5e0ccd28fbe390c2144b247810eb45781b24a1623db6f621077d9b4e995`.
+`2753db5d04cb821866682d683597daca48fba0249658e83d22b11da2bc4cfe18`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-health-policy-v2.spdx.json`, SHA-256
-`f542a1cfc366ed051a642b978bfb75eddb918e11378b4f6d5042ae25868d4575`.
+`/tmp/autoapprover-locked-dependencies-evidence-path-v5.spdx.json`, SHA-256
+`1bbb8c5d5f2a3d73d77ff9cf26c42d22c1b533fc80c7a4b614d69c2b8d639cfb`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The matching Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-health-policy-v2.spdx.json`, SHA-256
-`003ac9a2292423c06bd765ed9e5676da2349c3f3b55bae13457d5f11df079ca8`.
+`/tmp/autoapprover-binary-linux-evidence-path-v5.spdx.json`, SHA-256
+`fd72ef39d9e6352786db2451f385afc70839f918f395406493cc7d81b6a772f2`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the current development executable and source digests above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-health-policy-v2.tar.gz`, SHA-256
-`663bf979192b228bdf20166317c66dada86cd5e8f4983c2df72c53d71a332803`.
+`/tmp/autoapprover-locked-licenses-evidence-path-v5.tar.gz`, SHA-256
+`385d48e41f732e8ef2860a15f3f0303fd49c98cf9bb7d531918a422102c8c7a3`.
 Its indexed source digest matches the archive above.
 
 An earlier Linux candidate build observation is
