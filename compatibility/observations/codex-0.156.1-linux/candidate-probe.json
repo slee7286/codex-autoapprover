@@ -1,0 +1,24 @@
+{
+  "codex_version": "0.156.1",
+  "os": "Linux",
+  "architecture": "x86_64",
+  "checks": {
+    "version": {
+      "exit_code": 0,
+      "stdout_bytes": 18,
+      "stderr_bytes": 179
+    },
+    "help": {
+      "exit_code": 0,
+      "stdout_bytes": 5769,
+      "stderr_bytes": 179
+    },
+    "features": {
+      "exit_code": 0,
+      "stdout_bytes": 9784,
+      "stderr_bytes": 179
+    }
+  },
+  "status": "non-live-probes-only",
+  "certified": false
+}

@@ -1,0 +1,15 @@
+{
+  "certified": false,
+  "codex_version": "0.156.1",
+  "installed": true,
+  "lock_sha256": "9764a61ed1bf7df5d155c02ae6cb93a7025f1db037db5b678ec8305d2e4068bf",
+  "native_package": {
+    "alias": "@openai/codex-linux-x64",
+    "integrity": "sha512-2ePo0wgOcnONKsuzp8vBjOmNY+IdsKaouaDDIdiKq9HOWNuV/GI22OeXft2A/1GaoL71ictO0/pLAsCEnQ6wew==",
+    "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-linux-x64.tgz",
+    "version": "0.156.1-linux-x64"
+  },
+  "os": "Linux",
+  "schema_version": 1,
+  "status": "npm-registry-integrity-only"
+}

@@ -8,6 +8,8 @@ Normal automatic approval requires exact equality with a certificate in `compati
 | Linux / Codex 0.153.0 and 0.153.4 | Inspected/requested, no retained independent live evidence | Unarmed |
 | Windows / Codex 0.152.1 and 0.154.0 | Candidate implementation and synthetic tests | Unarmed |
 | Windows / Codex 0.156.0 | User-reported elevated sandbox setup failure and successful unelevated Get-Location | Unarmed; no live approval-hook certification |
+| Linux / Codex 0.156.1 | [Official metadata, native asset/npm integrity and non-live CLI observations](../compatibility/observations/codex-0.156.1-linux/README.md) on 2026-09-23; no live PermissionRequest | Unarmed |
+| Windows / Codex 0.156.1 | Official release metadata only; no native Windows run | Unarmed |
 | Other versions / macOS / other OS or surfaces | No reviewed tuple | Unarmed |
 
 Historical Ubuntu Expect/option-1 evidence is not a stable interface or hook certification. The Linux 0.151.0 hook record is historical evidence, not a statement that the present artifact has passed production qualification. No release artifact is currently production-qualified; [release policy](../compatibility/release-policy.json) intentionally has `ready: false`.
