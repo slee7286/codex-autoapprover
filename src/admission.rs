@@ -79,13 +79,7 @@ impl Admission {
     pub fn configure_child(&self, command: &mut Command) -> Result<()> {
         // This admission adapter covers the local foreground CLI only. Remote,
         // IDE, daemon, config/profile overrides and other subcommands are manual.
-        command.args([
-            "--no-daemon",
-            "--permission-profile",
-            ":workspace",
-            "--ask-for-approval",
-            "on-request",
-        ]);
+        command.arg("--no-daemon");
         for setting in sandbox_overrides(&self.target.sandbox)? {
             command.arg("-c").arg(setting);
         }
@@ -94,35 +88,55 @@ impl Admission {
 
     pub fn check_execution_health(&self) -> Result<()> {
         self.recheck()?;
-        let directory =
-            tempfile::tempdir().context("create disposable sandbox health directory")?;
+        // Resolve the same project and managed configuration as the final CLI.
+        // Do not replace a user's read-only/custom permission profile just to
+        // make a health probe succeed. Inability to write the disposable file
+        // means manual fallback, not a permission downgrade.
+        let cwd = std::env::current_dir()?;
+        let directory = tempfile::Builder::new()
+            .prefix(".autoapprover-health-")
+            .tempdir_in(&cwd)
+            .context("create disposable sandbox health directory")?;
         let nonce = crate::arming::new_secret()?;
         let file = directory.path().join("autoapprover-health.txt");
         let mut command = self.executable.command();
         command
-            .args([
-                "sandbox",
-                "--permission-profile",
-                ":workspace",
-                "--include-managed-config",
-                "--cd",
-            ])
-            .arg(directory.path())
+            .args(["sandbox", "--cd"])
+            .arg(&cwd)
             .stdin(Stdio::null());
         for setting in sandbox_overrides(&self.target.sandbox)? {
             command.arg("-c").arg(setting);
         }
         #[cfg(target_os = "linux")]
-        command.args([
-            "--",
-            "/bin/sh",
-            "-c",
-            &format!(
-                "printf '%s' '{nonce}' > autoapprover-health.txt; cat autoapprover-health.txt"
-            ),
-        ]);
+        command
+            .args([
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf '%s' \"$1\" > \"$2\" && cat \"$2\"",
+                "autoapprover-health",
+            ])
+            .arg(&nonce)
+            .arg(&file);
         #[cfg(windows)]
-        command.args(["--", "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", &format!("[IO.File]::WriteAllText('autoapprover-health.txt','{nonce}'); [Console]::Write([IO.File]::ReadAllText('autoapprover-health.txt'))")]);
+        {
+            let script = directory.path().join("health.ps1");
+            std::fs::write(
+                &script,
+                "param([string]$Nonce, [string]$Target)\n$ErrorActionPreference = 'Stop'\n[IO.File]::WriteAllText($Target, $Nonce)\n[Console]::Write([IO.File]::ReadAllText($Target))\n",
+            )?;
+            command
+                .args([
+                    "--",
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-File",
+                ])
+                .arg(&script)
+                .arg(&nonce)
+                .arg(&file);
+        }
         let output = codex::bounded_output(command).context("sandbox shell/file health probe failed; inspect `codex doctor --json` for setup diagnostics")?;
         if !output.status.success()
             || output.stdout != nonce.as_bytes()

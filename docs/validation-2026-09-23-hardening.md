@@ -21,10 +21,11 @@ made additional code, gate, test and documentation changes.
   namespace environments. Missing host facts remain inconclusive. These checks
   are conservative detection, not hardware attestation or same-user isolation.
 - Foreground admission restricts forwarded options and explicitly pins the
-  selected sandbox and workspace permission profile. A bounded disposable
+  selected sandbox while preserving the active permission profile. A bounded disposable
   shell/file health probe is implemented. It has not yet qualified a real
-  Codex tuple; configuration/managed-policy coercion and project-context
-  differences remain unresolved qualification work.
+  Codex tuple; configuration/managed-policy coercion remains unresolved qualification work.
+  Health probes resolve the same project cwd and only write a disposable child
+  directory; a read-only profile that rejects the write stays manual.
 - Brokers bind the first accepted session, consume a hook process invocation
   once, reject identical request replays, cap the ledger at 4096 invocations,
   and permit **at most one allow** in the isolated verifier. Consumed requests
@@ -63,7 +64,7 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`cc3ec8049e9cdba7a152458d28475a578d9478030a62e15b43cfaed25f33c02d`.
+`a58e4f58e70bb7e768d93ad173d0b99f434b7d4862284e7177b2b506327e620a`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
@@ -87,6 +88,14 @@ fresh hook evidence.
 
 Read-only GitHub inspection confirmed admin access to
 `slee7286/codex-autoapprover`, which is public and uses default branch `main`.
+The first checkpoint was committed locally as `7a33bd5`. A push of
+`feat/verified-release-foundation` to prepare a draft PR was rejected by
+automatic approval review: it classified transferring the full branch to the
+public repository as publication reserved for explicit user approval. No push
+or PR was completed. Do not retry through another tool or route without
+resolving that approval; continue independent local work. A reviewable PR body
+is prepared at `/tmp/autoapprover-release-foundation-pr.md`.
+
 Available native Linux is Ubuntu 26.04, kernel `7.0.0-31-generic`, x86_64;
 installed CLI reports `0.156.0` via an npm shim. The shim is not presently
 admitted as a native executable. No Windows native result has been obtained.
