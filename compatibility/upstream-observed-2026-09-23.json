@@ -1,0 +1,30 @@
+{
+  "assets": [
+    {
+      "browser_download_url": "https://github.com/openai/codex/releases/download/rust-v0.156.0/codex-x86_64-pc-windows-msvc.exe",
+      "digest": "sha256:eabc698ea3b1c430623af0cae510c3459165ed453d2a5d2dac14513cf1b25269",
+      "name": "codex-x86_64-pc-windows-msvc.exe",
+      "size": 323192624
+    },
+    {
+      "browser_download_url": "https://github.com/openai/codex/releases/download/rust-v0.156.0/codex-x86_64-unknown-linux-musl.sigstore",
+      "digest": "sha256:81ddfd7d4015f1657c4c045d943a2236addf2006481ffecc14171d4620916455",
+      "name": "codex-x86_64-unknown-linux-musl.sigstore",
+      "size": 8585
+    },
+    {
+      "browser_download_url": "https://github.com/openai/codex/releases/download/rust-v0.156.0/codex-x86_64-unknown-linux-musl.tar.gz",
+      "digest": "sha256:3d49d9af25a5168cfc51e50e520ab238b23083c259ae7c14f89b007cb2545c7b",
+      "name": "codex-x86_64-unknown-linux-musl.tar.gz",
+      "size": 107345927
+    }
+  ],
+  "draft": false,
+  "html_url": "https://github.com/openai/codex/releases/tag/rust-v0.156.0",
+  "id": 394061815,
+  "kind": "official-release-metadata-not-qualification",
+  "observed_date": "2026-09-23",
+  "prerelease": false,
+  "published_at": "2026-09-22T19:51:01Z",
+  "tag_name": "rust-v0.156.0"
+}

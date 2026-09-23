@@ -1,11 +1,11 @@
 # Production release plan
 
-Status: implementation groundwork, **not production-ready**. Last reviewed 2026-09-23.
+Status: exact-manifest/runtime hardening in progress, **not production-ready**. Last reviewed 2026-09-23.
 The continuation prompt is [production-goal.md](production-goal.md).
 
 ## Decisions and evidence
 
-1. General automatic approval requires an exact reviewed Codex version and OS. The old `automatic` setting now has strict semantics; a capability probe cannot enable a new version. Unsupported installations use ordinary Codex with broker credentials removed. A future supported matrix must also bind architecture, OS build/distro, sandbox implementation, launch surface, protocol, and the actual Codex binary identity.
+1. General automatic approval requires exact equality with `compatibility/manifest.json`, embedded in the executable. The manifest currently has no certified targets. The old `automatic` setting has strict semantics; a capability probe cannot enable a version. Unsupported installations use ordinary Codex with broker credentials removed. Runtime admission now binds architecture, exact OS build/distro, explicit sandbox implementation, foreground launch surface, protocol, tool and native executable digest. Helpers/shims and effective managed-policy behavior still require completion and qualification.
 2. The only historical positive entry is Linux/local CLI/Codex 0.151.0. It is not fresh qualification of this implementation. Windows 0.156.0 is unverified: the user reproduced elevated sandbox runtime validation failing on a 283-character directory path, including without the wrapper; the unelevated `Get-Location` test succeeded. The underlying Windows API error was not captured. Do not describe the root cause as a proven long-path bug or a proven update regression.
 3. Installation preserves sandbox configuration by default. `-WindowsSandbox unelevated` explicitly enables the previously requested workaround and retains it on subsequent default reinstalls. The runtime launcher never edits settings. The new TOML editor handles quoted/dotted keys, inline tables, multiline strings, unrelated arrays, backups and repeated application. Native replacement, ACL and rollback behavior still needs Windows testing.
 4. Updates initiate discovery, candidate testing, repairs and review. They never automatically broaden the allowlist. General code repair cannot be guaranteed by a version bump. A repair agent must work on a candidate branch, have bounded authority, and pass the same evidence gate as a human change.
@@ -24,9 +24,9 @@ The continuation prompt is [production-goal.md](production-goal.md).
 
 ## Implemented in this worktree
 
-- Strict version/OS admission at launch and runtime request handling. Historical `automatic` flags/environment values cannot bypass it.
-- Separate, exact-command-only experimental verifier; no candidate can gain general approval through verifier metadata.
-- Manual fallback removes inherited token, socket, protocol and audit variables.
+- Exact manifest admission at launch and runtime request handling. Historical Linux 0.151.0 authority is removed. Historical `automatic` flags/environment values cannot bypass it. Full tuple equality is enforced by the release gate; source hashing includes the manifest.
+- Separate, exact-command-only experimental verifier; no candidate can gain general approval through verifier metadata. The verifier now consumes at most one allow. Brokers bind the first accepted session, consume each hook process identity once, reject duplicate request content and cap their ledger. The legacy live harness still needs current CLI adaptation.
+- Manual fallback removes inherited token, socket, protocol and audit variables. Native admission hashes and holds the executable; Linux launches via the held descriptor, Windows denies write/delete sharing, and both brokers recheck running-image identity. Probes no longer join descendant-held output pipes; Unix probe groups are cleaned up. Windows descendant cleanup is still pending.
 - Ambiguous version banners rejected; documented nullable descriptions accepted.
 - Explicit Windows TOML configuration command and installer switch; no blanket sandbox downgrade.
 - Six-hour release polling, optional draft PR creation, native-runner synthetic tests and non-live CLI probes. New metadata remains unverified. Existing open/closed candidate PRs are not overwritten.
@@ -37,7 +37,7 @@ The continuation prompt is [production-goal.md](production-goal.md).
 
 | Workstream | Completion evidence |
 | --- | --- |
-| Release identity | Exact supported version/OS/architecture/build/sandbox/surface and signed upstream binary digests; enforce the same manifest in the launcher, broker, installer and release tooling. Eliminate broad OS-family certification and version-output-only trust. |
+| Release identity | Full tuple manifest, executable identity and gate equality implemented; qualify current binaries, bind helper/resource artifacts, complete shim resolution and verify dynamic revocation and effective managed sandbox behavior. The source installer compares its manifest with the installed executable. |
 | Execution health | Native shell and file-edit smoke checks under the selected sandbox before general arming; timeout and readable repair diagnosis. Reproduce Windows failure in an isolated image if possible; cover long paths and capture the native error. |
 | Process boundary | Independent review of descendant forgery, replay/session binding, PID reuse, race conditions, executable replacement, same-user attacker limits, abrupt termination, leaked credentials and concurrent brokers. Never hide an unresolved exploitable false allow. |
 | Protocol coverage | Native positive/negative evidence for every advertised tool. If only Bash is validated, state that clearly; unsupported edit/MCP requests must use normal approval. |
@@ -49,15 +49,13 @@ The continuation prompt is [production-goal.md](production-goal.md).
 
 ## Evidence and release gate
 
-`compatibility/release-policy.json` records intended production readiness separately from historical adapter evidence. Store redacted, native live reports under `compatibility/evidence/`; never store credentials, raw private commands, session secrets or user configuration. The report must include:
+`compatibility/manifest.json` is the single immutable production support manifest (schema 1); it is compiled into the binary and printed by `support-matrix`. `verify-manifest --manifest <path>` verifies installer equality without changing authority. `compatibility/release-policy.json` is schema 2 and intentionally remains `ready: false` with no certifications.
 
-- `schema_version: 1`, `kind: "native-live"`, exact `codex_version`, `os`, `arch`, `os_release`, `sandbox`;
-- `source_sha256` from `python scripts/release_gate.py --print-source-digest`, `codex_binary_sha256`, producer, a different reviewer, `review_decision: "approved"`, and a durable HTTPS `run_url`;
-- every named check in `scripts/release_gate.py:CHECKS`, each with an independently substantiated result, plus artifact references/log hashes in the report.
+Retain native reports and redacted artifacts under `compatibility/evidence/`. Each schema-2 native-live report identifies the complete manifest `target` and `evidence_id`, current source digest, final consumer executable digest, upstream artifact digest, observation timestamp, producer, independent reviewer, approved review and durable HTTPS run URL. Every required check in `scripts/release_gate.py:CHECKS` must reference retained artifacts whose digests verify. Evidence older than 30 days is rejected. The source digest covers the manifest, code, dependencies, tests, installer scripts and workflows; edits invalidate existing reports. Policy references each report by ID, path and SHA-256.
 
-Reference each report and its SHA-256 in the policy. The gate verifies code/evidence integrity, required results and consistency with `support-matrix`; it cannot establish that a human assertion is true. Branch protection, native execution and review supply that trust. Code/dependency/test/workflow changes invalidate the source digest. Evidence from a different release cannot be silently reused.
+The gate compares the **whole** runtime manifest to its source, the **whole** report target to its certificate, and the inspected consumer executable digest to a native report. Duplicate keys/tuples, incomplete targets, revocations, missing retained logs, unsupported tools, stale evidence, self-review and source mismatch fail. The gate cannot establish the truth of a report or supply the independent review; protected branches and actual native execution remain necessary.
 
-The current `support-matrix` reports historical OS-family entries. Before public release, replace this with the fully bound runtime manifest and extend gate equality to every dimension. This is an explicit blocker; the gate is groundwork, not proof of production quality.
+See [hardening validation](validation-2026-09-23-hardening.md) for current check results and the requirement-by-requirement continuation ledger. None of these local synthetic checks qualifies a production target.
 
 ## Repository activation
 

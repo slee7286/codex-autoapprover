@@ -30,27 +30,15 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     let launcher = env::current_exe().context("resolve current launcher executable")?;
     let cwd = env::current_dir().context("read current working directory")?;
     let compatibility_mode = resolve_compatibility_mode(args)?;
-    let request = compatibility::CompatibilityRequest {
-        codex_version: &installation.version,
-        operating_system: compatibility::OperatingSystem::current(),
-        surface: compatibility::Surface::LocalCliLauncher,
-        hook_protocol: arming::PROTOCOL_VERSION,
+    let _compatibility_mode = compatibility_mode;
+    let admission = match crate::admission::Admission::inspect(
+        &installation,
+        args.sandbox_implementation.as_deref(),
+        &args.codex_args,
+    ) {
+        Ok(admission) => admission,
+        Err(error) => return launch_unarmed(&installation, args, &format!("{error:#}")),
     };
-    let eligibility = compatibility::version_eligibility(
-        request,
-        compatibility_mode == CompatibilityMode::Strict,
-    );
-    if !eligibility.is_eligible() {
-        return launch_unarmed(
-            &installation,
-            args,
-            &format!(
-                "{}; compatibility policy is {}",
-                eligibility.status(),
-                compatibility_mode.as_str()
-            ),
-        );
-    }
 
     let capability = codex::detect_hook_capability(&installation, &launcher);
     if !matches!(
@@ -71,31 +59,25 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         );
     }
 
-    let launch_version = match codex::version(&installation.path) {
-        Ok(version) => version,
-        Err(error) => {
-            return launch_unarmed(
-                &installation,
-                args,
-                &format!("Codex version recheck was inconclusive ({error:#})"),
-            );
-        }
-    };
-    if launch_version != installation.version {
+    if let Err(error) = admission.check_execution_health() {
+        return launch_unarmed(&installation, args, &format!("{error:#}"));
+    }
+    if codex::version(&admission.executable.path).ok().as_deref()
+        != Some(installation.version.as_str())
+    {
         return launch_unarmed(
             &installation,
             args,
-            &format!(
-                "Codex version changed between capability check and launch (detected {}, found {})",
-                installation.version, launch_version
-            ),
+            "certified executable version recheck failed",
         );
     }
+    admission.recheck()?;
 
     let session = Session::create()?;
     let broker = Broker::start(
         &session,
         BrokerConfig {
+            admission: Some(admission.clone()),
             codex_version: installation.version.clone(),
             expected_cwd: cwd,
             expected_command: None,
@@ -103,7 +85,8 @@ pub fn run(args: &RunArgs) -> Result<i32> {
             audit_path: None,
         },
     )?;
-    let mut command = codex::build_codex_command(&installation);
+    let mut command = admission.executable.command();
+    admission.configure_child(&mut command)?;
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -116,9 +99,6 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         let cleanup = session.cleanup();
         return Err(with_cleanup_error(error, cleanup));
     }
-    eprintln!(
-        "codex-autoapprover: automatic one-request approvals ARMED for this Codex child; press Ctrl-C to stop"
-    );
     let mut child = match command
         .spawn()
         .with_context(|| format!("launch official Codex at {}", installation.path.display()))
@@ -156,6 +136,12 @@ pub fn run(args: &RunArgs) -> Result<i32> {
             ));
         }
     };
+    if let Err(error) = admission.verify_process(child.id()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = broker.shutdown();
+        return Err(with_cleanup_error(error, session.cleanup()));
+    }
     if let Err(error) = broker.set_codex_identity(identity) {
         let _ = child.kill();
         let _ = child.wait();
@@ -163,6 +149,9 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         let cleanup = session.cleanup();
         return Err(with_cleanup_error(error, cleanup));
     }
+    eprintln!(
+        "codex-autoapprover: automatic one-request approvals ARMED for this certified Codex child; press Ctrl-C to stop"
+    );
     let status = wait_for_bound_child(&mut child, &broker, &interrupted.flag)
         .with_context(|| format!("wait for official Codex at {}", installation.path.display()));
     let broker_result = broker.shutdown();
@@ -223,7 +212,7 @@ pub fn diagnose() -> Result<i32> {
         compatibility::OperatingSystem::current().as_str()
     );
     println!(
-        "surface: {}",
+        "requested surface: {}",
         compatibility::Surface::LocalCliLauncher.as_str()
     );
     println!("hook protocol: {}", arming::PROTOCOL_VERSION);
@@ -233,6 +222,7 @@ pub fn diagnose() -> Result<i32> {
     );
     let configured_mode = resolve_compatibility_mode(&RunArgs {
         compatibility: None,
+        sandbox_implementation: None,
         codex_args: Vec::new(),
     });
     match &configured_mode {
@@ -255,50 +245,25 @@ pub fn diagnose() -> Result<i32> {
                     "recognized stable version"
                 }
             );
-            let request = compatibility::CompatibilityRequest {
-                codex_version: &installation.version,
-                operating_system: compatibility::OperatingSystem::current(),
-                surface: compatibility::Surface::LocalCliLauncher,
-                hook_protocol: arming::PROTOCOL_VERSION,
-            };
-            let strict = configured_mode
-                .as_ref()
-                .is_ok_and(|mode| *mode == CompatibilityMode::Strict);
-            let eligibility = compatibility::version_eligibility(request, strict);
-            println!("version eligibility: {}", eligibility.status());
             println!(
-                "reviewed live-verification status: {}",
-                compatibility::status_for_version(&installation.version)
+                "PermissionRequest compatibility: exact certification required; historical records do not arm"
             );
-            println!(
-                "runtime request schema (Bash): {}",
-                compatibility::runtime_request_schema(
-                    &installation.version,
-                    request.operating_system,
-                    request.surface,
-                    request.hook_protocol,
-                    "Bash"
-                )
-                .as_str()
-            );
-            if eligibility.is_eligible() {
-                let launcher = env::current_exe().context("resolve current launcher executable")?;
-                let capability = codex::detect_hook_capability(&installation, &launcher);
-                println!(
-                    "detected hook/configuration capability: {}",
-                    capability.as_str()
-                );
-                if let Some(reason) = capability.reason() {
-                    println!("capability detail: {reason}");
+            match crate::identity::Executable::open(&installation.path) {
+                Ok(image) => println!("native executable SHA-256: {}", image.sha256),
+                Err(error) => println!("native executable identity: unavailable ({error})"),
+            }
+            match crate::environment::observe() {
+                Ok(host) => {
+                    println!("observed surface: {}", host.surface);
+                    println!("native architecture: {}", host.arch);
+                    println!("exact OS release: {}", host.os_release);
+                    println!("exact OS build: {}", host.os_build);
                 }
-            } else {
-                println!(
-                    "detected hook/configuration capability: not checked (version is not eligible)"
-                );
+                Err(error) => println!("native environment identity: inconclusive ({error})"),
             }
             println!(
-                "PermissionRequest compatibility: {}",
-                compatibility::status_for_version(&installation.version)
+                "certified targets in this build: {}",
+                crate::certification::Manifest::embedded()?.entries.len()
             );
         }
         Err(error) => {
@@ -313,17 +278,9 @@ pub fn diagnose() -> Result<i32> {
 
 pub fn print_hook_config() -> Result<i32> {
     let installation = codex::inspect()?;
-    if !compatibility::verified_hook_support_for(
-        &installation.version,
-        compatibility::OperatingSystem::current(),
-        compatibility::Surface::LocalCliLauncher,
-        arming::PROTOCOL_VERSION,
-    ) {
-        bail!(
-            "Codex {} has no locally verified PermissionRequest compatibility; refusing to print a support configuration",
-            installation.version
-        )
-    }
+    crate::admission::Admission::inspect(&installation, None, &[]).context(
+        "no locally verified PermissionRequest compatibility; use a certified run instead",
+    )?;
 
     let launcher = env::current_exe().context("resolve current launcher executable")?;
     print!("{}", codex::hook_config_snippet(&launcher));
@@ -342,6 +299,9 @@ pub fn verify_local_hook() -> Result<i32> {
     }
     if !io::stdin().is_terminal() {
         bail!("verify-local-hook requires an interactive terminal; no live test was started")
+    }
+    if crate::environment::surface()? != "native-cli" {
+        bail!("verify-local-hook requires an identifiable native foreground CLI environment")
     }
 
     let installation = codex::inspect()?;
@@ -404,6 +364,7 @@ pub fn verify_local_hook() -> Result<i32> {
     let broker = match Broker::start(
         &session,
         BrokerConfig {
+            admission: None,
             codex_version: expected_version.clone(),
             expected_cwd: repo_path.clone(),
             expected_command: Some(verification_target.command.into()),

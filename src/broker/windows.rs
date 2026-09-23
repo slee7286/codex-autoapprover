@@ -51,6 +51,7 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct BrokerConfig {
+    pub admission: Option<crate::admission::Admission>,
     pub codex_version: String,
     pub expected_cwd: PathBuf,
     pub expected_command: Option<String>,
@@ -95,6 +96,7 @@ impl Session {
 }
 
 struct SharedState {
+    ledger: std::sync::Mutex<crate::broker::RequestLedger>,
     expected: RwLock<Option<ProcessIdentity>>,
     shutdown: AtomicBool,
     active_connections: AtomicUsize,
@@ -120,6 +122,7 @@ impl Broker {
         }
 
         let shared = Arc::new(SharedState {
+            ledger: std::sync::Mutex::new(crate::broker::RequestLedger::default()),
             expected: RwLock::new(None),
             shutdown: AtomicBool::new(false),
             active_connections: AtomicUsize::new(0),
@@ -387,8 +390,19 @@ fn verify_request(
     {
         return false;
     }
+    if let Some(admission) = &shared.config.admission {
+        if admission.verify_process(expected.pid).is_err() {
+            return false;
+        }
+    } else if shared.config.expected_command.as_deref()
+        != Some(crate::compatibility::verification_probe_command())
+        || shared.config.expected_tool_name.as_deref() != Some("Bash")
+    {
+        return false;
+    }
     let expected_cwd = shared.config.expected_cwd.to_string_lossy();
     let context = DecisionContext {
+        certified_target: shared.config.admission.as_ref().map(|a| &a.target),
         codex_version: &shared.config.codex_version,
         expected_cwd: expected_cwd.as_ref(),
         expected_command: shared.config.expected_command.as_deref(),
@@ -397,8 +411,23 @@ fn verify_request(
     matches!(
         decision::decide(&request.hook_input, context),
         Decision::Allow
-    ) && !shared.shutdown.load(Ordering::Acquire)
+    ) && shared
+        .config
+        .admission
+        .as_ref()
+        .is_none_or(|a| a.verify_process(expected.pid).is_ok())
+        && !shared.shutdown.load(Ordering::Acquire)
         && validate_peer(reader, peer_pid, expected)
+        && reader.read_process(peer_pid).ok().is_some_and(|peer| {
+            shared.ledger.lock().ok().is_some_and(|mut ledger| {
+                ledger.consume(
+                    &request.hook_input,
+                    peer.identity.pid,
+                    peer.identity.creation_time,
+                    shared.config.admission.is_none(),
+                )
+            })
+        })
 }
 
 fn validate_peer(reader: &impl ProcessReader, peer_pid: u32, expected: ProcessIdentity) -> bool {
@@ -986,6 +1015,7 @@ mod tests {
         let broker = Broker::start(
             &session,
             BrokerConfig {
+                admission: None,
                 codex_version: "0.152.1".into(),
                 expected_cwd: std::env::current_dir().expect("cwd"),
                 expected_command: None,

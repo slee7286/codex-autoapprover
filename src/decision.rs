@@ -1,4 +1,4 @@
-use crate::{arming, protocol::HookInput};
+use crate::protocol::HookInput;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -18,6 +18,7 @@ pub enum DeclineReason {
 
 #[derive(Clone, Copy)]
 pub struct DecisionContext<'a> {
+    pub certified_target: Option<&'a crate::certification::Target>,
     pub codex_version: &'a str,
     pub expected_cwd: &'a str,
     pub expected_command: Option<&'a str>,
@@ -44,31 +45,25 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         return Decision::Decline(DeclineReason::UnsupportedToolType);
     }
 
-    let schema = if context.expected_command
+    let tool = input.tool_name.as_deref().unwrap_or_default();
+    if tool != "Bash" {
+        return Decision::Decline(DeclineReason::UnsupportedToolType);
+    }
+    let verification = context.expected_command
         == Some(crate::compatibility::verification_probe_command())
-        && context.expected_tool_name == Some("Bash")
-    {
-        crate::compatibility::verification_request_schema
+        && context.expected_tool_name == Some("Bash");
+    let admitted = if verification {
+        crate::compatibility::verification_schema(context.codex_version, tool)
     } else {
-        crate::compatibility::runtime_request_schema
+        context.certified_target.is_some_and(|target| {
+            target.codex_version == context.codex_version
+                && target.tool == tool
+                && crate::certification::Manifest::embedded()
+                    .is_ok_and(|manifest| manifest.admits(target))
+        })
     };
-    match schema(
-        context.codex_version,
-        crate::compatibility::OperatingSystem::current(),
-        crate::compatibility::Surface::LocalCliLauncher,
-        arming::PROTOCOL_VERSION,
-        input.tool_name.as_deref().unwrap_or_default(),
-    ) {
-        crate::compatibility::RuntimeSchemaStatus::Supported => {}
-        crate::compatibility::RuntimeSchemaStatus::UnsupportedTool => {
-            return Decision::Decline(DeclineReason::UnsupportedToolType);
-        }
-        crate::compatibility::RuntimeSchemaStatus::UnsupportedPlatform
-        | crate::compatibility::RuntimeSchemaStatus::UnsupportedSurface
-        | crate::compatibility::RuntimeSchemaStatus::UnsupportedProtocol
-        | crate::compatibility::RuntimeSchemaStatus::UnsupportedVersion => {
-            return Decision::Decline(DeclineReason::UnsupportedCodexCompatibility);
-        }
+    if !admitted {
+        return Decision::Decline(DeclineReason::UnsupportedCodexCompatibility);
     }
 
     let Some(tool_input) = input
@@ -114,7 +109,7 @@ mod tests {
             br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"true"}}"#,
         )
         .map(|mut value| {
-            if cfg!(windows) { value.tool_input = Some(serde_json::json!({"command": crate::compatibility::verification_probe_command()})); }
+            { value.tool_input = Some(serde_json::json!({"command": crate::compatibility::verification_probe_command()})); }
             value
         })
         .expect("valid fixture")
@@ -122,14 +117,11 @@ mod tests {
 
     fn context() -> DecisionContext<'static> {
         DecisionContext {
+            certified_target: None,
             codex_version: if cfg!(windows) { "0.152.1" } else { "0.151.0" },
             expected_cwd: "/tmp/work",
-            expected_command: if cfg!(windows) {
-                Some(crate::compatibility::verification_probe_command())
-            } else {
-                None
-            },
-            expected_tool_name: if cfg!(windows) { Some("Bash") } else { None },
+            expected_command: Some(crate::compatibility::verification_probe_command()),
+            expected_tool_name: Some("Bash"),
         }
     }
 
@@ -139,10 +131,10 @@ mod tests {
         assert_eq!(decide(&input(), context()), Decision::Allow);
     }
 
-    #[cfg(windows)]
     #[test]
     fn runtime_decision_rejects_a_candidate_even_with_a_bound_session() {
         let context = DecisionContext {
+            certified_target: None,
             codex_version: "0.152.1",
             expected_cwd: "/tmp/work",
             expected_command: None,
@@ -185,11 +177,7 @@ mod tests {
         }));
         assert_eq!(
             decide(&optional, context()),
-            if cfg!(windows) {
-                Decision::Decline(DeclineReason::UnexpectedVerificationAction)
-            } else {
-                Decision::Allow
-            }
+            Decision::Decline(DeclineReason::UnexpectedVerificationAction)
         );
 
         let mut unknown = input();

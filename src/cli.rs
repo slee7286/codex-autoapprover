@@ -19,8 +19,13 @@ pub struct Cli {
 pub enum Command {
     /// Run the existing official Codex executable.
     Run(RunArgs),
-    /// Print historical reviewed tuples as JSON (not a production certification).
+    /// Print the embedded exact compatibility manifest as JSON.
     SupportMatrix,
+    /// Verify an installer's manifest exactly equals the immutable embedded manifest.
+    VerifyManifest {
+        #[arg(long)]
+        manifest: std::path::PathBuf,
+    },
     /// Explicitly change Windows sandbox configuration with a backup.
     ConfigureWindowsSandbox {
         #[arg(long)]
@@ -41,6 +46,9 @@ pub enum Command {
 #[derive(Debug, Args)]
 #[command(trailing_var_arg = true)]
 pub struct RunArgs {
+    /// Explicit sandbox selection for a certified foreground launch; otherwise use ordinary Codex.
+    #[arg(long, value_parser = ["linux-bwrap", "linux-landlock", "windows-elevated", "windows-unelevated"])]
+    pub sandbox_implementation: Option<String>,
     /// Only reviewed exact tuples may arm. The legacy automatic value is an alias for strict.
     #[arg(long, value_enum)]
     pub compatibility: Option<CompatibilityMode>,

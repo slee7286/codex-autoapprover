@@ -6,7 +6,7 @@ This document describes the authoritative implementation direction. The former P
 
 The launcher should preserve ordinary Codex by executing the user's existing official CLI as a normal child process. Codex remains responsible for its TUI, authentication, configuration, sessions, model selection, sandbox, plugins, and exit behavior. Automatic approval is a narrow, explicit `PermissionRequest` hook response, not terminal input automation.
 
-The authoritative path uses structured hooks. General arming requires an exact reviewed registry entry plus a non-live capability check and a version recheck. Strict is the only production policy; legacy automatic options are strict aliases. Adapter baselines are used only by the exact-command experimental verifier, which never promotes entries.
+The authoritative path uses structured hooks. General arming requires an exact embedded manifest entry, native executable and host identity, an explicit sandbox selection, a shell/file health check and running-image verification. The shipped manifest is empty. Strict is the only production policy; legacy automatic options are strict aliases. Adapter baselines are used only by the exact-command experimental verifier, which never promotes entries.
 
 The repository is pre-alpha. Linux/local CLI/Codex 0.151.0 has historical positive evidence; no current public release is qualified. Windows 0.156.0 remains unverified. The production plan defines the additional machine/binary identity, native evidence and packaging requirements. No persistent approval hook is installed.
 
@@ -14,7 +14,7 @@ The repository is pre-alpha. Linux/local CLI/Codex 0.151.0 has historical positi
 
 - **CLI parser:** separates launcher subcommands and the `--`-delimited Codex argument vector.
 - **Official Codex resolver:** resolves `codex`, canonicalizes it for recursive self-resolution checks, and queries `--version`.
-- **Compatibility policy and registry:** separates exact review status from stable-version eligibility, platform adapter baselines, explicit exclusions, and local-surface metadata.
+- **Certification manifest and admission:** `certification.rs`, `admission.rs`, `environment.rs` and `identity.rs` compare the complete target, hash and hold native executable identity, classify hosted environments and revalidate the running image. `compatibility.rs` holds only non-promoting experimental verifier metadata.
 - **Session/broker:** creates a unique private runtime directory and Unix socket, retains a random secret, and owns the final decision.
 - **Local verification gate:** resolves one eligible installed target, requires an interactive exact confirmation phrase, a temporary Git repository, and a child-only hook override.
 - **Child-process launcher:** starts Codex with inherited stdin, stdout, stderr, environment, working directory, and user arguments.
@@ -84,7 +84,7 @@ Request flow:
 
 1. The user starts `run` and explicitly chooses to use this launcher, or starts the separate `verify-local-hook` experiment.
 2. The resolver finds the official executable and reads its version.
-3. The compatibility policy classifies the tuple as verified, experimental, or unarmed. Experimental automatic approval is considered only for a stable three-component version at or above the native platform adapter baseline. A bounded child-local configuration/help and feature probe must expose the required hook configuration capability. An inconclusive or unsupported probe leaves the child unarmed. Strict mode requires an exact verified registry tuple. The verifier resolves one target and never edits the registry automatically.
+3. Production admission compares the complete observed target with the immutable manifest. Capability discovery cannot add authority. A sandbox shell/file probe must pass before a certified child is launched; every uncertified or inconclusive target follows the ordinary Codex path with broker credentials removed.
 4. The launcher creates a unique private runtime directory and socket, starts the listener, then launches the exact Codex child with only the socket location, protocol marker, and secret needed by the hook.
 5. The launcher records the child's exact `(PID, start time, effective UID)` before the broker can authorize.
 6. Codex synchronously starts the configured `PermissionRequest` hook before surfacing its normal prompt.
@@ -98,9 +98,9 @@ Request flow:
 stateDiagram-v2
     [*] --> Disarmed
     Disarmed --> Resolving: run requested
-    Resolving --> CapabilityCheck: eligible stable version
+    Resolving --> CapabilityCheck: full manifest match
     Resolving --> Disarmed: unknown, unsupported, or strict-unreviewed version
-    CapabilityCheck --> Armed: capability supported + broker created
+    CapabilityCheck --> Armed: execution health + exact running image + broker binding
     CapabilityCheck --> Disarmed: capability unsupported or inconclusive
     Armed --> HookInvoked: PermissionRequest starts
     HookInvoked --> Allowed: broker identity + policy checks
@@ -125,7 +125,7 @@ The broker accepts at most 16 active connections, handles each connection in a b
 
 The observed `Bash` constraint is part of the compatibility tuple: other tool types receive no decision until independently verified.
 
-The implementation deliberately keeps five facts distinct: version/platform eligibility to attempt; detected hook/configuration capability; supported runtime request schema; reviewed live-verification status; and active session arming. A newer version can be eligible and capability-probe-positive while remaining experimental. Runtime protocol validation is necessary for fail-closed behavior but does not make arbitrary automatically approved commands safe.
+The implementation deliberately keeps five facts distinct: version/platform eligibility to attempt; detected hook/configuration capability; supported runtime request schema; reviewed live-verification status; and active session arming. A newer version can be probed by the isolated verifier while remaining entirely unarmed in production. Runtime protocol validation is necessary for fail-closed behavior but does not make arbitrary automatically approved commands safe.
 
 The Linux broker uses `$XDG_RUNTIME_DIR` only when it is a non-symlink directory owned by the effective user with mode 0700 and usable for a socket; otherwise a unique 0700 fallback directory is created. Socket paths are unique, checked before bind, set to mode 0600, and validated as owned sockets. Native Windows uses an equivalent launcher-owned named pipe with remote-client rejection, a current-user DACL, process identity/SID/ancestry checks, bounded framed I/O, and deadline-aware response delivery. The Windows listener uses event-backed overlapped accept/read/write operations and cancellation so shutdown does not depend on a client connection.
 

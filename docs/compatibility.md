@@ -1,10 +1,10 @@
 # Compatibility and certification
 
-Normal automatic approval requires an exact reviewed Codex version/OS tuple. `automatic` is now a legacy alias for `strict`; neither an environment variable nor a passing help/configuration probe can enable an unknown release. The broker independently rejects unreviewed versions.
+Normal automatic approval requires exact equality with a certificate in `compatibility/manifest.json`. **The current embedded manifest has no certificates.** The tuple includes version, OS, architecture, exact distro/release and build, sandbox implementation, foreground CLI surface, protocol, tool and executable SHA-256. `automatic` is now a legacy alias for `strict`; neither an environment variable nor a passing help/configuration probe can enable an unknown release. The broker independently rechecks admission and the actual running image before allowing a production request.
 
 | Target | Evidence | Normal run |
 | --- | --- | --- |
-| Linux / local CLI / Codex 0.151.0 | Historical reviewed isolated hook test recorded from commit 4206097 | Eligible under the historical registry; current release still needs fresh production qualification |
+| Linux / local CLI / Codex 0.151.0 | Historical reviewed isolated hook test recorded from commit 4206097 | Unarmed; historical entry removed from production authority |
 | Linux / Codex 0.153.0 and 0.153.4 | Inspected/requested, no retained independent live evidence | Unarmed |
 | Windows / Codex 0.152.1 and 0.154.0 | Candidate implementation and synthetic tests | Unarmed |
 | Windows / Codex 0.156.0 | User-reported elevated sandbox setup failure and successful unelevated Get-Location | Unarmed; no live approval-hook certification |
@@ -14,6 +14,10 @@ Historical Ubuntu Expect/option-1 evidence is not a stable interface or hook cer
 
 `verify-local-hook` is an interactive experiment with a temporary repository. Only its broker can use the candidate schema path, and only for the fixed `Bash` curl probe. It never edits the allowlist. Zero permission events, dirty state, multiple allows, command mismatch, errors or incomplete cleanup are inconclusive/failing evidence.
 
-Before public release, bind the manifest and runtime to exact OS build/distro, architecture, sandbox, local surface, schema and executable identity. Broad OS-family matching and version-string trust alone are insufficient. Enforce unsupported-environment detection; a supplied enum value is not host attestation. See [production plan](production-plan.md) for native acceptance criteria and required evidence.
+The current release gate compares the entire embedded manifest to the source manifest and each complete target to retained native evidence. The launcher hashes native executable bytes, holds file identity, launches the held inode on Linux, denies Windows write/delete sharing, and checks the running process image before decisions. Linux distro bytes and kernel build are bound; Windows uses the native OS version and update build revision. Known hosted/IDE/WSL/container surfaces and inconclusive host reads are unarmed. These mechanisms still require independent review and native qualification; npm/shim resolution, helper/resource identity, managed-policy precedence and broader argument/profile coverage remain open. See [production plan](production-plan.md) for native acceptance criteria and required evidence.
 
 [Release discovery](../scripts/watch_codex.py) stores unverified candidates separately. Discovery, candidate probes, code repair and certification are separate steps. No upstream announcement or automated code change can self-certify a release.
+
+## Evidence schema
+
+The manifest is schema 1; release policy and native reports are schema 2. Policy references `{evidence_id, evidence, sha256}`; each report embeds the exact `target`, source digest (including the manifest), consumer executable digest, upstream artifact digest, producer/reviewer identities, approved review, UTC observation time and HTTPS run URL. Each required check references retained redacted artifacts under `compatibility/evidence/`, whose hashes the gate verifies. Evidence must be no more than 30 days old at qualification. Any source or manifest change requires a fresh report. See `scripts/release_gate.py:CHECKS` for the required results. Structural validation cannot establish truth or replace independent review.

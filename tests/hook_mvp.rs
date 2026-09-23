@@ -194,7 +194,7 @@ fn production_configuration_is_refused_for_an_unverified_local_version() {
 
 #[cfg(unix)]
 #[test]
-fn print_hook_config_succeeds_for_verified_linux_cli_without_writing_home_config() {
+fn historical_linux_version_banner_cannot_print_a_production_hook() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temporary directory");
@@ -210,15 +210,14 @@ fn print_hook_config_succeeds_for_verified_linux_cli_without_writing_home_config
         .env("HOME", &home)
         .args(["print-hook-config"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("[[hooks.PermissionRequest]]"))
-        .stdout(predicate::str::contains("type = \"command\""));
+        .failure()
+        .stdout(predicate::str::is_empty());
     assert!(!home.join(".codex/config.toml").exists());
 }
 
 #[cfg(unix)]
 #[test]
-fn production_run_arms_only_after_exact_compatibility_succeeds() {
+fn spoofed_historical_version_remains_unarmed_and_preserves_arguments() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temporary directory");
@@ -243,10 +242,10 @@ fn production_run_arms_only_after_exact_compatibility_succeeds() {
         .args(["run", "--", "exec", "--model", "synthetic"])
         .assert()
         .code(17)
-        .stdout(predicate::str::contains("armed=yes\n"))
-        .stdout(predicate::str::contains("socket=yes\n"))
-        .stdout(predicate::str::contains("{\"hookSpecificOutput\":{"))
-        .stdout(predicate::str::contains("args=-c|hooks.PermissionRequest="));
+        .stdout(predicate::str::contains("armed=\n"))
+        .stdout(predicate::str::contains("socket=\n"))
+        .stdout(predicate::str::contains("{\"hookSpecificOutput\":{").not())
+        .stdout(predicate::str::contains("args=exec|--model|synthetic"));
     assert!(!home.join(".codex/config.toml").exists());
 }
 
@@ -544,7 +543,7 @@ fn windows_candidate_diagnose_and_print_config_gate_are_preserved() {
         .success()
         .stdout(predicate::str::contains("platform: windows"))
         .stdout(predicate::str::contains("installed Codex version: 0.152.1"))
-        .stdout(predicate::str::contains("candidate/unverified"))
+        .stdout(predicate::str::contains("exact certification required"))
         .stdout(predicate::str::contains("current process armed: no"));
     Command::cargo_bin("codex-autoapprover")
         .expect("binary built")

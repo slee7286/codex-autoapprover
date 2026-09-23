@@ -157,6 +157,7 @@ fn remove_socket_safely(path: &Path) -> Result<()> {
 
 #[derive(Debug, Clone)]
 pub struct BrokerConfig {
+    pub admission: Option<crate::admission::Admission>,
     pub codex_version: String,
     pub expected_cwd: PathBuf,
     pub expected_command: Option<String>,
@@ -165,6 +166,7 @@ pub struct BrokerConfig {
 }
 
 struct SharedState {
+    ledger: std::sync::Mutex<crate::broker::RequestLedger>,
     expected: RwLock<Option<ProcessIdentity>>,
     shutdown: AtomicBool,
     active_connections: AtomicUsize,
@@ -197,6 +199,7 @@ impl Broker {
         }
 
         let shared = Arc::new(SharedState {
+            ledger: std::sync::Mutex::new(crate::broker::RequestLedger::default()),
             expected: RwLock::new(None),
             shutdown: AtomicBool::new(false),
             active_connections: AtomicUsize::new(0),
@@ -394,8 +397,19 @@ fn verify_request(
     {
         return false;
     }
+    if let Some(admission) = &shared.config.admission {
+        if admission.verify_process(expected.pid).is_err() {
+            return false;
+        }
+    } else if shared.config.expected_command.as_deref()
+        != Some(crate::compatibility::verification_probe_command())
+        || shared.config.expected_tool_name.as_deref() != Some("Bash")
+    {
+        return false;
+    }
     let expected_cwd = shared.config.expected_cwd.to_string_lossy();
     let context = DecisionContext {
+        certified_target: shared.config.admission.as_ref().map(|a| &a.target),
         codex_version: &shared.config.codex_version,
         expected_cwd: expected_cwd.as_ref(),
         expected_command: shared.config.expected_command.as_deref(),
@@ -404,8 +418,26 @@ fn verify_request(
     matches!(
         decision::decide(&request.hook_input, context),
         Decision::Allow
-    ) && !shared.shutdown.load(Ordering::Acquire)
+    ) && shared
+        .config
+        .admission
+        .as_ref()
+        .is_none_or(|a| a.verify_process(expected.pid).is_ok())
+        && !shared.shutdown.load(Ordering::Acquire)
         && validate_peer(reader, credentials.pid, expected, effective_uid)
+        && reader
+            .read_process(credentials.pid)
+            .ok()
+            .is_some_and(|peer| {
+                shared.ledger.lock().ok().is_some_and(|mut ledger| {
+                    ledger.consume(
+                        &request.hook_input,
+                        peer.identity.pid,
+                        peer.identity.start_time,
+                        shared.config.admission.is_none(),
+                    )
+                })
+            })
 }
 
 #[derive(Debug, Deserialize)]
@@ -647,7 +679,7 @@ mod tests {
                     "cwd":"/tmp/work",
                     "hook_event_name":"PermissionRequest",
                     "tool_name":"Bash",
-                    "tool_input":{"command":"printf synthetic"}
+                    "tool_input":{"command":"curl -I https://example.com"}
                 }
             }))
             .unwrap(),
@@ -657,14 +689,16 @@ mod tests {
 
     fn shared(secret: &str, expected: process::ProcessIdentity) -> SharedState {
         SharedState {
+            ledger: std::sync::Mutex::new(crate::broker::RequestLedger::default()),
             expected: RwLock::new(Some(expected)),
             shutdown: AtomicBool::new(false),
             active_connections: AtomicUsize::new(0),
             config: BrokerConfig {
+                admission: None,
                 codex_version: "0.151.0".into(),
                 expected_cwd: "/tmp/work".into(),
-                expected_command: None,
-                expected_tool_name: None,
+                expected_command: Some(crate::compatibility::verification_probe_command().into()),
+                expected_tool_name: Some("Bash".into()),
                 audit_path: None,
             },
             session_secret: secret.into(),
@@ -835,7 +869,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn live_broker_handles_sequential_and_concurrent_requests() {
+    fn live_verifier_broker_allows_once_and_rejects_sequential_and_concurrent_replay() {
         use std::sync::{Mutex, OnceLock};
 
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -845,10 +879,11 @@ mod tests {
         let broker = Broker::start(
             &session,
             BrokerConfig {
+                admission: None,
                 codex_version: "0.151.0".into(),
                 expected_cwd: cwd.clone(),
-                expected_command: None,
-                expected_tool_name: None,
+                expected_command: Some(crate::compatibility::verification_probe_command().into()),
+                expected_tool_name: Some("Bash".into()),
                 audit_path: None,
             },
         )
@@ -867,7 +902,7 @@ mod tests {
         }
         let input = protocol::parse(
             format!(
-                r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"printf synthetic"}}}}"#,
+                r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"curl -I https://example.com"}}}}"#,
                 cwd.display()
             )
             .as_bytes(),
@@ -878,7 +913,7 @@ mod tests {
             .map(|_| {
                 let input = protocol::parse(
                     format!(
-                        r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"printf synthetic"}}}}"#,
+                        r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"curl -I https://example.com"}}}}"#,
                         cwd.display()
                     )
                     .as_bytes(),
@@ -887,7 +922,7 @@ mod tests {
                 thread::spawn(move || request(&input).unwrap())
             })
             .collect();
-        assert!(threads.into_iter().all(|thread| thread.join().unwrap()));
+        assert!(threads.into_iter().all(|thread| !thread.join().unwrap()));
         unsafe { env::set_var(arming::SESSION_TOKEN_ENV, "b".repeat(64)) };
         assert!(!request(&input).unwrap());
         unsafe {

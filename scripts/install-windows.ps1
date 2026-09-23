@@ -23,6 +23,8 @@ param(
         if ($LASTEXITCODE -ne 0) { throw 'Installation failed; Codex configuration was not changed.' }
         $cargoRoot = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
         $BinaryPath = Join-Path $cargoRoot 'bin\codex-autoapprover.exe'
+        & $BinaryPath verify-manifest --manifest (Join-Path $repo 'compatibility\manifest.json')
+        if ($LASTEXITCODE -ne 0) { throw 'Installed binary and source compatibility manifests differ; configuration was not changed.' }
     }
     if ($WindowsSandbox -ne 'preserve') {
         if (-not $BinaryPath) { $BinaryPath = (Get-Command codex-autoapprover -CommandType Application -ErrorAction Stop).Source }
@@ -31,5 +33,5 @@ param(
     } else {
         Write-Host 'Codex sandbox configuration preserved. Use -WindowsSandbox unelevated only to opt into the weaker Windows fallback.'
     }
-    Write-Host 'Automatic approvals require an exact reviewed Codex version and OS. Windows 0.156.0 is not verified.'
+    Write-Host 'Automatic approvals require the complete certified executable/host/sandbox/protocol tuple. No current target is production-qualified; Windows 0.156.0 remains unverified.'
 }

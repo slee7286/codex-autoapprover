@@ -276,55 +276,71 @@ pub fn detect_hook_capability(installation: &Installation, launcher: &Path) -> H
     HookCapability::SupportedByConfigurationProbe
 }
 
-fn bounded_output(mut command: Command) -> Result<Output> {
-    // Discovery/probes must not inherit another launcher's live authority.
+pub(crate) fn bounded_output(command: Command) -> Result<Output> {
+    bounded_output_with_timeout(command, CAPABILITY_TIMEOUT)
+}
+
+fn bounded_output_with_timeout(mut command: Command, timeout: Duration) -> Result<Output> {
+    // Anonymous files avoid reader threads blocked by descendant-held pipes.
+    // Output is never put into a log and cannot include inherited broker authority.
+    use std::io::{Seek, SeekFrom};
+    let mut stdout = tempfile::tempfile().context("create private probe stdout")?;
+    let mut stderr = tempfile::tempfile().context("create private probe stderr")?;
+    command
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?);
     crate::arming::disarm_child(&mut command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut child = command.spawn().context("spawn Codex capability probe")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("capture Codex capability probe stdout")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("capture Codex capability probe stderr")?;
-    let stdout_thread = thread::spawn(move || read_probe_output(stdout));
-    let stderr_thread = thread::spawn(move || read_probe_output(stderr));
-    let deadline = Instant::now() + CAPABILITY_TIMEOUT;
-    let mut timed_out = false;
-    let status = loop {
+    let deadline = Instant::now() + timeout;
+    let result = loop {
+        let size = stdout.metadata().and_then(|out| {
+            stderr
+                .metadata()
+                .map(|err| out.len().saturating_add(err.len()))
+        });
+        match size {
+            Ok(length) if length > CAPABILITY_OUTPUT_LIMIT as u64 => {
+                break Err(anyhow::anyhow!(
+                    "Codex capability probe output was too large"
+                ));
+            }
+            Err(error) => break Err(error.into()),
+            _ => {}
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() >= deadline => {
-                timed_out = true;
-                let _ = child.kill();
-                break child
-                    .wait()
-                    .context("reap timed-out Codex capability probe");
+                break Err(anyhow::anyhow!("Codex capability probe timed out"));
             }
-            Ok(None) => {}
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(anyhow::Error::new(error).context("poll Codex capability probe"));
-            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(error) => break Err(error.into()),
         }
-        thread::sleep(Duration::from_millis(10));
     };
-    let stdout = stdout_thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("Codex capability probe stdout reader failed"))??;
-    let stderr = stderr_thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("Codex capability probe stderr reader failed"))??;
-    if timed_out {
-        bail!("Codex capability probe timed out")
+    // Kill only this probe's isolated group, including descendants whose parent
+    // exited successfully while retaining output handles.
+    #[cfg(unix)]
+    if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
-    Ok(Output {
-        status: status?,
-        stdout,
-        stderr,
-    })
+    let _ = child.kill();
+    let _ = child.wait();
+    let status = result?;
+    stdout.seek(SeekFrom::Start(0))?;
+    stderr.seek(SeekFrom::Start(0))?;
+    let output = Output {
+        status,
+        stdout: read_probe_output(stdout)?,
+        stderr: read_probe_output(stderr)?,
+    };
+    if output_size(&output) > CAPABILITY_OUTPUT_LIMIT {
+        bail!("Codex capability probe output was too large")
+    }
+    Ok(output)
 }
 
 fn read_probe_output(stream: impl Read) -> Result<Vec<u8>> {
@@ -465,6 +481,30 @@ fn format_status(status: ExitStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn descendant_output_handles_do_not_defeat_the_probe_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 60 & printf 'codex-cli 0.156.0\\n'"]);
+        let started = Instant::now();
+        let output = bounded_output_with_timeout(command, Duration::from_millis(300)).unwrap();
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hung_and_oversized_probes_are_bounded() {
+        let mut hung = Command::new("sh");
+        hung.args(["-c", "sleep 60"]);
+        let started = Instant::now();
+        assert!(bounded_output_with_timeout(hung, Duration::from_millis(100)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let mut noisy = Command::new("sh");
+        noisy.args(["-c", "head -c 100000 /dev/zero"]);
+        assert!(bounded_output_with_timeout(noisy, Duration::from_secs(2)).is_err());
+    }
 
     #[test]
     fn parses_local_version_shape() {
