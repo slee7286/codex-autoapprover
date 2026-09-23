@@ -9,6 +9,10 @@ on:
         description: Retry one bounded repair for an existing unverified candidate after a failed check
         type: boolean
         default: false
+      candidate_version:
+        description: Exact Codex version to retry when repair_existing is true
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -39,9 +43,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPAIR_EXISTING: ${{ inputs.repair_existing }}
+          CANDIDATE_VERSION_INPUT: ${{ inputs.candidate_version }}
         run: |
           if [ "$REPAIR_EXISTING" = 'true' ]; then
-            python scripts/watch_codex.py --create-pr --require-branch
+            if ! [[ "$CANDIDATE_VERSION_INPUT" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo 'repair_existing requires an exact candidate_version' >&2
+              exit 1
+            fi
+            python scripts/watch_codex.py --create-pr --require-branch --version "$CANDIDATE_VERSION_INPUT"
           else
             python scripts/watch_codex.py --create-pr
           fi
@@ -79,7 +88,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python trusted/scripts/watch_codex.py --output candidate-runner.json
+        run: python trusted/scripts/watch_codex.py --version "$env:CANDIDATE_VERSION" --output candidate-runner.json
       - name: Verify native release asset digest
         shell: pwsh
         run: python trusted/scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json
@@ -310,7 +319,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python trusted/scripts/watch_codex.py --output candidate-runner.json
+        run: python trusted/scripts/watch_codex.py --version "$env:CANDIDATE_VERSION" --output candidate-runner.json
       - name: Verify candidate metadata and native asset after repair
         shell: pwsh
         run: python trusted/scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json

@@ -146,6 +146,27 @@ def fetch_latest_release(open_url=None):
     return release
 
 
+def fetch_tagged_release(version, open_url=None):
+    """Refresh one candidate by its exact official release tag."""
+    version_key(version)
+    tag = f"rust-v{version}"
+    url = f"{UPSTREAM}/tags/{tag}"
+    open_url = open_url or urllib.request.build_opener(NoApiRedirect()).open
+    request = urllib.request.Request(url, headers=api_headers())
+    with open_url(request, timeout=30) as response:
+        if response.geturl() != request.full_url:
+            raise ValueError("unexpected tagged release API redirect")
+        body = response.read(LIMIT + 1)
+    if len(body) > LIMIT:
+        raise ValueError("tagged release API response exceeded limit")
+    release = json.loads(body, object_pairs_hook=strict_json_object)
+    if not isinstance(release, dict) or release.get("tag_name") != tag:
+        raise ValueError("tagged release API returned an unexpected response")
+    # Also reject a tag that has become a draft, prerelease or incomplete release.
+    candidate_from_releases([release])
+    return release
+
+
 def fetch_releases(open_url=None, stop_tag=None):
     """Audit a bounded window or stop at the previously recorded stable tag."""
     if stop_tag is not None:
@@ -180,8 +201,8 @@ def fetch_releases(open_url=None, stop_tag=None):
     raise ValueError("release API pagination limit reached; refusing a truncated candidate window")
 
 
-def verify_release_gap(previous, candidate, recent):
-    """Do not silently skip stable releases that appeared since the last poll."""
+def verified_release_backlog(previous, candidate, recent):
+    """Verify the baseline and return every newer stable candidate, oldest first."""
     old_version = previous["codex_version"]
     version_key(old_version)
     old_tag = f"rust-v{old_version}"
@@ -208,10 +229,9 @@ def verify_release_gap(previous, candidate, recent):
             raise ValueError("previous legacy candidate metadata changed")
     else:
         raise ValueError("unsupported previous candidate schema")
-    selected = candidate_from_releases(recent)
-    if selected != candidate:
-        raise ValueError("latest release and recent release listing disagree")
-    newer = set()
+    # The /latest pointer is based on commit creation time, so it need not be
+    # the greatest numeric version. Require its exact identity in the listing.
+    stable = {}
     for item in recent:
         if not isinstance(item, dict):
             raise ValueError("invalid release record")
@@ -219,10 +239,16 @@ def verify_release_gap(previous, candidate, recent):
             continue
         tag = item.get("tag_name")
         if isinstance(tag, str) and tag.startswith("rust-v") and VERSION.fullmatch(tag[6:]):
-            if version_key(tag[6:]) > version_key(old_version):
-                newer.add(tag)
-    if newer != {candidate["upstream_tag"]}:
-        raise ValueError("multiple or inconsistent new stable releases; manual recovery required")
+            record = candidate_from_releases([item])
+            version = record["codex_version"]
+            if version in stable and not exact_json_equal(stable[version], record):
+                raise ValueError("conflicting duplicate stable release metadata")
+            stable[version] = record
+    if candidate["codex_version"] not in stable or not exact_json_equal(
+            stable[candidate["codex_version"]], candidate):
+        raise ValueError("latest release and recent release listing disagree")
+    return [stable[version] for version in sorted(stable, key=version_key)
+            if version_key(version) > version_key(old_version)]
 
 
 def write_candidate(path, candidate):
@@ -261,19 +287,47 @@ def write_candidate(path, candidate):
     return True
 
 
-def prepare_pr(candidate, path):
+def repository_name():
     repository = os.environ["GITHUB_REPOSITORY"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("invalid repository")
+    return repository
+
+
+def candidate_pr_exists(version):
+    """Treat an earlier same-repository PR, including a closed one, as a decision."""
+    version_key(version)
+    repository = repository_name()
+    branch = f"automation/codex-{version}"
+    existing = subprocess.check_output([
+        "gh", "pr", "list", "--repo", repository, "--head", branch,
+        "--state", "all", "--json", "number,headRefName,headRepositoryOwner,isCrossRepository",
+        "--limit", "100",
+    ], text=True)
+    records = json.loads(existing, object_pairs_hook=strict_json_object)
+    if not isinstance(records, list) or len(records) == 100:
+        raise ValueError("candidate PR history is ambiguous; manual recovery required")
+    for record in records:
+        if not isinstance(record, dict) or type(record.get("number")) is not int or record["number"] <= 0:
+            raise ValueError("invalid candidate PR metadata")
+        owner = record.get("headRepositoryOwner")
+        if (record.get("headRefName") != branch or not isinstance(owner, dict)
+                or not isinstance(owner.get("login"), str)
+                or type(record.get("isCrossRepository")) is not bool):
+            raise ValueError("candidate PR head identity is ambiguous; manual recovery required")
+        if (not record["isCrossRepository"]
+                and owner["login"].casefold() == repository.split("/", 1)[0].casefold()):
+            return True
+    return False
+
+
+def prepare_pr(candidate, path):
+    repository = repository_name()
     version = candidate["codex_version"]
     version_key(version)
     branch = f"automation/codex-{version}"
     # Closed PRs are retained as decisions. Do not reopen/overwrite a maintainer's work.
-    existing = subprocess.check_output([
-        "gh", "pr", "list", "--repo", repository, "--head", branch,
-        "--state", "all", "--json", "number", "--limit", "1",
-    ], text=True)
-    if json.loads(existing, object_pairs_hook=strict_json_object):
+    if candidate_pr_exists(version):
         print(f"Candidate PR already exists for Codex {version}; left unchanged")
         return False
     remote = subprocess.check_output(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"], text=True)
@@ -335,43 +389,83 @@ def main():
     parser.add_argument("--fixture", type=Path, help="Read a local API fixture instead of using the network")
     parser.add_argument("--output", type=Path, default=Path("compatibility/candidate.json"))
     parser.add_argument("--create-pr", action="store_true")
+    parser.add_argument("--version", help="Refresh one exact official candidate version")
     parser.add_argument("--require-branch", action="store_true",
                         help="Require an existing candidate branch for an explicit repair retry")
     args = parser.parse_args()
     if args.fixture and args.create_pr:
         parser.error("fixtures cannot create PRs")
+    if args.fixture and args.version:
+        parser.error("fixtures cannot select an official version")
     if args.require_branch and not args.create_pr:
         parser.error("--require-branch requires --create-pr")
-    releases = (json.loads(args.fixture.read_text(), object_pairs_hook=strict_json_object)
-                if args.fixture else [fetch_latest_release()])
-    candidate = candidate_from_releases(releases)
-    if not args.fixture and args.output.exists():
+    if args.require_branch and not args.version:
+        parser.error("--require-branch requires --version")
+    if args.create_pr and args.version and not args.require_branch:
+        parser.error("--version with --create-pr requires --require-branch")
+    if args.create_pr and not args.require_branch and not args.output.exists():
+        raise ValueError("baseline candidate missing; manual recovery required")
+
+    candidate = None
+    prior_npm = None
+    if args.fixture:
+        candidate = candidate_from_releases(
+            json.loads(args.fixture.read_text(), object_pairs_hook=strict_json_object))
+    elif args.version:
+        candidate = candidate_from_releases([fetch_tagged_release(args.version)])
+    elif args.output.exists():
         previous = json.loads(args.output.read_text(encoding="utf-8"),
                               object_pairs_hook=strict_json_object)
-        if version_key(candidate["codex_version"]) > version_key(previous["codex_version"]):
-            old_tag = previous.get("upstream_tag")
-            recent = fetch_releases(stop_tag=old_tag)
-            verify_release_gap(previous, candidate, recent)
-            if previous.get("schema_version") == 2:
-                prior_npm = fetch_npm_records(previous["codex_version"])
-                if not exact_json_equal(previous.get("npm_packages"), prior_npm):
-                    raise ValueError("previous npm package identity changed; manual investigation required")
-    if not args.fixture:
+        latest = candidate_from_releases([fetch_latest_release()])
+        recent = fetch_releases(stop_tag=previous.get("upstream_tag"))
+        backlog = verified_release_backlog(previous, latest, recent)
+        if previous.get("schema_version") == 2:
+            prior_npm = fetch_npm_records(previous["codex_version"])
+            if not exact_json_equal(previous.get("npm_packages"), prior_npm):
+                raise ValueError("previous npm package identity changed; manual investigation required")
+        if args.create_pr:
+            for entry in backlog:
+                if not candidate_pr_exists(entry["codex_version"]):
+                    candidate = entry
+                    break
+        else:
+            candidate = backlog[0] if backlog else candidate_from_releases(
+                [item for item in recent if isinstance(item, dict)
+                 and item.get("tag_name") == previous["upstream_tag"]])
+    else:
+        candidate = candidate_from_releases([fetch_latest_release()])
+
+    if candidate is None:
+        # Every newer version already has a candidate PR or a recorded decision.
+        version = latest["codex_version"]
+        changed = False
+        created_pr = False
+        branch_sha = None
+    elif args.require_branch:
         candidate["npm_packages"] = fetch_npm_records(candidate["codex_version"])
-    changed = write_candidate(args.output, candidate)
-    created_pr = False
-    if changed and args.create_pr:
-        created_pr = prepare_pr(candidate, args.output) is True
-    branch_sha = (candidate_branch_sha(candidate["codex_version"])
-                  if args.create_pr and (changed or args.require_branch) else None)
+        version = candidate["codex_version"]
+        changed = False
+        created_pr = False
+        branch_sha = candidate_branch_sha(version)
+    else:
+        if not args.fixture:
+            candidate["npm_packages"] = (prior_npm if prior_npm is not None
+                                         and candidate["codex_version"] == previous["codex_version"]
+                                         else fetch_npm_records(candidate["codex_version"]))
+        version = candidate["codex_version"]
+        changed = write_candidate(args.output, candidate)
+        created_pr = prepare_pr(candidate, args.output) is True if changed and args.create_pr else False
+        if args.create_pr:
+            changed = created_pr
+        branch_sha = candidate_branch_sha(version) if created_pr else None
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
         with open(output_file, "a", encoding="utf-8") as output:
-            output.write(f"version={candidate['codex_version']}\nchanged={str(changed).lower()}\n"
+            output.write(f"version={version}\nchanged={str(changed).lower()}\n"
                          f"repair_eligible={str(created_pr).lower()}\n")
             if branch_sha:
                 output.write(f"candidate_sha={branch_sha}\n")
-    print(f"Codex {candidate['codex_version']}: unverified; candidate changed={changed}")
+    print(f"Codex {version}: unverified; candidate changed={changed}")
 
 
 if __name__ == "__main__":

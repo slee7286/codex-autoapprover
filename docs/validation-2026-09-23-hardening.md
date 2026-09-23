@@ -99,9 +99,13 @@ made additional code, gate, test and documentation changes.
   Cargo failures caused by a runner problem can still spend one bounded
   attempt; no live workflow run has confirmed the classification. The
   watcher now marks only a newly opened candidate PR eligible for automatic
-  repair. Later polls may recheck an existing PR but cannot repeatedly spend
-  the repair key; an explicit dispatch can retry. Unchanged releases skip
-  candidate jobs and do not require a deleted post-merge branch. The
+  repair. A bounded scan back to the checked-in baseline queues every newer
+  stable version oldest first; each poll selects one with no earlier
+  same-repository PR, including closed decisions. Exact by-tag refresh keeps
+  candidate and post-repair runners pinned to that selected version even when
+  newer releases exist. An explicit dispatch can retry an exact version.
+  Unchanged releases skip candidate jobs and do not require a deleted
+  post-merge branch. The
   watcher resolves a single candidate commit and pins preflight, Rust checks
   and repair to it; post-repair checks pin the pushed repair commit. This has
   local fixtures and workflow structure checks only; no default-branch run or
@@ -160,7 +164,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 63 tests passed, including native build-input graph filtering and binary/SBOM binding, cross-platform source-path ordering, deterministic license material and unsafe archive-member rejection, prior-release asset/npm drift and duplicate-key rejection, exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression, explicit retry, pinned candidate-commit output, candidate-branch metadata mismatch, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 68 tests passed, including native build-input graph filtering and binary/SBOM binding, cross-platform source-path ordering, deterministic license material and unsafe archive-member rejection, prior-release asset/npm drift and duplicate-key rejection, exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression, exact-version retry and runner refresh, pinned candidate-commit output, candidate-branch metadata mismatch, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and oldest-first multi-release catch-up; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -188,29 +192,29 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v25/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `1e9f79e364dc0daa0d36d3ce9acaf2c43481cd961b380b5e50e49b28d6ca3c68`.
+`/tmp/autoapprover-dev-package-20260923-v26/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `2c614c67ff05de5dc9765628efff99393cd9721ccc6540785fb5309f1e577702`.
 Its recorded source digest is
-`8d2b35872d95d529c10f9f23c05a1fd5bdee46347c3f931cb597fcf154d6c01c`.
+`24eb95a0b9b155ace700f6b8ce676d0b029cae6fffc0789572c9b82302c5c6f6`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v24.spdx.json`, SHA-256
-`df4955d61c9945c7082b5ecc64f4a75ab417d3426032540f4f4120fd09304e8d`.
+`/tmp/autoapprover-locked-dependencies-v25.spdx.json`, SHA-256
+`9156e18d2c23272862f51f6cf1f5de610fbaa38ec9bd782ad54bccd003733888`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v2.spdx.json`, SHA-256
-`9a700b4468f8dfe12394692e0f5fff66fd4ac1b5f9e79b1bef56436944728a98`.
+`/tmp/autoapprover-binary-linux-v3.spdx.json`, SHA-256
+`383511a7afaf8d3af2e8ff76484f97c08ea3e88ebc47a1ce7d1345ea75ffb11c`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the development executable digest above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v6.tar.gz`, SHA-256
-`b890b85085bb33c62ff263f5e26776fdfef576a6a973fd0bd996e3b588cf0e2f`.
+`/tmp/autoapprover-locked-licenses-v7.tar.gz`, SHA-256
+`d4d45e55aac9c8de506be5d4ecb91604510413a12607838cced2cafba9756c08`.
 Its indexed source digest matches the archive above. An automatic approval
 review rejected a proposed live OSV batch query because it would transmit the
 potentially sensitive exact `Cargo.lock` inventory to a public API. A local
@@ -322,7 +326,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; hardlinked/reparse config files, redirected directory chains and oversized input now fail closed; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7 execution of prepared hardlink/junction cases; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/lock/disk-full/interruption matrix |
-| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
+| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; local multi-release fixtures queue one previously unhandled PR per poll and fail closed on missing baseline/history; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; exercise oldest-first missed-release catch-up on the default branch and measure backlog latency; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory and offline notice bundle with two missing top-level texts; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM, final notices and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
