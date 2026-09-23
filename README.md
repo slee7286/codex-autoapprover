@@ -28,7 +28,7 @@ To opt into the previously diagnosed Windows sandbox fallback while installing o
 
 This explicitly sets `windows.sandbox = "unelevated"` in `$env:CODEX_HOME/config.toml`, or `$env:USERPROFILE/.codex/config.toml` by default. It affects ordinary Codex too and uses weaker isolation. Later default reinstalls preserve that choice. Use `-WindowsSandbox elevated` to reverse the setting, or `-ConfigureOnly -WindowsSandbox unelevated` with the updated binary already installed to skip rebuilding. No installer setting makes an unverified approval hook eligible.
 
-Configuration is parsed as TOML, unrelated values and comments are retained, and the original file is backed up before replacement. Invalid or unknown sandbox settings fail without a rewrite. Repeated application is idempotent. Close configuration editors during installation. Native ACL, interruption and installer testing is still required before release. Direct `cargo install` performs no configuration step.
+Configuration is parsed as TOML, unrelated values and comments are retained, and the original file is backed up before replacement. Invalid or unknown sandbox settings, hardlinked or reparse-point configuration files, and symlinked or junction configuration directories fail without a rewrite. Configuration input is limited to 4 MiB. Repeated application is idempotent. Close configuration editors during installation. Native ACL, interruption and installer testing is still required before release. Direct `cargo install` performs no configuration step.
 
 ## Linux artifact installer rehearsal
 

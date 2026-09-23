@@ -105,6 +105,11 @@ made additional code, gate, test and documentation changes.
   native approval validation.
 - The Windows source installer verifies that its source manifest equals the
   installed executable's embedded manifest before configuration changes.
+  The explicit TOML edit now rejects hardlinked or reparse-point config files,
+  symlinked or junction directory chains, and input over 4 MiB. Linux tests
+  exercise the link and size refusals; Windows hardlink and junction cases are
+  prepared for PowerShell 5.1/7 CI but have not run natively. Directory ACL
+  preservation and crash recovery still require Windows review.
 - A Linux prebuilt-artifact installer now checks an expected SHA-256, embedded
   manifest equality and executable health before selecting a release. It uses
   private directories, digest-addressed releases, a lock and atomic symlink
@@ -131,7 +136,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 70 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover malformed/denied/replayed broker audit accounting, log-injection rejection and Unix descendant cleanup. |
+| `cargo test --locked --all-targets` | 73 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection and Unix descendant cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
@@ -156,20 +161,20 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`d9de9eb71b755734cf0ed26e8ac3651f933ac919c5bf03580ed9c5f53dee6faf`.
+`e6b3c03e9350294ef59aab35ad24021edb5528b0c784ca452a9f55725d37b78d`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v18/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `07ff35a9351cb0edcd8e966c6b4bbd590a354d4512a0f60ceb8998f0bd4b0dae`.
+`/tmp/autoapprover-dev-package-20260923-v19/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `1279989b2a627ee1fa9630383c83d0c265cdc95ebd960b1ae2db5437371b957e`.
 Its recorded source digest is
-`9889526d56fc88a2221bb957cbbff73460fe5a79e4d6485f20acbf466705e621`.
+`304e72cfa0291c24e7885f09778c51bf96a63d0c7020c6a9731a566d57aa89f7`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v18.spdx.json`, SHA-256
-`dbe79e6a5671ce4742df1869439ab45aebc693d0d293140c2d947692e33faa72`.
+`/tmp/autoapprover-locked-dependencies-v19.spdx.json`, SHA-256
+`11ec57b29be5cda16b10fc9558e6220197493ea3f3d23c8cd27dbceb12ae5a18`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
@@ -276,7 +281,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 1. Exact certified compatibility only | Empty schema-2 manifest; whole-tuple equality; native bundle and npm launch-chain hashes; group/world-write rejection; artifact revocation; unsupported surfaces and legacy aliases fail closed | Certify final artifacts; finish/test exe/cmd/ps1 and other package layouts on native hosts; harden consumer install permissions; verify effective sandbox/managed-policy behavior and updates during sessions; implement revocation delivery |
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
-| 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
+| 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; hardlinked/reparse config files, redirected directory chains and oversized input now fail closed; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7 execution of prepared hardlink/junction cases; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/lock/disk-full/interruption matrix |
 | 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |

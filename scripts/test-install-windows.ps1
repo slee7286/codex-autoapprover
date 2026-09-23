@@ -37,6 +37,29 @@ try {
         if (-not $rejected) { throw 'Invalid configuration accepted' }
         if ([System.IO.File]::ReadAllText($configPath) -cne $unsupported) { throw 'Rejected configuration changed' }
     }
+    $linkedHome = Join-Path $root 'hardlink-home'
+    [System.IO.Directory]::CreateDirectory($linkedHome) | Out-Null
+    $linkedConfig = Join-Path $linkedHome 'config.toml'
+    $linkedAlias = Join-Path $linkedHome 'alias.toml'
+    $linkedOriginal = "[windows]`nsandbox = 'elevated'`n"
+    [System.IO.File]::WriteAllText($linkedConfig, $linkedOriginal, $utf8)
+    New-Item -ItemType HardLink -Path $linkedAlias -Target $linkedConfig -ErrorAction Stop | Out-Null
+    $rejected = $false
+    try { & $installer -CodexHome $linkedHome -ConfigureOnly -BinaryPath $binary -WindowsSandbox unelevated } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Hardlinked configuration accepted' }
+    if ([System.IO.File]::ReadAllText($linkedConfig) -cne $linkedOriginal) { throw 'Hardlinked configuration changed' }
+    if ([System.IO.File]::ReadAllText($linkedAlias) -cne $linkedOriginal) { throw 'Hardlink alias changed' }
+
+    $realHome = Join-Path $root 'real-junction-home'
+    $junctionHome = Join-Path $root 'junction-home'
+    [System.IO.Directory]::CreateDirectory($realHome) | Out-Null
+    New-Item -ItemType Junction -Path $junctionHome -Target $realHome -ErrorAction Stop | Out-Null
+    $rejected = $false
+    try { & $installer -CodexHome $junctionHome -ConfigureOnly -BinaryPath $binary -WindowsSandbox unelevated } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Junction configuration home accepted' }
+    if (Test-Path -LiteralPath (Join-Path $realHome 'config.toml')) { throw 'Junction target configuration changed' }
+    if (Test-Path -LiteralPath (Join-Path $realHome '.autoapprover-config.lock')) { throw 'Junction target lock created' }
+
     & $installer -CodexHome (Join-Path $root 'new-home') -ConfigureOnly -BinaryPath $binary -WindowsSandbox unelevated
     Write-Host 'Windows installation configuration tests passed.'
 } finally {

@@ -1,8 +1,14 @@
 //! Explicit configuration repair; never called by `run` or by an approval hook.
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs::{self, OpenOptions},
+    io::{Read, Write},
+    path::Path,
+};
 
 use anyhow::{Context, Result, bail};
 use toml_edit::{DocumentMut, Item, Table, Value};
+
+const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 
 pub fn render(original: &str, mode: &str) -> Result<String> {
     if !matches!(mode, "elevated" | "unelevated") {
@@ -51,7 +57,9 @@ pub fn run(directory: &Path, mode: &str) -> Result<i32> {
 }
 
 fn update(directory: &Path, mode: &str) -> Result<()> {
+    check_plain_directory_chain(directory)?;
     fs::create_dir_all(directory).context("create Codex configuration directory")?;
+    check_plain_directory_chain(directory)?;
     let lock_path = directory.join(".autoapprover-config.lock");
     let lock = fs::OpenOptions::new().write(true).create_new(true).open(&lock_path)
         .context("configuration lock exists or is inaccessible; close other installers, and remove a stale .autoapprover-config.lock only after confirming none is running")?;
@@ -61,18 +69,32 @@ fn update(directory: &Path, mode: &str) -> Result<()> {
     result.and(cleanup)
 }
 
+fn check_plain_directory_chain(directory: &Path) -> Result<()> {
+    let absolute = std::path::absolute(directory).context("resolve Codex configuration path")?;
+    for parent in absolute.ancestors() {
+        let metadata = match fs::symlink_metadata(parent) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("inspect Codex configuration directory"),
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("Codex configuration path contains a non-directory or symlink")
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                bail!("Codex configuration path contains a reparse point")
+            }
+        }
+    }
+    Ok(())
+}
+
 fn update_locked(directory: &Path, mode: &str) -> Result<()> {
     let path = directory.join("config.toml");
-    let original = match fs::symlink_metadata(&path) {
-        Ok(metadata) => {
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                bail!("config.toml must be a regular file; configuration was not changed")
-            }
-            Some(fs::read_to_string(&path).context("read UTF-8 Codex configuration")?)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error).context("inspect Codex configuration"),
-    };
+    let original = read_config(&path)?;
     let updated = render(original.as_deref().unwrap_or_default(), mode)?;
     if original.as_deref() == Some(updated.as_str()) {
         return Ok(());
@@ -81,7 +103,7 @@ fn update_locked(directory: &Path, mode: &str) -> Result<()> {
     staged.write_all(updated.as_bytes())?;
     staged.as_file().sync_all()?;
     if let Some(original) = original {
-        if fs::read_to_string(&path)? != original {
+        if read_config(&path)?.as_deref() != Some(original.as_str()) {
             bail!("config.toml changed during installation; configuration was not replaced")
         }
         #[allow(unused_mut)]
@@ -115,6 +137,69 @@ fn update_locked(directory: &Path, mode: &str) -> Result<()> {
             .context("create configuration without overwriting another writer")?;
     }
     Ok(())
+}
+
+fn read_config(path: &Path) -> Result<Option<String>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect Codex configuration"),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!("config.toml must be a regular file; configuration was not changed")
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).context("open Codex configuration")?;
+    let opened = file.metadata()?;
+    if !opened.is_file() || opened.len() > MAX_CONFIG_BYTES {
+        bail!("config.toml is not a bounded regular file; configuration was not changed")
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.nlink() != 1 {
+            bail!("hardlinked config.toml is not safe to replace")
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
+        };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("inspect Codex configuration file");
+        }
+        if info.nNumberOfLinks != 1 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            bail!("hardlinked or reparse-point config.toml is not safe to replace")
+        }
+    }
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .context("read UTF-8 Codex configuration")?;
+    if text.len() as u64 > MAX_CONFIG_BYTES {
+        bail!("config.toml exceeds the configuration size limit")
+    }
+    Ok(Some(text))
 }
 
 #[cfg(windows)]
@@ -218,5 +303,50 @@ mod tests {
         fs::write(directory.path().join(".autoapprover-config.lock"), "").unwrap();
         assert!(update(directory.path(), "unelevated").is_err());
         assert!(!directory.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn linked_configuration_is_rejected_without_rewrite() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let alias = directory.path().join("alias.toml");
+        let original = "[windows]\nsandbox = 'elevated'\n";
+        fs::write(&path, original).unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(update(directory.path(), "unelevated").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(fs::read_to_string(&alias).unwrap(), original);
+        fs::remove_file(&alias).unwrap();
+        #[cfg(unix)]
+        {
+            fs::write(&alias, original).unwrap();
+            fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&alias, &path).unwrap();
+            assert!(update(directory.path(), "unelevated").is_err());
+            assert_eq!(fs::read_to_string(&alias).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn oversized_configuration_is_rejected_without_rewrite() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let body = vec![b' '; MAX_CONFIG_BYTES as usize + 1];
+        fs::write(&path, &body).unwrap();
+        assert!(update(directory.path(), "unelevated").is_err());
+        assert_eq!(fs::read(&path).unwrap(), body);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_configuration_directory_is_rejected_before_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = root.path().join("redirected");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(update(&link, "unelevated").is_err());
+        assert!(!real.join("config.toml").exists());
+        assert!(!real.join(".autoapprover-config.lock").exists());
     }
 }
