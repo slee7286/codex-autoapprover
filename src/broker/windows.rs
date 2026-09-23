@@ -185,10 +185,7 @@ fn serve(
     let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
     let mut pipe_handle = initial_pipe;
     while !shared.shutdown.load(Ordering::Acquire) {
-        workers.retain(|worker| !worker.is_finished());
-        for worker in workers.drain(..) {
-            let _ = worker.join();
-        }
+        crate::broker::reap_finished_workers(&mut workers);
         if shared.active_connections.load(Ordering::Acquire) >= MAX_ACTIVE_CONNECTIONS {
             thread::sleep(Duration::from_millis(10));
             continue;
@@ -1084,6 +1081,33 @@ mod tests {
         broker.shutdown().expect("shutdown broker");
         assert!(started.elapsed() < Duration::from_secs(1));
         session.cleanup().expect("cleanup session");
+    }
+
+    #[test]
+    fn stalled_client_does_not_delay_an_independent_request() {
+        let (session, broker) = test_broker();
+        let wide = encode_wide(OsStr::new(session.pipe_name()));
+        let stalled = connect_client(&wide, Instant::now() + CONNECTION_TIMEOUT)
+            .expect("connect stalled client");
+        thread::sleep(Duration::from_millis(50));
+        let response = match connect_client(&wide, Instant::now() + CONNECTION_TIMEOUT) {
+            Ok(second) => {
+                let deadline = Instant::now() + Duration::from_millis(1200);
+                let result =
+                    write_frame_until(second, b"{}", MAX_BROKER_MESSAGE_BYTES, deadline, None)
+                        .and_then(|()| {
+                            read_frame_until(second, MAX_BROKER_RESPONSE_BYTES, deadline, None)
+                        });
+                close_handle(second);
+                result
+            }
+            Err(error) => Err(error),
+        };
+        close_handle(stalled);
+        broker.shutdown().expect("shutdown broker");
+        session.cleanup().expect("cleanup session");
+        let response = response.expect("independent request was blocked by a stalled client");
+        assert!(!parse_response(&response).expect("structured no-decision response"));
     }
 
     #[test]

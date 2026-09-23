@@ -251,15 +251,7 @@ impl Broker {
 fn serve(listener: UnixListener, shared: Arc<SharedState>) {
     let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
     while !shared.shutdown.load(Ordering::Acquire) {
-        let mut remaining = Vec::with_capacity(workers.len());
-        for worker in workers.drain(..) {
-            if worker.is_finished() {
-                let _ = worker.join();
-            } else {
-                remaining.push(worker);
-            }
-        }
-        workers = remaining;
+        crate::broker::reap_finished_workers(&mut workers);
         if shared.active_connections.load(Ordering::Acquire) >= MAX_ACTIVE_CONNECTIONS {
             thread::sleep(Duration::from_millis(10));
             continue;

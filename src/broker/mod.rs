@@ -5,6 +5,18 @@ mod linux;
 #[cfg(windows)]
 mod windows;
 
+fn reap_finished_workers(workers: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut running = Vec::with_capacity(workers.len());
+    for worker in workers.drain(..) {
+        if worker.is_finished() {
+            let _ = worker.join();
+        } else {
+            running.push(worker);
+        }
+    }
+    *workers = running;
+}
+
 #[cfg(target_os = "linux")]
 pub use linux::*;
 #[cfg(windows)]
@@ -102,5 +114,40 @@ mod ledger_tests {
                 .sum::<usize>(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    #[test]
+    fn reaping_completed_workers_does_not_wait_for_active_connections() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let active = thread::spawn(move || {
+            started_tx.send(()).expect("signal active worker");
+            release_rx.recv().expect("release active worker");
+        });
+        started_rx.recv().expect("active worker started");
+        let completed = thread::spawn(|| {});
+        while !completed.is_finished() {
+            thread::yield_now();
+        }
+        let (result_tx, result_rx) = mpsc::channel();
+        let reaper = thread::spawn(move || {
+            let mut workers = vec![active, completed];
+            super::reap_finished_workers(&mut workers);
+            result_tx
+                .send(workers.len())
+                .expect("report active workers");
+            for worker in workers {
+                worker.join().expect("join active worker");
+            }
+        });
+        let prompt = result_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).expect("release active worker");
+        reaper.join().expect("join reaper");
+        assert_eq!(prompt.expect("reaper blocked on an active worker"), 1);
     }
 }
