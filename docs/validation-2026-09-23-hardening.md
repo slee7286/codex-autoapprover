@@ -21,8 +21,9 @@ made additional code, gate, test and documentation changes.
   is hashed and retained for per-decision identity checks. Unix files and
   directory chains writable by other users or groups are ineligible. The
   present local npm installation fails this restriction and stays unarmed.
-  Windows file handles deny write/delete sharing, but ACL and reparse-point
-  behavior still need native testing and independent review.
+  Windows file handles deny write/delete sharing, but directory ACL and
+  reparse-point validation is not implemented; Windows bundle admission
+  explicitly fails closed pending native testing and independent review.
 - Linux launches the held executable inode through `/proc/self/fd`; Windows
   holds a file handle without write/delete sharing. The brokers recheck the
   configured path, file identity and actual running process image.
@@ -73,7 +74,7 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`3f2156884b5b0c972d80b1f7a5ce924c54da55f1b297912f67b84b742b693ec4`.
+`a55c122001cab484e638229a1157258adffbb6fc1732f31329ffc07f08c66ddb`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
@@ -109,6 +110,20 @@ Available native Linux is Ubuntu 26.04, kernel `7.0.0-31-generic`, x86_64;
 installed CLI reports `0.156.0` via an npm shim. The bundle layout is
 recognized, but group-writable package files and directories prevent native
 artifact admission. No Windows native result has been obtained.
+
+An isolated Linux package exercise copied that exact installed npm tree into
+a temporary owner-controlled directory, removed group/world write from every
+copied file and directory, and used a disposable `CODEX_HOME`. `diagnose`
+then recognized the real 0.156.0 native executable SHA-256
+`78a11f06e0a2dda42d13fba1d50dc62e8cbdb2d5f69789722f4d4d99b5cdbe30`,
+bundle SHA-256
+`a746c99f6319e5208bcb4e20b465ece27b1c75683615c930facb73f7c230ceeb`,
+npm launcher SHA-256
+`61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70`,
+and npm parent package SHA-256
+`bd61fceec93b47cad25d48c7f20297d75f1289933fd1cf29ea8ce0aa02f2bc4f`.
+The temporary tree was removed. This was identity discovery only: no
+PermissionRequest, approval, consumer install or native qualification occurred.
 Existing Windows 0.156.0 observations retain their original limits: elevated
 setup also failed without this wrapper, while unelevated `Get-Location` worked;
 neither proves hook compatibility, a long-path cause or a version regression.

@@ -281,7 +281,13 @@ pub(crate) fn check_trusted_directory_chain(path: &Path) -> Result<()> {
         }
     }
     #[cfg(windows)]
-    let _ = path;
+    {
+        let _ = path;
+        bail!(
+            "Windows native artifact directory ACL validation is pending; automatic approval is disabled"
+        )
+    }
+    #[cfg(unix)]
     Ok(())
 }
 

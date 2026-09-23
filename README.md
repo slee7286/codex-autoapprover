@@ -41,7 +41,7 @@ codex-autoapprover print-hook-config
 codex-autoapprover verify-local-hook
 ```
 
-The implemented foreground admission adapter requires an explicit `--sandbox-implementation` selection (for example `linux-bwrap`). The manifest is empty, so this option cannot currently arm a session. Recognized npm launchers are resolved to a native bundle before admission; packages with writable files or directories cannot qualify. Profiles, arbitrary config/feature overrides and other subcommands currently use ordinary Codex; their qualification work remains open.
+The implemented foreground admission adapter requires an explicit `--sandbox-implementation` selection (for example `linux-bwrap`). The manifest is empty, so this option cannot currently arm a session. Recognized npm launchers are resolved to a native bundle before admission; Unix packages with group/world-writable files or directories cannot qualify. Windows bundle admission is explicitly disabled until directory ACL/reparse validation is implemented and tested natively. Profiles, arbitrary config/feature overrides and other subcommands currently use ordinary Codex; their qualification work remains open.
 
 No subcommand means `run`. Arguments after `--` are forwarded to Codex. `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` is the default policy. `hook` is a protocol endpoint, not a public approval API. `support-matrix` prints the embedded manifest. `print-hook-config` refuses to print a support configuration without full admission; historical evidence cannot authorize it.
 
