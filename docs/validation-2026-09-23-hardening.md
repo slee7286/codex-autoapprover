@@ -191,7 +191,7 @@ made additional code, gate, test and documentation changes.
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
 | `verify-manifest --manifest compatibility/manifest.json` | Installed/source manifest comparison passes for the local binary |
-| `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall, journal recovery at each install-pointer boundary and interrupted first install passed; malformed/conflicting journals were rejected and Codex home content stayed unchanged |
+| `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall, journal recovery at each install-pointer boundary and interrupted first install passed. A file-size-limited upgrade failed during its staged copy; the prior executable remained selected and the next status call cleared partial stages. This is not a physical disk-full or power-loss test. Malformed/conflicting journals were rejected and Codex home content stayed unchanged. |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | Linux-host PowerShell 7.6.6 parser | Parsed the new Windows installer and two native test scripts without syntax errors. This did not execute the installer or exercise Windows PowerShell 5.1. |
 | Prepared Windows candidate workflow | YAML parsed, with lifecycle tests configured for Windows PowerShell 5.1 and 7 and extracted ZIP rehearsal configured for PowerShell 7; no workflow run occurred. |
@@ -219,29 +219,29 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v32/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `a9d5c5da91777a4bf65fe7d8e9cd6be4658a40e9e91804eb65b764342dbaa475`.
+`/tmp/autoapprover-dev-package-20260923-v33/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `807dd58d7ab1b3c5edac83d2bc70091ce7485d32bb75693eadbd3879f3c747eb`.
 Its recorded source digest is
-`fbc8c5b22d8d9b8f0553155e458bb7b42d435ada128789906a6251b09777b8d3`.
+`e021adeffcf5e3718bf09acec3a66cea2cfccac7f27926fe48a8d81c3da201c9`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v30.spdx.json`, SHA-256
-`8db6dd826fcad3de6bfaf1fe4462f1285e43a4491e96790fb0ff88d812d7ed50`.
+`/tmp/autoapprover-locked-dependencies-v31.spdx.json`, SHA-256
+`4110853fc56caf930f6e7bb3fd34c61279da576d67999af0f3505b5820ec337b`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v8.spdx.json`, SHA-256
-`d06dc8a9f51646ea5c390cad690be6224950ef7df936df2293b58cdd29e0f676`.
+`/tmp/autoapprover-binary-linux-v9.spdx.json`, SHA-256
+`f2e38dcd5c2e2a021013328f5891811b5ff64baae3cc816569978660c4dc532e`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the development executable digest above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v12.tar.gz`, SHA-256
-`3f9620a002914855950198cf7072e0e615deff80ada630bd7a36cbce91f32e7b`.
+`/tmp/autoapprover-locked-licenses-v13.tar.gz`, SHA-256
+`7dd6d7a04ed9471bcfeac9366ec900de84a524ee7beaaa2d1f2d78eb4381a348`.
 Its indexed source digest matches the archive above. An automatic approval
 review rejected a proposed live OSV batch query because it would transmit the
 potentially sensitive exact `Cargo.lock` inventory to a public API. A local
@@ -359,7 +359,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 1. Exact certified compatibility only | Empty schema-2 manifest; whole-tuple equality; native bundle and npm launch-chain hashes; group/world-write rejection; artifact revocation; unsupported surfaces and legacy aliases fail closed | Certify final artifacts; finish/test exe/cmd/ps1 and other package layouts on native hosts; harden consumer install permissions; verify effective sandbox/managed-policy behavior and updates during sessions; implement revocation delivery |
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
-| 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; hardlinked/reparse config files, redirected directory chains and oversized input now fail closed; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7 execution of prepared hardlink/junction cases; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/lock/disk-full/interruption matrix |
+| 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; hardlinked/reparse config files, redirected directory chains and oversized input now fail closed; Linux artifact lifecycle passes disposable local tests with crash-journal simulations and a bounded staged-copy write failure; Windows artifact installer and exact-byte ZIP rehearsal are prepared but unrun | Authenticated final Linux consumer package and exact-byte rehearsal; native Windows artifact lifecycle and PS 5.1/7 execution of prepared hardlink/junction cases; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/lock/actual disk-full/power-loss/interruption matrix |
 | 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan read-only verified against 0.156.1; schema-3 records bind the Git tag object and source commit; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; source repair rejects a moved tag object or commit before running the agent; local multi-release fixtures queue one previously unhandled PR per poll and fail closed on missing baseline/history or changed open-PR metadata; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; exercise oldest-first missed-release catch-up and moved/deleted tag refusal on the default branch, then measure backlog latency; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory and offline notice bundle with two missing top-level texts; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM, final notices and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |

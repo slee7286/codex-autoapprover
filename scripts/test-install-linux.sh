@@ -38,6 +38,23 @@ expect_fail "$installer" install --install-dir "$install_dir" --binary "$test_ro
 [[ $("$installer" status --install-dir "$install_dir") == *"Current: $sha1"* ]]
 "$installer" install --install-dir "$install_dir" --binary "$test_root/v1" --sha256 "$sha1" --manifest "$manifest"
 [[ ! -e $install_dir/.codex-autoapprover-previous ]]
+# Force the staged executable copy to fail partway through an upgrade. This
+# covers a bounded write failure; it is not a physical disk-full simulation.
+if (
+  ulimit -f 1
+  trap '' XFSZ
+  "$installer" install --install-dir "$install_dir" --binary "$test_root/v2" --sha256 "$sha2" --manifest "$manifest"
+) >/dev/null 2>&1; then
+  printf 'Write-limited upgrade unexpectedly succeeded.\n' >&2
+  exit 1
+fi
+status=$("$installer" status --install-dir "$install_dir")
+[[ $status == *"Current: $sha1"* && $status == *"Previous: none"* ]]
+[[ ! -e $install_dir/.codex-autoapprover-releases/$sha2 ]]
+shopt -s nullglob
+interrupted_stages=("$install_dir/.codex-autoapprover-releases"/.stage.*)
+shopt -u nullglob
+[[ ${#interrupted_stages[@]} -eq 0 ]]
 "$installer" install --install-dir "$install_dir" --binary "$test_root/v2" --sha256 "$sha2" --manifest "$manifest"
 status=$("$installer" status --install-dir "$install_dir")
 [[ $status == *"Current: $sha2"* && $status == *"Previous: $sha1"* ]]
