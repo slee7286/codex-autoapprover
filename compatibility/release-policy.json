@@ -7,6 +7,6 @@
     "Historical Linux 0.151.0 evidence is not qualification of the current binary.",
     "Native Windows 0.156.0 sandbox fallback is observed; approval-hook compatibility is unverified.",
     "Complete fresh native Linux and Windows qualification, including effective sandbox and foreground launch behavior, against the exact manifest.",
-    "Complete independent security review, binary identity binding, packaging, signing, rollback, and release rehearsal."
+    "Complete independent security review, native artifact lifecycle, authenticated packaging and provenance, rollback, and protected release rehearsal."
   ]
 }
