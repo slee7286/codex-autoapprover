@@ -11,6 +11,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import sys
 
 from watch_codex import version_key
 
@@ -42,6 +43,7 @@ SBOM_TARGETS = {
     ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "codex-autoapprover-linux-x86_64"),
     ("windows", "x86_64"): ("x86_64-pc-windows-msvc", "codex-autoapprover-windows-x86_64.exe"),
 }
+REQUIRED_RELEASE_PLATFORMS = frozenset({("linux", "x86_64"), ("windows", "x86_64")})
 
 
 def unique_object(pairs):
@@ -271,7 +273,7 @@ def validate_reproducibility_record(body, evidence, build_record):
         raise ValueError("consumer reproducibility record does not bind the reviewed native build")
 
 
-def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None, now=None):
+def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None, binary_os=None, now=None):
     root = root.resolve()
     now = now or datetime.now(timezone.utc)
     exact_keys(policy, {"schema_version", "autoapprover_version", "ready", "certifications", "blockers"}, "release policy")
@@ -291,7 +293,8 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         if runtime != manifest:
             raise ValueError("compiled runtime manifest and repository manifest differ")
     source = source_digest(root)
-    declared, binaries = set(), set()
+    declared = set()
+    binaries = {platform: set() for platform, _ in REQUIRED_RELEASE_PLATFORMS}
     for certificate in policy["certifications"]:
         exact_keys(certificate, {"evidence_id", "evidence", "sha256"}, "evidence reference")
         identifier = certificate["evidence_id"]
@@ -312,7 +315,7 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         for key in ["autoapprover_binary_sha256", "upstream_artifact_sha256"]:
             if not digest_value(evidence.get(key)):
                 raise ValueError(f"missing exact {key}")
-        binaries.add(evidence["autoapprover_binary_sha256"])
+        binaries[evidence["target"]["os"]].add(evidence["autoapprover_binary_sha256"])
         producer, reviewer = evidence.get("producer"), evidence.get("reviewer")
         if not all(isinstance(value, str) and value.strip() == value and value for value in (producer, reviewer)) or producer.casefold() == reviewer.casefold():
             raise ValueError("independent producer and reviewer identities required")
@@ -373,10 +376,14 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
     if require_ready or policy["ready"]:
         if not policy["ready"] or policy["blockers"] or not declared:
             raise ValueError("production release blocked: qualification is incomplete")
+        covered = {(entry["target"]["os"], entry["target"]["arch"])
+                   for entry in manifest["entries"]}
+        if not REQUIRED_RELEASE_PLATFORMS.issubset(covered):
+            raise ValueError("production release blocked: native Linux and Windows x86_64 qualifications are required")
         if runtime is None:
             raise ValueError("compiled runtime manifest is required")
-        if not binary_sha256 or binary_sha256 not in binaries:
-            raise ValueError("consumer executable has no current native qualification")
+        if binary_os not in binaries or not binary_sha256 or binary_sha256 not in binaries[binary_os]:
+            raise ValueError("consumer executable has no current native qualification for this platform")
 
 
 def main():
@@ -396,7 +403,8 @@ def main():
         runtime = load_json(subprocess.check_output([str(args.binary.resolve()), "support-matrix"], timeout=10))
         if binary_digest != sha256(args.binary.read_bytes()):
             raise ValueError("consumer executable changed during inspection")
-    validate(root, policy, runtime, args.require_ready, binary_digest)
+    binary_os = {"linux": "linux", "win32": "windows"}.get(sys.platform) if args.binary else None
+    validate(root, policy, runtime, args.require_ready, binary_digest, binary_os)
     print("Production qualification passed" if policy["ready"] else "Policy valid; production release remains BLOCKED")
 
 

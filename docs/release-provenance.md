@@ -29,8 +29,10 @@ Separate native Linux and Windows jobs download those bytes, verify all four
 digests, regenerate the SBOM against the downloaded executable and current
 source, validate the build and reproducibility observations, and require
 `release_gate.py --require-ready --binary` to match each executable to fresh,
-reviewed evidence and the complete embedded support manifest. The present
-empty manifest and pending policy cause both qualification jobs to fail.
+reviewed evidence for that runner's native OS and the complete embedded support
+manifest. Readiness requires both native Linux and Windows x86_64
+certificates. The present empty manifest and pending policy cause both
+qualification jobs to fail.
 
 An independent attestation job runs after both builds, even if qualification
 is still pending. It downloads the same candidates, checks their staged

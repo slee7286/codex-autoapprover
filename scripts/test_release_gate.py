@@ -24,91 +24,113 @@ class ReleaseGateTests(unittest.TestCase):
             ["Cargo.toml", "build.rs", "src/main.rs"],
         )
 
-    def fixture(self, root):
+    def fixture(self, root, platforms=("windows", "linux")):
         for filename in ["Cargo.toml", "Cargo.lock", "src/main.rs"]:
             path = root / filename
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("synthetic source")
-        target = dict(codex_version="0.156.0", os="windows", arch="x86_64",
-                      os_release="synthetic-windows", os_build="synthetic-build",
-                      sandbox="windows-elevated", surface="native-cli",
-                      protocol="permission-request-v1", tool="Bash", codex_binary_sha256="a" * 64,
-                      codex_bundle_sha256="d" * 64, launch_kind="npm-cmd", launch_artifact_sha256="e" * 64,
-                      launch_package_sha256="f" * 64)
+        if any(platform not in {"linux", "windows"} for platform in platforms):
+            raise ValueError("unknown synthetic platform")
+        targets = {}
+        for platform in platforms:
+            targets[platform] = dict(
+                codex_version="0.156.0", os=platform, arch="x86_64",
+                os_release=f"synthetic-{platform}", os_build="synthetic-build",
+                sandbox="windows-elevated" if platform == "windows" else "linux-bwrap",
+                surface="native-cli", protocol="permission-request-v1", tool="Bash",
+                codex_binary_sha256="a" * 64, codex_bundle_sha256="d" * 64,
+                launch_kind="npm-cmd" if platform == "windows" else "npm-bin",
+                launch_artifact_sha256="e" * 64, launch_package_sha256="f" * 64,
+            )
         runtime = dict(schema_version=2, autoapprover_version="0.1.0",
-                       entries=[dict(evidence_id="synthetic-test", target=target)], revoked_artifact_sha256=[])
+                       entries=[dict(evidence_id="synthetic-test" if platform == "windows"
+                                     else "synthetic-linux", target=targets[platform])
+                                for platform in platforms], revoked_artifact_sha256=[])
         path = root / "compatibility/manifest.json"
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps(runtime))
-        artifact = root / "compatibility/evidence/synthetic/log.txt"
-        artifact.parent.mkdir(parents=True)
-        artifact.write_text("Synthetic fixture only; this is never committed as live evidence.\n")
-        artifact_ref = dict(path=artifact.relative_to(root).as_posix(), sha256=gate.sha256(artifact.read_bytes()))
-        sbom_path = root / "compatibility/evidence/synthetic/binary.spdx.json"
-        binary_sha = "b" * 64
         source_sha = gate.source_digest(root)
-        sbom = {
-            "spdxVersion": "SPDX-2.3",
-            "files": [{"SPDXID": gate.SBOM_FILE_ID,
-                       "fileName": "./codex-autoapprover-windows-x86_64.exe",
-                       "checksums": [{"algorithm": "SHA256", "checksumValue": binary_sha}]}],
-            "packages": [{"SPDXID": "SPDXRef-Package-codex-autoapprover-0.1.0"}],
-            "documentDescribes": [gate.SBOM_FILE_ID, "SPDXRef-Package-codex-autoapprover-0.1.0"],
-            "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT",
-                               "relatedSpdxElement": gate.SBOM_FILE_ID,
-                               "relationshipType": "DESCRIBES"}],
-            "annotations": [{"annotator": "Tool: scripts/binary_sbom.py",
-                             "comment": ("Native Rust target: x86_64-pc-windows-msvc; consumer executable SHA-256: "
-                                         f"{binary_sha}; source SHA-256: {source_sha}")}],
-        }
-        sbom_path.write_text(json.dumps(sbom))
-        sbom_ref = dict(path=sbom_path.relative_to(root).as_posix(), sha256=gate.sha256(sbom_path.read_bytes()))
-        build_path = root / "compatibility/evidence/synthetic/build-record.json"
         build_commit = "1" * 40
-        build_record = {
-            "schema_version": 1, "status": "unqualified-native-build-observation",
-            "target": "x86_64-pc-windows-msvc", "binary_sha256": binary_sha,
-            "source_sha256": source_sha,
-            "cargo_lock_sha256": gate.sha256((root / "Cargo.lock").read_bytes()),
-            "manifest_sha256": gate.sha256((root / "compatibility/manifest.json").read_bytes()),
-            "git_commit": build_commit, "git_tree_clean": True,
-            "toolchain": {"rustc_verbose": "rustc 1.98.0\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0",
-                          "cargo_version": "cargo 1.98.0"},
-            "host": {"system": "Windows", "release": "synthetic", "version": "synthetic",
-                     "machine": "AMD64", "distribution_id": "n/a", "distribution_version": "n/a"},
-        }
-        build_path.write_text(json.dumps(build_record))
-        build_ref = dict(path=build_path.relative_to(root).as_posix(), sha256=gate.sha256(build_path.read_bytes()))
-        reproducibility_path = root / "compatibility/evidence/synthetic/reproducibility.json"
-        reproducibility = {
-            "schema_version": 1, "status": "unqualified-native-reproducibility-observation",
-            "git_commit": build_commit, "host": "win32", "rustc": "rustc 1.98.0",
-            "cargo": "cargo 1.98.0", "source_archive_sha256": "c" * 64,
-            "source_sha256": source_sha, "expected_binary_sha256": binary_sha,
-            "independent_build_sha256": [binary_sha, binary_sha], "byte_identical": True,
-        }
-        reproducibility_path.write_text(json.dumps(reproducibility))
-        reproducibility_ref = dict(path=reproducibility_path.relative_to(root).as_posix(),
-                                   sha256=gate.sha256(reproducibility_path.read_bytes()))
-        evidence = dict(schema_version=2, kind="native-live", evidence_id="synthetic-test", target=target,
-                        source_sha256=source_sha, autoapprover_binary_sha256=binary_sha,
-                        build_commit=build_commit,
-                        upstream_artifact_sha256="c" * 64, producer="synthetic-producer", reviewer="synthetic-reviewer",
-                        review_decision="approved", run_url="https://example.invalid/synthetic-fixture",
-                        observed_at=datetime.now(timezone.utc).isoformat(),
-                        artifacts=[artifact_ref, sbom_ref, build_ref, reproducibility_ref],
-                        checks={check: {"result": "pass", "artifacts": [
-                            sbom_ref["path"] if check == "consumer_binary_sbom" else
-                            build_ref["path"] if check == "consumer_build_record" else
-                            reproducibility_ref["path"] if check == "consumer_reproducibility" else
-                            artifact_ref["path"]]}
-                                for check in gate.CHECKS})
-        path = root / "compatibility/evidence/synthetic/report.json"
-        path.write_text(json.dumps(evidence))
-        certificate = dict(evidence_id="synthetic-test", evidence=path.relative_to(root).as_posix(),
-                           sha256=gate.sha256(path.read_bytes()))
+        certificates = []
+        for platform in platforms:
+            target = targets[platform]
+            binary_sha = ("b" if platform == "windows" else "6") * 64
+            label = "synthetic" if platform == "windows" else "synthetic-linux"
+            evidence_id = "synthetic-test" if platform == "windows" else "synthetic-linux"
+            triple, artifact_name = gate.SBOM_TARGETS[(platform, "x86_64")]
+            evidence_dir = root / "compatibility/evidence" / label
+            evidence_dir.mkdir(parents=True)
+            artifact = evidence_dir / "log.txt"
+            artifact.write_text("Synthetic fixture only; this is never committed as live evidence.\n")
+            artifact_ref = dict(path=artifact.relative_to(root).as_posix(),
+                                sha256=gate.sha256(artifact.read_bytes()))
+            sbom_path = evidence_dir / "binary.spdx.json"
+            sbom = {
+                "spdxVersion": "SPDX-2.3",
+                "files": [{"SPDXID": gate.SBOM_FILE_ID, "fileName": f"./{artifact_name}",
+                           "checksums": [{"algorithm": "SHA256", "checksumValue": binary_sha}]}],
+                "packages": [{"SPDXID": "SPDXRef-Package-codex-autoapprover-0.1.0"}],
+                "documentDescribes": [gate.SBOM_FILE_ID, "SPDXRef-Package-codex-autoapprover-0.1.0"],
+                "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT",
+                                   "relatedSpdxElement": gate.SBOM_FILE_ID,
+                                   "relationshipType": "DESCRIBES"}],
+                "annotations": [{"annotator": "Tool: scripts/binary_sbom.py",
+                                 "comment": (f"Native Rust target: {triple}; consumer executable SHA-256: "
+                                             f"{binary_sha}; source SHA-256: {source_sha}")}],
+            }
+            sbom_path.write_text(json.dumps(sbom))
+            sbom_ref = dict(path=sbom_path.relative_to(root).as_posix(),
+                            sha256=gate.sha256(sbom_path.read_bytes()))
+            build_path = evidence_dir / "build-record.json"
+            build_record = {
+                "schema_version": 1, "status": "unqualified-native-build-observation",
+                "target": triple, "binary_sha256": binary_sha, "source_sha256": source_sha,
+                "cargo_lock_sha256": gate.sha256((root / "Cargo.lock").read_bytes()),
+                "manifest_sha256": gate.sha256((root / "compatibility/manifest.json").read_bytes()),
+                "git_commit": build_commit, "git_tree_clean": True,
+                "toolchain": {"rustc_verbose": f"rustc 1.98.0\nhost: {triple}\nrelease: 1.98.0",
+                              "cargo_version": "cargo 1.98.0"},
+                "host": {"system": "Windows" if platform == "windows" else "Linux",
+                         "release": "synthetic", "version": "synthetic", "machine": "AMD64",
+                         "distribution_id": "n/a", "distribution_version": "n/a"},
+            }
+            build_path.write_text(json.dumps(build_record))
+            build_ref = dict(path=build_path.relative_to(root).as_posix(),
+                             sha256=gate.sha256(build_path.read_bytes()))
+            reproducibility_path = evidence_dir / "reproducibility.json"
+            reproducibility = {
+                "schema_version": 1, "status": "unqualified-native-reproducibility-observation",
+                "git_commit": build_commit, "host": "win32" if platform == "windows" else "linux",
+                "rustc": "rustc 1.98.0", "cargo": "cargo 1.98.0",
+                "source_archive_sha256": "c" * 64, "source_sha256": source_sha,
+                "expected_binary_sha256": binary_sha,
+                "independent_build_sha256": [binary_sha, binary_sha], "byte_identical": True,
+            }
+            reproducibility_path.write_text(json.dumps(reproducibility))
+            reproducibility_ref = dict(path=reproducibility_path.relative_to(root).as_posix(),
+                                       sha256=gate.sha256(reproducibility_path.read_bytes()))
+            evidence = dict(
+                schema_version=2, kind="native-live", evidence_id=evidence_id, target=target,
+                source_sha256=source_sha, autoapprover_binary_sha256=binary_sha,
+                build_commit=build_commit, upstream_artifact_sha256="c" * 64,
+                producer="synthetic-producer", reviewer="synthetic-reviewer",
+                review_decision="approved", run_url="https://example.invalid/synthetic-fixture",
+                observed_at=datetime.now(timezone.utc).isoformat(),
+                artifacts=[artifact_ref, sbom_ref, build_ref, reproducibility_ref],
+                checks={check: {"result": "pass", "artifacts": [
+                    sbom_ref["path"] if check == "consumer_binary_sbom" else
+                    build_ref["path"] if check == "consumer_build_record" else
+                    reproducibility_ref["path"] if check == "consumer_reproducibility" else
+                    artifact_ref["path"]]}
+                        for check in gate.CHECKS},
+            )
+            report_path = evidence_dir / "report.json"
+            report_path.write_text(json.dumps(evidence))
+            certificates.append(dict(evidence_id=evidence_id,
+                                     evidence=report_path.relative_to(root).as_posix(),
+                                     sha256=gate.sha256(report_path.read_bytes())))
         policy = dict(schema_version=2, autoapprover_version="0.1.0", ready=True,
-                      certifications=[certificate], blockers=[])
+                      certifications=certificates, blockers=[])
         return policy, runtime
 
     def rewrite_evidence(self, root, policy, change):
@@ -126,21 +148,43 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "blocked"):
             gate.validate(root, policy, require_ready=True)
 
+    def test_ready_release_requires_both_native_platforms(self):
+        for platform in ("linux", "windows"):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy, runtime = self.fixture(root, platforms=(platform,))
+                with self.assertRaisesRegex(ValueError, "native Linux and Windows"):
+                    gate.validate(root, policy, runtime, True,
+                                  ("b" if platform == "windows" else "6") * 64, platform)
+
+    def test_ready_binary_must_match_its_native_platform_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, runtime = self.fixture(root)
+            gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+            gate.validate(root, policy, runtime, True, "6" * 64, "linux")
+            with self.assertRaisesRegex(ValueError, "native qualification for this platform"):
+                gate.validate(root, policy, runtime, True, "b" * 64)
+            for binary, platform in (("b" * 64, "linux"), ("6" * 64, "windows")):
+                with self.subTest(platform=platform), self.assertRaisesRegex(
+                        ValueError, "native qualification for this platform"):
+                    gate.validate(root, policy, runtime, True, binary, platform)
+
     def test_native_report_binds_every_field_and_consumer_binary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             policy, runtime = self.fixture(root)
-            gate.validate(root, policy, runtime, True, "b" * 64)
+            gate.validate(root, policy, runtime, True, "b" * 64, "windows")
             for field in gate.TARGET_FIELDS:
                 changed = copy.deepcopy(runtime)
                 changed["entries"][0]["target"][field] += "-different"
                 with self.subTest(field=field), self.assertRaises(ValueError):
-                    gate.validate(root, policy, changed, True, "b" * 64)
+                    gate.validate(root, policy, changed, True, "b" * 64, "windows")
             with self.assertRaisesRegex(ValueError, "consumer executable"):
-                gate.validate(root, policy, runtime, True, "d" * 64)
+                gate.validate(root, policy, runtime, True, "d" * 64, "windows")
             (root / "src/main.rs").write_text("new implementation")
             with self.assertRaisesRegex(ValueError, "different source"):
-                gate.validate(root, policy, runtime, True, "b" * 64)
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_matching_edited_manifest_still_invalidates_old_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -150,7 +194,7 @@ class ReleaseGateTests(unittest.TestCase):
             (root / "compatibility/manifest.json").write_text(json.dumps(runtime))
             self.rewrite_evidence(root, policy, lambda evidence: evidence["target"].update(os_build="another-build"))
             with self.assertRaisesRegex(ValueError, "different source"):
-                gate.validate(root, policy, runtime, True, "b" * 64)
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_forged_or_unsubstantiated_evidence_fails(self):
         changes = {
@@ -175,7 +219,7 @@ class ReleaseGateTests(unittest.TestCase):
                 policy, runtime = self.fixture(root)
                 self.rewrite_evidence(root, policy, change)
                 with self.assertRaises(ValueError):
-                    gate.validate(root, policy, runtime, True, "b" * 64)
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_revocation_duplicates_and_missing_evidence_fail(self):
         for change in ["revoked-binary", "revoked-bundle", "revoked-launcher", "revoked-package",
@@ -195,7 +239,7 @@ class ReleaseGateTests(unittest.TestCase):
                     path.symlink_to(root / "Cargo.toml")
                 if change == "artifact-changed": (root / "compatibility/evidence/synthetic/log.txt").write_text("changed")
                 with self.assertRaises(ValueError):
-                    gate.validate(root, policy, runtime, True, "b" * 64)
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_binary_sbom_must_bind_the_reviewed_consumer_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -209,7 +253,7 @@ class ReleaseGateTests(unittest.TestCase):
                 artifact for artifact in evidence["artifacts"] if artifact["path"].endswith(".spdx.json")
             ).update(sha256=gate.sha256(path.read_bytes())))
             with self.assertRaisesRegex(ValueError, "binary SBOM"):
-                gate.validate(root, policy, runtime, True, "b" * 64)
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_build_record_must_bind_reviewed_source_binary_and_clean_native_host(self):
         changes = {
@@ -234,7 +278,7 @@ class ReleaseGateTests(unittest.TestCase):
                     artifact for artifact in evidence["artifacts"] if artifact["path"].endswith("/build-record.json")
                 ).update(sha256=gate.sha256(path.read_bytes())))
                 with self.assertRaisesRegex(ValueError, "build record"):
-                    gate.validate(root, policy, runtime, True, "b" * 64)
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_reproducibility_record_must_bind_the_reviewed_build(self):
         changes = {
@@ -260,7 +304,7 @@ class ReleaseGateTests(unittest.TestCase):
                     if artifact["path"].endswith("/reproducibility.json")
                 ).update(sha256=gate.sha256(path.read_bytes())))
                 with self.assertRaisesRegex(ValueError, "reproducibility record"):
-                    gate.validate(root, policy, runtime, True, "b" * 64)
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_duplicate_json_fields_are_rejected_recursively(self):
         for text in ['{"ready":false,"ready":true}', '{"target":{"os":"linux","os":"windows"}}',

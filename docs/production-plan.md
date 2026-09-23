@@ -67,6 +67,8 @@ Retain native reports and redacted artifacts under `compatibility/evidence/`. Ea
 
 The gate compares the **whole** runtime manifest to its source, the **whole** report target to its certificate, and the inspected consumer executable digest to a native report. The consumer SBOM check must cite one retained SPDX document naming that digest, source and supported native target. Duplicate keys/tuples, incomplete targets, revocations, missing retained logs, unsupported tools, stale evidence, self-review and source mismatch fail. The gate cannot establish the truth of a report or supply the independent review; protected branches and actual native execution remain necessary.
 
+A ready release requires reviewed x86_64 native Linux and Windows certificates. When the gate inspects a consumer executable, its digest must match evidence for the runner's native OS; a Linux report cannot qualify the Windows binary or vice versa.
+
 See [hardening validation](validation-2026-09-23-hardening.md) for current check results and the requirement-by-requirement continuation ledger. None of these local synthetic checks qualifies a production target.
 
 ## Repository activation
