@@ -51,7 +51,7 @@ The separate `scripts/install-windows-artifact.ps1` accepts an extracted Windows
 
 It manages a private install directory under `LOCALAPPDATA` (default `%LOCALAPPDATA%\codex-autoapprover\bin`), leaving `CODEX_HOME`, `PATH` and the Windows sandbox setting alone. Invoke the managed executable by its full path until a consumer launcher is qualified. The intended replacement is a same-volume `File.Replace`; a lock and journal reconcile a process interruption, and a locked live executable causes the update to fail. Uninstall leaves the lock file to serialize later installs. An existing Cargo installation is not adopted or overwritten. The installer refuses redirected or broadly writable install directories, unmanaged entries and changed release bytes. Native Windows ACL, locked-file, long-path, interruption and disk-full behavior still needs actual PowerShell 5.1/7 execution and review.
 
-`scripts/package_windows.py` prepares a deterministic, **unqualified** development ZIP on native Windows; `scripts/test-package-windows.ps1` is prepared to compare two ZIPs and install the exact extracted bytes. Its adjacent checksum and internal `artifact.json` are unsigned and do not authenticate a download. There is no authenticated public consumer artifact yet.
+`scripts/package_windows.py` prepares a deterministic, **unqualified** development ZIP on native Windows; `scripts/test-package-windows.ps1` is prepared to compare reproducible ZIPs and rehearse install, reinstall, upgrade, rollback and uninstall using the exact bytes extracted from two distinct ZIPs. Its adjacent checksum and internal `artifact.json` are unsigned and do not authenticate a download. There is no authenticated public consumer artifact yet.
 
 `scripts/locked_sbom.py` creates a preliminary SPDX 2.3 inventory from every package in `Cargo.lock`. It verifies each registry source archive against the locked SHA-256 before reading its declared license. The inventory covers optional, target, build and development dependencies; it is not a binary-specific SBOM or a completed license/vulnerability review. See [dependency review](docs/dependencies.md).
 
@@ -104,7 +104,7 @@ python scripts/locked_sbom.py --output /tmp/codex-autoapprover-locked-dependenci
 python scripts/binary_sbom.py --offline --binary target/release/codex-autoapprover --output /tmp/codex-autoapprover-linux-x86_64.spdx.json
 ```
 
-The prepared native Windows candidate workflow runs source and artifact installer tests in Windows PowerShell 5.1 and PowerShell 7, plus an exact-byte development ZIP rehearsal. It has not run. Cross-compilation and Linux PowerShell syntax checks are not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.
+The prepared native Windows candidate workflow runs source and artifact installer tests in Windows PowerShell 5.1 and PowerShell 7, plus an exact-byte development ZIP lifecycle rehearsal. It has not run. Cross-compilation and Linux PowerShell syntax checks are not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.
 
 ## Documentation and licence
 
