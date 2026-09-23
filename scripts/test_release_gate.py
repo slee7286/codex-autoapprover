@@ -25,6 +25,36 @@ class ReleaseGateTests(unittest.TestCase):
             ["Cargo.toml", "build.rs", "src/main.rs"],
         )
 
+    def test_source_digest_rejects_linked_source_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("Cargo.toml", "Cargo.lock", "compatibility/manifest.json",
+                         "tools/repair-cli/package.json", "tools/repair-cli/package-lock.json",
+                         "src/main.rs"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic source")
+            original = gate.source_digest(root)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "hidden.rs").write_text("unreviewed source")
+            link = root / "src/linked"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "linked source entry"):
+                gate.source_digest(root)
+            link.unlink()
+            link.symlink_to(root / "missing.rs")
+            with self.assertRaisesRegex(ValueError, "linked source entry"):
+                gate.source_digest(root)
+            link.unlink()
+            self.assertEqual(gate.source_digest(root), original)
+            with patch.object(gate, "MAX_SOURCE_TREE_ENTRIES", 1):
+                with self.assertRaisesRegex(ValueError, "entry limit"):
+                    gate.source_digest(root)
+
     def fixture(self, root, platforms=("windows", "linux")):
         for filename in [
             "Cargo.toml", "Cargo.lock", "src/main.rs",

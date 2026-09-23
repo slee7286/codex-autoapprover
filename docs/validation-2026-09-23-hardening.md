@@ -109,7 +109,10 @@ made additional code, gate, test and documentation changes.
   toolchain and host fields pass bounded checks. This remains structural
   validation, not independent proof of build provenance. Source files
   sort by canonical relative UTF-8 path so Linux and Windows runners compute
-  the same source digest. Reports expire for release qualification after 30 days.
+  the same source digest. The source walk rejects linked, reparse and nonregular
+  entries instead of silently skipping linked directories; a regression covers
+  a directory link to unreviewed source bytes. Reports expire for release
+  qualification after 30 days.
 - Windows bundle directory admission now reads owner and DACL information from
   no-reparse directory handles. It rejects null DACLs, untrusted ownership,
   unknown ACE forms and untrusted write, delete, owner or DACL rights; each

@@ -8,8 +8,10 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import subprocess
 import sys
 
@@ -42,6 +44,7 @@ MAX_TOTAL_RETAINED_BYTES = 128 * 1024 * 1024
 MAX_SBOM_BYTES = 16 * 1024 * 1024
 MAX_BUILD_RECORD_BYTES = 16 * 1024
 MAX_REPRODUCIBILITY_RECORD_BYTES = 16 * 1024
+MAX_SOURCE_TREE_ENTRIES = 20_000
 SBOM_FILE_ID = "SPDXRef-File-ConsumerBinary"
 SBOM_TARGETS = {
     ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "codex-autoapprover-linux-x86_64"),
@@ -160,6 +163,43 @@ def bounded_bytes(path, limit, label):
     return body
 
 
+def source_tree_files(root, directory):
+    start = root / directory
+    try:
+        start_info = start.lstat()
+    except FileNotFoundError:
+        return []
+    if not stat.S_ISDIR(start_info.st_mode) or is_reparse(start_info):
+        raise ValueError(f"unsafe source directory: {directory}")
+    pending = [start]
+    files = []
+    entries = 0
+    while pending:
+        path = pending.pop()
+        info = path.lstat()
+        entries += 1
+        if entries > MAX_SOURCE_TREE_ENTRIES:
+            raise ValueError(f"source tree exceeds entry limit: {directory}")
+        if is_reparse(info):
+            raise ValueError(f"linked source entry: {path.relative_to(root).as_posix()}")
+        if stat.S_ISDIR(info.st_mode):
+            with os.scandir(path) as children:
+                pending.extend(Path(child.path) for child in children)
+        elif stat.S_ISREG(info.st_mode):
+            if "__pycache__" not in path.relative_to(root).parts:
+                files.append(path)
+        else:
+            raise ValueError(f"nonregular source entry: {path.relative_to(root).as_posix()}")
+    return files
+
+
+def is_reparse(info):
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
 def source_digest(root):
     """Evidence and policy excluded to avoid circular evidence hashes.
 
@@ -173,8 +213,7 @@ def source_digest(root):
     ]]
     paths.extend(root / name for name in ["build.rs", "rust-toolchain", "rust-toolchain.toml", ".gitattributes"] if (root / name).exists())
     for directory in ["src", "tests", "scripts", ".github/workflows", ".cargo"]:
-        paths.extend(path for path in (root / directory).rglob("*")
-                     if path.is_file() and "__pycache__" not in path.parts)
+        paths.extend(source_tree_files(root, directory))
     digest = hashlib.sha256()
     # Native Path ordering differs between Windows and Unix for mixed-case names.
     # Evidence produced on either runner must hash the same source byte sequence.
