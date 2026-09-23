@@ -40,6 +40,8 @@ There is **no authenticated public consumer artifact yet**. Local lifecycle test
 
 `scripts/locked_sbom.py` creates a preliminary SPDX 2.3 inventory from every package in `Cargo.lock`. It verifies each registry source archive against the locked SHA-256 before reading its declared license. The inventory covers optional, target, build and development dependencies; it is not a binary-specific SBOM or a completed license/vulnerability review. See [dependency review](docs/dependencies.md).
 
+`scripts/locked_licenses.py` creates an offline, deterministic bundle of available license and notice texts from those verified archives. Two locked crates lack matching top-level texts; independent license review and a final consumer notice selection remain necessary.
+
 ## Commands
 
 ```text

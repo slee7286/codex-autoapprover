@@ -23,6 +23,22 @@ review, target-specific SBOMs and a signed release artifact remain required.
 The CI job retains this inventory as a review artifact, not as a production
 attestation.
 
+`scripts/locked_licenses.py` additionally creates a deterministic local archive
+of top-level license and notice files from the same checksum-verified crate
+archives. Its `inventory.json` records each file's SHA-256, the declared
+license, the locked crate checksum and the current source digest. The script
+uses only locally cached archives and fails if one is missing. The 2026-09-23
+rehearsal found top-level license/notice files for 86 of 88 registry crates;
+`difflib 0.4.0` and `r-efi 6.0.0` declared licenses but had no matching
+top-level text in their published archives. Those cases need manual review.
+The bundle covers the full lockfile, including crates that may not be linked
+into a particular consumer binary. It is neither a final notice selection nor
+a legal conclusion.
+
+```sh
+python scripts/locked_licenses.py --output /tmp/codex-autoapprover-locked-licenses.tar.gz
+```
+
 Generate a new inventory with Python 3.11 or later:
 
 ```sh
