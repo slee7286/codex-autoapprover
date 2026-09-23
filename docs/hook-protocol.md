@@ -38,6 +38,8 @@ The documentation also states that matching hooks from multiple files run and mu
 
 The [tagged 0.156.1 PermissionRequest input schema](https://github.com/openai/codex/blob/rust-v0.156.1/codex-rs/hooks/schema/generated/permission-request.command.input.schema.json) requires all nine common and event fields shown below, rejects additional properties, restricts `permission_mode` to five named values, and permits optional `agent_id` and `agent_type` for subagent context. The inspected 0.151.0, 0.152.1, and 0.156.0 tagged schemas have the same field shape. This project declines requests carrying subagent context until that surface is separately qualified.
 
+The bounded `verify-local-hook` experiment permits only these inspected schema versions: Linux 0.151.0, 0.152.1, 0.156.0 and 0.156.1; Windows 0.152.1, 0.156.0 and 0.156.1. A future or uninspected version cannot start the verifier merely because its numeric version is greater. This list grants no production compatibility; the embedded manifest remains empty.
+
 ## Local Codex observations
 
 An earlier local observation found Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposed `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposed stable hooks in `codex features list`. The Linux 0.151.0 live evidence recorded at commit `4206097` is historical only; it does not certify the current artifact and the production manifest has no entries.

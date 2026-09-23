@@ -96,22 +96,18 @@ pub struct VerificationTarget {
 }
 
 pub fn verification_schema(version: &str, tool: &str) -> bool {
-    if tool != "Bash" || crate::codex::parse_version(&format!("codex-cli {version}")).is_err() {
+    verification_schema_for(version, tool, OperatingSystem::current())
+}
+
+fn verification_schema_for(version: &str, tool: &str, operating_system: OperatingSystem) -> bool {
+    if tool != "Bash" {
         return false;
     }
-    let numbers = version
-        .split('.')
-        .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>();
-    let Ok(numbers) = numbers else {
-        return false;
-    };
-    let baseline = if cfg!(windows) {
-        [0, 152, 1]
-    } else {
-        [0, 151, 0]
-    };
-    numbers.as_slice() >= baseline.as_slice()
+    match operating_system {
+        OperatingSystem::Linux => matches!(version, "0.151.0" | "0.152.1" | "0.156.0" | "0.156.1"),
+        OperatingSystem::Windows => matches!(version, "0.152.1" | "0.156.0" | "0.156.1"),
+        OperatingSystem::MacOs | OperatingSystem::Other => false,
+    }
 }
 
 pub fn resolved_verification_target(version: &str) -> Option<VerificationTarget> {
@@ -142,11 +138,47 @@ mod tests {
     use super::*;
     #[test]
     fn verifier_is_exactly_scoped_and_never_a_production_certificate() {
-        assert!(verification_schema("0.156.0", "Bash"));
+        assert!(verification_schema_for(
+            "0.156.0",
+            "Bash",
+            OperatingSystem::Linux
+        ));
         assert!(!verification_schema("0.156.0", "apply_patch"));
         assert!(!verification_schema("0.156.0-rc.1", "Bash"));
-        let target = resolved_verification_target("0.156.0").unwrap();
-        assert!(!verification_version_matches("0.157.0", &target));
+        assert!(!verification_schema("0.156.2", "Bash"));
+        assert!(!verification_schema("0.157.0", "Bash"));
+        assert!(verification_schema_for(
+            "0.151.0",
+            "Bash",
+            OperatingSystem::Linux
+        ));
+        assert!(!verification_schema_for(
+            "0.151.0",
+            "Bash",
+            OperatingSystem::Windows
+        ));
+        assert!(verification_schema_for(
+            "0.156.1",
+            "Bash",
+            OperatingSystem::Windows
+        ));
+        assert!(!verification_schema_for(
+            "0.156.2",
+            "Bash",
+            OperatingSystem::Windows
+        ));
+        assert!(!verification_schema_for(
+            "0.156.1",
+            "Bash",
+            OperatingSystem::MacOs
+        ));
+        if matches!(
+            OperatingSystem::current(),
+            OperatingSystem::Linux | OperatingSystem::Windows
+        ) {
+            let target = resolved_verification_target("0.156.0").unwrap();
+            assert!(!verification_version_matches("0.157.0", &target));
+        }
         assert!(is_verification_probe_command(
             verification_probe_command_fixture()
         ));

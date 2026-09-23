@@ -92,7 +92,11 @@ made additional code, gate, test and documentation changes.
   rejection test pass; neither invokes Codex. The verifier no longer passes
   `--dangerously-bypass-hook-trust`, because that flag can run other configured
   hooks under Codex's composition rules. The temporary hook now needs normal
-  trust review. The verifier still shares the user's Codex configuration and
+  trust review. Its version eligibility is now limited to the exact inspected
+  Linux/Windows hook schema versions; the old numeric minimum admitted future
+  versions without schema review. Rust unit and integration tests, Clippy,
+  formatting and Windows cross-check passed after this change. The verifier
+  still shares the user's Codex configuration and
   authentication context and does not produce a reviewed native report; an
   isolated native qualification harness remains open.
 - The schema-2 release gate compares the entire compiled manifest and evidence
