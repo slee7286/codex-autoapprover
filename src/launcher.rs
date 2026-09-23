@@ -1,6 +1,7 @@
 use std::{
-    env, fs,
-    io::{self, BufRead, IsTerminal, Write},
+    env,
+    fs::{self, OpenOptions},
+    io::{self, BufRead, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -27,6 +28,7 @@ const VERIFICATION_HOOKS_DIR: &str = ".codex-autoapprover-hooks";
 const VERIFICATION_COMMIT_MESSAGE: &str = "verification baseline";
 const VERIFICATION_GIT_NAME: &str = "codex-autoapprover verification";
 const VERIFICATION_GIT_EMAIL: &str = "codex-autoapprover-verification@localhost";
+const MAX_VERIFICATION_AUTH_BYTES: u64 = 1024 * 1024;
 
 pub fn run(args: &RunArgs) -> Result<i32> {
     let installation = codex::inspect()?;
@@ -301,7 +303,10 @@ pub fn print_hook_config() -> Result<i32> {
     Ok(0)
 }
 
-pub fn verify_local_hook(diagnostic_dir: Option<&Path>) -> Result<i32> {
+pub fn verify_local_hook(
+    verification_auth_home: &Path,
+    diagnostic_dir: Option<&Path>,
+) -> Result<i32> {
     if compatibility::is_wsl_runtime() {
         bail!("verify-local-hook requires native Windows, not WSL")
     }
@@ -322,6 +327,7 @@ pub fn verify_local_hook(diagnostic_dir: Option<&Path>) -> Result<i32> {
     {
         bail!("verification diagnostic parent must be an existing directory")
     }
+    let auth_source = verification_auth_source(verification_auth_home)?;
 
     let installation = codex::inspect()?;
     let verification_target = compatibility::resolved_verification_target(&installation.version)
@@ -339,6 +345,9 @@ pub fn verify_local_hook(diagnostic_dir: Option<&Path>) -> Result<i32> {
     eprintln!("!!! LOCAL HOOK VERIFICATION EXPERIMENT !!!");
     eprintln!("This starts the official Codex executable with a child-local hook override.");
     eprintln!("Automatic approval is armed only for this verification child.");
+    eprintln!(
+        "The child requests file-backed auth from a temporary home containing only the separate test login."
+    );
     eprintln!("No persistent Codex configuration will be written.");
     eprintln!("The only authorized action is: {}", probe_command);
     eprintln!(
@@ -368,6 +377,10 @@ pub fn verify_local_hook(diagnostic_dir: Option<&Path>) -> Result<i32> {
 
     let launcher = env::current_exe().context("resolve current launcher executable")?;
     let state = VerificationState::new()?;
+    if let Err(error) = stage_verification_auth(&auth_source, state.codex_home.path()) {
+        let cleanup = state.cleanup();
+        return Err(with_cleanup_error(error, cleanup));
+    }
     let repo_path = state.repository_path.clone();
     let audit_path = state.audit_path.clone();
     let session = match Session::create() {
@@ -405,11 +418,14 @@ pub fn verify_local_hook(diagnostic_dir: Option<&Path>) -> Result<i32> {
         .arg("--no-alt-screen")
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
+        .arg("-c")
+        .arg("cli_auth_credentials_store=\"file\"")
         .arg(verification_prompt(&probe_command))
         .current_dir(&repo_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    isolate_verification_child_environment(&mut command, state.codex_home.path());
     if let Err(error) = session.arm_child(&mut command) {
         let broker_cleanup = broker.shutdown();
         let session_cleanup = session.cleanup();
@@ -796,9 +812,139 @@ impl RepositoryStatus {
     }
 }
 
+fn verification_auth_source(test_home: &Path) -> Result<PathBuf> {
+    let default_home = env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(|home| PathBuf::from(home).join(".codex"));
+    let configured_home = env::var_os("CODEX_HOME").map(PathBuf::from);
+    let live_homes: Vec<_> = [default_home, configured_home]
+        .into_iter()
+        .flatten()
+        .collect();
+    verification_auth_source_with_live(test_home, &live_homes)
+}
+
+fn verification_auth_source_with_live(test_home: &Path, live_homes: &[PathBuf]) -> Result<PathBuf> {
+    if !test_home.is_absolute() {
+        bail!("the separate verification authentication home must be absolute")
+    }
+    crate::identity::check_trusted_directory_chain(test_home)
+        .context("verify separate test login home ownership and permissions")?;
+    let canonical = fs::canonicalize(test_home).context("resolve separate test login home")?;
+    for live_home in live_homes {
+        if fs::canonicalize(live_home).is_ok_and(|path| canonical.starts_with(path)) {
+            bail!("verification authentication must use a separate login, not the live Codex home")
+        }
+    }
+    Ok(canonical.join("auth.json"))
+}
+
+fn isolate_verification_child_environment(command: &mut Command, isolated_home: &Path) {
+    command
+        .env("CODEX_HOME", isolated_home)
+        .env("HOME", isolated_home)
+        .env("USERPROFILE", isolated_home);
+    for variable in [
+        "CODEX_SQLITE_HOME",
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_FEDERATION_RULE_ID",
+        "OPENAI_IDENTITY_TOKEN_FILE",
+        "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
+        "OPENAI_BASE_URL",
+        "OPENAI_ORGANIZATION",
+        "OPENAI_PROJECT",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "BASH_ENV",
+        "ENV",
+        "ZDOTDIR",
+        "PROMPT_COMMAND",
+        "RUST_LOG",
+    ] {
+        command.env_remove(variable);
+    }
+}
+
+fn stage_verification_auth(source: &Path, isolated_home: &Path) -> Result<()> {
+    if !source.is_absolute() || !isolated_home.is_absolute() {
+        bail!("verification authentication paths must be absolute")
+    }
+    let metadata = fs::symlink_metadata(source).context(
+        "read file-backed Codex auth.json; keyring-only login is not supported by this diagnostic",
+    )?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_VERIFICATION_AUTH_BYTES
+    {
+        bail!("verification auth.json must be a regular, bounded file")
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!("verification auth.json must be private to its owner")
+        }
+    }
+    crate::identity::check_trusted_directory_chain(
+        source
+            .parent()
+            .context("auth.json has no parent directory")?,
+    )
+    .context("verify original Codex authentication directory")?;
+    let canonical = fs::canonicalize(source).context("resolve Codex authentication file")?;
+    let bound = crate::identity::BoundFile::open_limited(&canonical, MAX_VERIFICATION_AUTH_BYTES)
+        .context("hold exact file-backed Codex authentication bytes")?;
+    let input = fs::File::open(&canonical).context("read Codex authentication file")?;
+    #[cfg(windows)]
+    crate::identity::check_trusted_file_acl(&input)
+        .context("verify Codex authentication file ACL")?;
+    let mut bytes = Vec::with_capacity(bound.size as usize);
+    input
+        .take(MAX_VERIFICATION_AUTH_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("read bounded Codex authentication file")?;
+    if bytes.len() as u64 != bound.size || sha256_hex(&bytes) != bound.sha256 {
+        bail!("Codex authentication file changed during isolated staging")
+    }
+    bound
+        .recheck()
+        .context("recheck original Codex authentication file")?;
+
+    crate::identity::check_trusted_directory_chain(isolated_home)
+        .context("verify temporary Codex home ownership and permissions")?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options
+        .open(isolated_home.join("auth.json"))
+        .context("create private temporary Codex authentication file")?;
+    #[cfg(windows)]
+    crate::identity::check_trusted_file_acl(&output)
+        .context("verify temporary Codex authentication file ACL")?;
+    output
+        .write_all(&bytes)
+        .context("copy authentication into temporary Codex home")?;
+    output
+        .flush()
+        .context("flush temporary Codex authentication")?;
+    bytes.fill(0);
+    bound
+        .recheck()
+        .context("recheck original Codex authentication after staging")?;
+    Ok(())
+}
+
 struct VerificationState {
     repository: TempDir,
     evidence: TempDir,
+    codex_home: TempDir,
     repository_path: PathBuf,
     audit_path: PathBuf,
 }
@@ -818,24 +964,48 @@ struct VerificationDiagnostic<'a> {
     unexpected_requests: usize,
 }
 
+fn private_verification_tempdir() -> Result<TempDir> {
+    let directory = TempDir::new().context("create temporary verification directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .context("protect temporary verification directory")?;
+    }
+    crate::identity::check_trusted_directory_chain(directory.path())
+        .context("verify temporary verification directory ownership and permissions")?;
+    Ok(directory)
+}
+
 impl VerificationState {
     fn new() -> Result<Self> {
-        let repository = TempDir::new().context("create isolated temporary repository")?;
-        let evidence = match TempDir::new() {
+        let repository =
+            private_verification_tempdir().context("create isolated temporary repository")?;
+        let evidence = match private_verification_tempdir() {
             Ok(evidence) => evidence,
             Err(error) => {
                 let cleanup = repository.close();
-                let creation = anyhow::Error::new(error)
-                    .context("create temporary verification evidence directory");
+                let creation = error.context("create temporary verification evidence directory");
                 return Err(with_cleanup_error(
                     creation,
                     cleanup.map_err(anyhow::Error::from),
                 ));
             }
         };
+        let codex_home = match private_verification_tempdir() {
+            Ok(home) => home,
+            Err(error) => {
+                let cleanup = combine_cleanup(
+                    repository.close().map_err(anyhow::Error::from),
+                    evidence.close().map_err(anyhow::Error::from),
+                );
+                let creation = error.context("create temporary isolated Codex home");
+                return Err(with_cleanup_error(creation, cleanup));
+            }
+        };
 
         if let Err(error) = initialize_temporary_repository(repository.path()) {
-            let cleanup = close_temp_dirs(repository, evidence);
+            let cleanup = close_temp_dirs(repository, evidence, codex_home);
             return Err(with_cleanup_error(error, cleanup));
         }
 
@@ -843,7 +1013,7 @@ impl VerificationState {
         if let Err(error) =
             audit::initialize(&audit_path).context("initialize temporary redacted hook audit")
         {
-            let cleanup = close_temp_dirs(repository, evidence);
+            let cleanup = close_temp_dirs(repository, evidence, codex_home);
             return Err(with_cleanup_error(error, cleanup));
         }
 
@@ -852,6 +1022,7 @@ impl VerificationState {
             audit_path,
             repository,
             evidence,
+            codex_home,
         })
     }
 
@@ -903,7 +1074,7 @@ impl VerificationState {
     }
 
     fn cleanup(self) -> Result<()> {
-        close_temp_dirs(self.repository, self.evidence)
+        close_temp_dirs(self.repository, self.evidence, self.codex_home)
     }
 }
 
@@ -914,19 +1085,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn close_temp_dirs(repository: TempDir, evidence: TempDir) -> Result<()> {
-    let repository_result = repository.close();
-    let evidence_result = evidence.close();
-    match (repository_result, evidence_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(repository), Ok(())) => {
-            Err(repository).context("remove temporary verification repository")
-        }
-        (Ok(()), Err(evidence)) => Err(evidence).context("remove temporary verification evidence"),
-        (Err(repository), Err(evidence)) => bail!(
-            "remove temporary verification repository and evidence: repository cleanup failed: {repository}; evidence cleanup failed: {evidence}"
+fn close_temp_dirs(repository: TempDir, evidence: TempDir, codex_home: TempDir) -> Result<()> {
+    combine_cleanup(
+        combine_cleanup(
+            repository
+                .close()
+                .context("remove temporary verification repository"),
+            evidence
+                .close()
+                .context("remove temporary verification evidence"),
         ),
-    }
+        codex_home.close().context("remove temporary Codex home"),
+    )
 }
 
 fn with_cleanup_error(error: anyhow::Error, cleanup: Result<()>) -> anyhow::Error {
@@ -1284,13 +1454,137 @@ mod tests {
     fn evidence_files_are_outside_checked_repository() {
         let state = VerificationState::new().expect("temporary verification state");
         assert_ne!(state.repository_path, state.evidence.path());
+        assert_ne!(state.repository_path, state.codex_home.path());
         assert!(!state.audit_path.starts_with(&state.repository_path));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for directory in [
+                state.repository.path(),
+                state.evidence.path(),
+                state.codex_home.path(),
+            ] {
+                assert_eq!(
+                    fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+        }
         assert!(
             verify_clean_baseline(&state.repository_path)
                 .expect("baseline status")
                 .is_clean()
         );
         state.cleanup().expect("cleanup state");
+    }
+
+    #[test]
+    fn verification_child_environment_uses_only_temporary_state() {
+        let home = TempDir::new().expect("temporary home");
+        let mut child = Command::new("codex");
+        child
+            .env("CODEX_HOME", "live-home")
+            .env("CODEX_SQLITE_HOME", "live-state")
+            .env("CODEX_ACCESS_TOKEN", "synthetic-token")
+            .env("BASH_ENV", "live-shell-startup");
+        isolate_verification_child_environment(&mut child, home.path());
+        let setting = |name: &str| {
+            child
+                .get_envs()
+                .find(|(key, _)| key == &std::ffi::OsStr::new(name))
+                .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        };
+        assert_eq!(
+            setting("CODEX_HOME"),
+            Some(Some(home.path().as_os_str().to_os_string()))
+        );
+        assert_eq!(
+            setting("HOME"),
+            Some(Some(home.path().as_os_str().to_os_string()))
+        );
+        assert_eq!(
+            setting("USERPROFILE"),
+            Some(Some(home.path().as_os_str().to_os_string()))
+        );
+        for name in ["CODEX_SQLITE_HOME", "CODEX_ACCESS_TOKEN", "BASH_ENV"] {
+            assert_eq!(setting(name), Some(None), "{name} must not reach the child");
+        }
+    }
+
+    #[test]
+    fn verification_child_receives_only_private_file_auth_from_separate_login_home() {
+        let source = private_verification_tempdir().expect("source Codex home");
+        assert!(
+            verification_auth_source_with_live(source.path(), &[source.path().to_path_buf()])
+                .is_err()
+        );
+        let nested = source.path().join("nested");
+        fs::create_dir(&nested).expect("nested login fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o700))
+                .expect("private nested login fixture");
+        }
+        assert!(
+            verification_auth_source_with_live(&nested, &[source.path().to_path_buf()]).is_err()
+        );
+        assert_eq!(
+            verification_auth_source_with_live(source.path(), &[]).expect("separate login"),
+            fs::canonicalize(source.path()).unwrap().join("auth.json")
+        );
+        let auth = source.path().join("auth.json");
+        fs::write(&auth, b"synthetic authentication fixture").expect("auth fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&auth, fs::Permissions::from_mode(0o600))
+                .expect("private auth fixture");
+        }
+        fs::write(source.path().join("config.toml"), "[hooks]\n")
+            .expect("user configuration fixture");
+        fs::write(source.path().join("hooks.json"), "{}").expect("user hooks fixture");
+        let state = VerificationState::new().expect("temporary verification state");
+        let isolated_home = state.codex_home.path().to_path_buf();
+        stage_verification_auth(&auth, &isolated_home).expect("copy isolated auth");
+        let entries: Vec<_> = fs::read_dir(&isolated_home)
+            .expect("read isolated home")
+            .map(|entry| entry.expect("isolated entry").file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("auth.json")]);
+        assert_eq!(
+            fs::read(isolated_home.join("auth.json")).expect("isolated auth"),
+            b"synthetic authentication fixture"
+        );
+        assert!(source.path().join("config.toml").exists());
+        state.cleanup().expect("remove isolated home");
+        assert!(!isolated_home.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verification_auth_refuses_exposed_linked_or_oversized_sources() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let source = private_verification_tempdir().expect("source Codex home");
+        let isolated = private_verification_tempdir().expect("isolated Codex home");
+        let auth = source.path().join("auth.json");
+        fs::write(&auth, b"fixture").expect("auth fixture");
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o640)).expect("expose auth fixture");
+        assert!(stage_verification_auth(&auth, isolated.path()).is_err());
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o600))
+            .expect("protect auth fixture");
+        let hardlink = source.path().join("linked-auth.json");
+        fs::hard_link(&auth, &hardlink).expect("hardlink auth fixture");
+        assert!(stage_verification_auth(&auth, isolated.path()).is_err());
+        fs::remove_file(hardlink).expect("remove hardlink fixture");
+        let link = source.path().join("alias-auth.json");
+        symlink(&auth, &link).expect("symlink auth fixture");
+        assert!(stage_verification_auth(&link, isolated.path()).is_err());
+        fs::write(&auth, vec![b'x'; MAX_VERIFICATION_AUTH_BYTES as usize + 1])
+            .expect("oversized auth fixture");
+        assert!(stage_verification_auth(&auth, isolated.path()).is_err());
+        assert!(!isolated.path().join("auth.json").exists());
     }
 
     #[test]
@@ -1379,13 +1673,15 @@ mod tests {
     }
 
     #[test]
-    fn verification_state_cleanup_removes_repository_and_evidence() {
+    fn verification_state_cleanup_removes_repository_evidence_and_codex_home() {
         let state = VerificationState::new().expect("temporary verification state");
         let repository_path = state.repository_path.clone();
         let evidence_path = state.evidence.path().to_path_buf();
+        let codex_home_path = state.codex_home.path().to_path_buf();
         state.cleanup().expect("cleanup state");
         assert!(!repository_path.exists());
         assert!(!evidence_path.exists());
+        assert!(!codex_home_path.exists());
     }
 
     #[test]

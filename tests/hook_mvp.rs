@@ -166,7 +166,11 @@ fn verification_action_restriction_is_fail_closed() {
 fn verification_mode_requires_a_real_interactive_confirmation() {
     Command::cargo_bin("codex-autoapprover")
         .expect("binary built")
-        .args(["verify-local-hook"])
+        .args([
+            "verify-local-hook",
+            "--verification-auth-home",
+            "/unused-test-home",
+        ])
         .write_stdin("VERIFY CODEX 0.151.0 HOOK\n")
         .assert()
         .failure()

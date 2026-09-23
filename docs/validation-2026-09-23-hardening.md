@@ -96,9 +96,12 @@ made additional code, gate, test and documentation changes.
   Linux/Windows hook schema versions; the old numeric minimum admitted future
   versions without schema review. Rust unit and integration tests, Clippy,
   formatting and Windows cross-check passed after this change. The verifier
-  still shares the user's Codex configuration and
-  authentication context and does not produce a reviewed native report; an
-  isolated native qualification harness remains open.
+  now requires a separate file-backed test login, refuses the live/default
+  Codex home, and creates a private child home containing only a bounded auth
+  copy. It clears inherited auth, state and shell-startup overrides. Managed
+  configuration and hooks may still apply; this has synthetic tests only and
+  does not produce a reviewed native report. An independently reviewed native
+  qualification harness remains open.
 - The schema-2 release gate compares the entire compiled manifest and evidence
   targets, includes the manifest in source hashing, requires consumer/upstream
   digests, retained artifact hashes, independent review identities and all
@@ -243,7 +246,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 79 unit tests and 22 integration tests passed on Linux with host Unix-socket and loopback access; synthetic regression evidence only. New cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection, Unix descendant cleanup, nonblocking worker reaping, whole-frame slow-sender deadlines, the exact loopback witness and redacted diagnostic retention after temporary-state cleanup. |
+| `cargo test --locked --all-targets` | 83 unit tests and 22 integration tests passed on Linux with host Unix-socket and loopback access; synthetic regression evidence only. The verifier now requires a separate test login home, stages only a bounded private auth file into a temporary child home, rejects unsafe auth sources and clears inherited state/auth/startup overrides. New cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection, Unix descendant cleanup, nonblocking worker reaping, whole-frame slow-sender deadlines, the exact loopback witness and redacted diagnostic retention after temporary-state cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL, suspended Job Object child-tree module, and native-only descendant and stalled-pipe regressions; compile/lint only, no Windows execution |
@@ -278,41 +281,41 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`4d80a46ee8c52574d442016944c5acb8781b2b5b70c46293298cdce1bbfea65e`.
+`bb66e8150d9ab9c44d8dcc5eb5b114313a0e2de25a5ea4271655b31d512a5b7b`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v40/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `bac26dc93990dae2c42c563b334f550647fca2fe8c430907446ddcd0aef06591`.
+`/tmp/autoapprover-dev-package-20260923-isolated-verifier/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `c9663bdae42e449b9b793564f5d7ad01be66c1c00291daa7e3a66efb2b5518c8`.
 Its recorded source digest is
-`32759b558be27cc08419fcec07aefd5020930f71d5c22168051f84ce0248bca2`.
+`9c099c97ed56c6d05d549bff94813170f6b7c2cb5fd7849059ab38237b6c98fb`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v38.spdx.json`, SHA-256
-`bf895c0c4b90476bf27bedf9efbdfcd9dc4c484e1722b4198da29bc0b7e9e159`.
+`/tmp/autoapprover-locked-dependencies-isolated-verifier.spdx.json`, SHA-256
+`456c48e84a441a3b41ddbbb25b89f2d10851d1b2f4f6dc83fedabf41afc3b3db`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
-The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v16.spdx.json`, SHA-256
-`a1e7ff6eb10e286f3e6a11c5b57da611aee4d592d908295dfb0c131bbc97ec2a`.
+The matching Linux binary build-input document is
+`/tmp/autoapprover-binary-linux-isolated-verifier.spdx.json`, SHA-256
+`82727b699265b61e96e31654b08000e693b8ae773e9b47825f0d9db20d86b022`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
-and binds the development executable digest above. Both SPDX files used
+and binds the current development executable and source digests above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v20.tar.gz`, SHA-256
-`84e4817158332de2137155bff2e8f0d5ba46f07aac967caaa4dd8b0ec0e3548a`.
+`/tmp/autoapprover-locked-licenses-isolated-verifier.tar.gz`, SHA-256
+`874aac23389a44d08035e02a91e56617ac5e317c8270fb2c1e938a26b4208695`.
 Its indexed source digest matches the archive above.
 
-The Linux candidate build observation is
+An earlier Linux candidate build observation is
 `/tmp/autoapprover-candidate-record-v6/candidate-linux/build-record.json`,
 SHA-256 `1a36f2a10ba360f3af850a6e07dd9be60aff3eb7e10acdcb472b030c8ceff013`.
 It records clean commit `9dd645d7cca1657187e53ce5cb4e9149f54977b2`,
-the same source and binary digests as the archive, Rust/Cargo 1.98.0 and
+the source and binary digests of an earlier archive, Rust/Cargo 1.98.0 and
 the local Ubuntu 26.04 host. It is a self-reported local observation, not
 verified build provenance or native Codex evidence.
 
@@ -434,7 +437,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, slow-sender deadline, worker-reaping and nonce-bound loopback witness regressions pass on Linux; the blanket hook-trust bypass was removed; Windows verifier/probe Job Object containment and descendant/stalled-pipe regressions cross-compile only | Real shell/file edits and one-request allow/fallback; isolated hook composition/trust review; every advertised schema; native Windows job, stalled-pipe and hung-descendant tests; malicious descendants, PID/path races, abrupt termination; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; hardlinked/reparse config files, redirected directory chains and oversized input now fail closed; Linux artifact lifecycle passes disposable local tests with crash-journal simulations and a bounded staged-copy write failure; Windows artifact installer and two-ZIP exact-byte lifecycle rehearsal are prepared but unrun | Authenticated final Linux consumer package and exact-byte rehearsal; native Windows artifact lifecycle and PS 5.1/7 execution of prepared hardlink/junction cases; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/lock/actual disk-full/power-loss/interruption matrix |
 | 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan read-only verified against 0.156.1; schema-3 records bind the Git tag object and source commit; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; source repair rejects a moved tag object or commit before running the agent; local multi-release fixtures queue one previously unhandled PR per poll and fail closed on missing baseline/history or changed open-PR metadata; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; exercise oldest-first missed-release catch-up and moved/deleted tag refusal on the default branch, then measure backlog latency; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
-| 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities; the experimental verifier has a local request witness and can retain an opt-in redacted, unqualified diagnostic after broker shutdown, but no live native run | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain reviewed schema-2 native records; independent release review |
+| 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities; the experimental verifier has a local request witness, requires a separately authenticated test home, runs its child from a private temporary home and can retain an opt-in redacted, unqualified diagnostic after broker shutdown, but no live native run | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain reviewed schema-2 native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory and offline notice bundle with two missing top-level texts; exact-digest native build observation now required by the evidence gate and manual protected-environment candidate-provenance workflow prepared, with the Linux staging script rehearsed locally | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs and linked component inventory; final per-artifact SBOM/notices and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release; automatic approval review rejected the attempted public branch push | Continue independent local work; obtain explicit publication approval before pushing the branch or preparing a public draft PR; final publication remains with the user |
 

@@ -41,6 +41,9 @@ pub enum Command {
     PrintHookConfig,
     /// Run one explicitly confirmed local hook diagnostic.
     VerifyLocalHook {
+        /// Separate file-backed test login home; the live Codex home is refused.
+        #[arg(long)]
+        verification_auth_home: std::path::PathBuf,
         /// Existing directory in which to retain an unqualified redacted diagnostic.
         #[arg(long)]
         diagnostic_dir: Option<std::path::PathBuf>,
@@ -81,6 +84,11 @@ impl CompatibilityMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_verification_requires_an_explicit_separate_login_home() {
+        assert!(Cli::try_parse_from(["codex-autoapprover", "verify-local-hook"]).is_err());
+    }
 
     #[test]
     fn compatibility_option_stops_at_the_codex_separator() {

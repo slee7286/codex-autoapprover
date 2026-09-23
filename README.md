@@ -71,7 +71,7 @@ codex-autoapprover run --compatibility strict -- <codex arguments...>
 codex-autoapprover diagnose
 codex-autoapprover support-matrix
 codex-autoapprover print-hook-config
-codex-autoapprover verify-local-hook [--diagnostic-dir <existing-directory>]
+codex-autoapprover verify-local-hook --verification-auth-home <separate-test-login-home> [--diagnostic-dir <existing-directory>]
 ```
 
 The implemented foreground admission adapter requires an explicit `--sandbox-implementation` selection (for example `linux-bwrap`). The manifest is empty, so this option cannot currently arm a session. Recognized npm launchers are resolved to a native bundle before admission; Unix packages with group/world-writable files or directories cannot qualify. A conservative Windows directory owner/DACL and reparse-point check is now prepared and cross-compiled, but has not run on native Windows or received independent review; no Windows tuple is certified. Profiles, arbitrary config/feature overrides and other subcommands currently use ordinary Codex; their qualification work remains open.
@@ -79,6 +79,42 @@ The implemented foreground admission adapter requires an explicit `--sandbox-imp
 No subcommand means `run`. Arguments after `--` are forwarded to Codex. `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` is the default policy. `hook` is a protocol endpoint, not a public approval API. `support-matrix` prints the embedded manifest. `print-hook-config` refuses to print a support configuration without full admission; historical evidence cannot authorize it.
 
 `verify-local-hook` is a legacy interactive, non-promoting experiment with a temporary repository. It accepts only the exact Linux and Windows versions whose hook schemas have been inspected; later versions require a new schema review. It still needs adaptation to the current stable CLI and isolated hook composition; do not use its output as production certification. Its broker restricts candidates to one nonce-bound `curl` (`curl.exe` on Windows) HEAD request to a verifier-owned loopback listener, with the expected tool and temporary working directory. Verification requires exactly one broker connection, including connections whose frames cannot be parsed, one allow and one independently received local request. A request with zero observed permission events is inconclusive. Codex must review and trust the temporary hook normally. This experiment is not run automatically in CI. With `--diagnostic-dir`, it creates a unique subdirectory under the specified existing directory containing a hash-only broker audit and `diagnostic.json` (directory mode 0700 on Unix; inherited ACL on Windows). The report is explicitly unqualified, omits the command and credentials, and cannot satisfy the release gate; earlier failures before a completed child observation may leave no report.
+
+The verifier requires a **separately authenticated, file-backed test home** and refuses the live/default Codex home. Sign in separately with `CODEX_HOME` pointing to an owner-controlled test directory; do not copy the live `auth.json`. Restore the original `CODEX_HOME` before invoking `verify-local-hook --verification-auth-home <test-directory>`, then dispose of that test directory after the run. The verifier copies only its bounded auth file into a private temporary child home, sets the child home and clears inherited auth, state and shell-startup overrides. Keyring-only logins are not supported by this diagnostic. Managed requirements can override the requested file store, and managed hooks may still run; native execution and independent review remain required. [OpenAI Docs: state locations](https://learn.chatgpt.com/docs/config-file/environment-variables), [authentication](https://learn.chatgpt.com/docs/auth)
+
+On native Linux, from this checkout with a built release executable:
+
+```bash
+(
+  set -e
+  verification_auth_home="$(mktemp -d)"
+  trap 'rm -rf -- "$verification_auth_home"' EXIT
+  chmod 700 "$verification_auth_home"
+  CODEX_HOME="$verification_auth_home" codex login --device-auth
+  chmod 600 "$verification_auth_home/auth.json"
+  ./target/release/codex-autoapprover verify-local-hook --verification-auth-home "$verification_auth_home"
+)
+```
+
+On native Windows, run in PowerShell from this checkout with a built release executable:
+
+```powershell
+$verificationAuthHome = Join-Path $env:LOCALAPPDATA ('codex-autoapprover-verify-' + [guid]::NewGuid().ToString('N'))
+$previousCodexHome = $env:CODEX_HOME
+New-Item -ItemType Directory -Path $verificationAuthHome | Out-Null
+try {
+    $env:CODEX_HOME = $verificationAuthHome
+    codex login --device-auth
+    if ($LASTEXITCODE -ne 0) { throw 'Separate test login failed.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $verificationAuthHome 'auth.json'))) { throw 'File-backed test login is required.' }
+    $env:CODEX_HOME = $previousCodexHome
+    .\target\release\codex-autoapprover.exe verify-local-hook --verification-auth-home $verificationAuthHome
+    if ($LASTEXITCODE -ne 0) { throw 'Local hook diagnostic failed.' }
+} finally {
+    $env:CODEX_HOME = $previousCodexHome
+    Remove-Item -LiteralPath $verificationAuthHome -Recurse -Force
+}
+```
 
 The broker validates kernel peer credentials, process identity and ancestry, a per-session secret and request shape. See [security](SECURITY.md) for the same-user threat boundary and pending review.
 

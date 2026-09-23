@@ -82,7 +82,7 @@ flowchart LR
 
 Request flow:
 
-1. The user starts `run` and explicitly chooses to use this launcher, or starts the separate `verify-local-hook` experiment.
+1. The user starts `run` and explicitly chooses to use this launcher, or starts the separate `verify-local-hook` experiment with a separately authenticated test home.
 2. The resolver finds the official executable and reads its version.
 3. Production admission compares the complete observed target with the immutable manifest. Capability discovery cannot add authority. A sandbox shell/file probe must pass before a certified child is launched; every uncertified or inconclusive target follows the ordinary Codex path with broker credentials removed.
 4. The launcher creates a unique private runtime directory and socket, starts the listener, then launches the exact Codex child with only the socket location, protocol marker, and secret needed by the hook.
