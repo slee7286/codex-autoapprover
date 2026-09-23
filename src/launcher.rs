@@ -248,9 +248,20 @@ pub fn diagnose() -> Result<i32> {
             println!(
                 "PermissionRequest compatibility: exact certification required; historical records do not arm"
             );
-            match crate::identity::Executable::open(&installation.path) {
-                Ok(image) => println!("native executable SHA-256: {}", image.sha256),
-                Err(error) => println!("native executable identity: unavailable ({error})"),
+            match crate::artifact::Bundle::discover(&installation.path, &installation.version) {
+                Ok(bundle) => {
+                    println!("native executable SHA-256: {}", bundle.executable.sha256);
+                    println!("native bundle SHA-256: {}", bundle.bundle_sha256);
+                    println!(
+                        "Codex launch artifact: {} ({})",
+                        bundle.launch_kind, bundle.launch_sha256
+                    );
+                    println!(
+                        "Codex launch package SHA-256: {}",
+                        bundle.launch_package_sha256
+                    );
+                }
+                Err(error) => println!("native artifact identity: unavailable ({error})"),
             }
             match crate::environment::observe() {
                 Ok(host) => {

@@ -1,5 +1,6 @@
 //! Full launch admission and per-request revalidation.
 use crate::{
+    artifact::Bundle,
     certification::{Manifest, Target},
     codex,
     environment::{self, Host},
@@ -15,6 +16,7 @@ use std::{
 pub struct Admission {
     pub target: Target,
     pub executable: Executable,
+    bundle: Bundle,
     host: Host,
 }
 
@@ -41,7 +43,8 @@ impl Admission {
         }
         let sandbox = sandbox.context("select an explicitly certified --sandbox-implementation; existing Codex settings are preserved in manual mode")?;
         sandbox_overrides(sandbox)?;
-        let executable = Executable::open(&installation.path)?;
+        let bundle = Bundle::discover(&installation.path, &installation.version)?;
+        let executable = bundle.executable.clone();
         let target = Target {
             codex_version: installation.version.clone(),
             os: host.os.clone(),
@@ -53,6 +56,10 @@ impl Admission {
             protocol: crate::arming::PROTOCOL_VERSION.into(),
             tool: "Bash".into(),
             codex_binary_sha256: executable.sha256.clone(),
+            codex_bundle_sha256: bundle.bundle_sha256.clone(),
+            launch_kind: bundle.launch_kind.clone(),
+            launch_artifact_sha256: bundle.launch_sha256.clone(),
+            launch_package_sha256: bundle.launch_package_sha256.clone(),
         };
         if !manifest.admits(&target) {
             bail!("the executable, host, sandbox and protocol do not equal a certified tuple")
@@ -60,6 +67,7 @@ impl Admission {
         Ok(Self {
             target,
             executable,
+            bundle,
             host,
         })
     }
@@ -68,7 +76,7 @@ impl Admission {
         if !Manifest::embedded()?.admits(&self.target) || environment::observe()? != self.host {
             bail!("certified host or compatibility identity changed")
         }
-        self.executable.recheck()
+        self.bundle.recheck()
     }
 
     pub fn verify_process(&self, pid: u32) -> Result<()> {
@@ -79,6 +87,7 @@ impl Admission {
     pub fn configure_child(&self, command: &mut Command) -> Result<()> {
         // This admission adapter covers the local foreground CLI only. Remote,
         // IDE, daemon, config/profile overrides and other subcommands are manual.
+        self.bundle.configure_child(command)?;
         command.arg("--no-daemon");
         for setting in sandbox_overrides(&self.target.sandbox)? {
             command.arg("-c").arg(setting);
@@ -100,6 +109,7 @@ impl Admission {
         let nonce = crate::arming::new_secret()?;
         let file = directory.path().join("autoapprover-health.txt");
         let mut command = self.executable.command();
+        self.bundle.configure_child(&mut command)?;
         command
             .args(["sandbox", "--cd"])
             .arg(&cwd)

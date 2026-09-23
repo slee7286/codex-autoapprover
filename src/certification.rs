@@ -13,7 +13,7 @@ pub struct Manifest {
     pub schema_version: u32,
     pub autoapprover_version: String,
     pub entries: Vec<Certificate>,
-    pub revoked_binary_sha256: Vec<String>,
+    pub revoked_artifact_sha256: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
@@ -36,6 +36,10 @@ pub struct Target {
     pub protocol: String,
     pub tool: String,
     pub codex_binary_sha256: String,
+    pub codex_bundle_sha256: String,
+    pub launch_kind: String,
+    pub launch_artifact_sha256: String,
+    pub launch_package_sha256: String,
 }
 
 impl Manifest {
@@ -55,7 +59,7 @@ impl Manifest {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != 1 || self.autoapprover_version != env!("CARGO_PKG_VERSION") {
+        if self.schema_version != 2 || self.autoapprover_version != env!("CARGO_PKG_VERSION") {
             bail!("unsupported manifest schema or autoapprover version")
         }
         let mut ids = HashSet::new();
@@ -72,15 +76,16 @@ impl Manifest {
             {
                 bail!("invalid or duplicate compatibility certificate")
             }
-            if self
-                .revoked_binary_sha256
-                .contains(&entry.target.codex_binary_sha256)
-            {
-                bail!("a revoked executable cannot be certified")
+            if entry.target.artifact_digests().iter().any(|digest| {
+                self.revoked_artifact_sha256
+                    .iter()
+                    .any(|item| item == *digest)
+            }) {
+                bail!("a revoked Codex artifact cannot be certified")
             }
         }
         let mut revoked = HashSet::new();
-        for digest in &self.revoked_binary_sha256 {
+        for digest in &self.revoked_artifact_sha256 {
             if !is_sha256(digest) || !revoked.insert(digest) {
                 bail!("invalid or duplicate artifact revocation")
             }
@@ -91,14 +96,25 @@ impl Manifest {
     pub fn admits(&self, observed: &Target) -> bool {
         self.validate().is_ok()
             && observed.validate().is_ok()
-            && !self
-                .revoked_binary_sha256
-                .contains(&observed.codex_binary_sha256)
+            && !observed.artifact_digests().iter().any(|digest| {
+                self.revoked_artifact_sha256
+                    .iter()
+                    .any(|item| item == *digest)
+            })
             && self.entries.iter().any(|entry| &entry.target == observed)
     }
 }
 
 impl Target {
+    fn artifact_digests(&self) -> [&str; 4] {
+        [
+            &self.codex_binary_sha256,
+            &self.codex_bundle_sha256,
+            &self.launch_artifact_sha256,
+            &self.launch_package_sha256,
+        ]
+    }
+
     pub fn validate(&self) -> Result<()> {
         if crate::codex::parse_version(&format!("codex-cli {}", self.codex_version)).is_err()
             || !matches!(self.arch.as_str(), "x86_64" | "aarch64")
@@ -108,6 +124,17 @@ impl Target {
             || self.protocol != crate::arming::PROTOCOL_VERSION
             || self.tool != "Bash"
             || !is_sha256(&self.codex_binary_sha256)
+            || !is_sha256(&self.codex_bundle_sha256)
+            || !is_sha256(&self.launch_artifact_sha256)
+            || !is_sha256(&self.launch_package_sha256)
+            || !matches!(
+                self.launch_kind.as_str(),
+                "native" | "npm-bin" | "npm-cmd" | "npm-ps1"
+            )
+            || !matches!(
+                (self.os.as_str(), self.launch_kind.as_str()),
+                ("linux", "native" | "npm-bin") | ("windows", "native" | "npm-cmd" | "npm-ps1")
+            )
         {
             bail!("incomplete or unsupported compatibility target")
         }
@@ -163,6 +190,10 @@ pub fn fixture_target() -> Target {
         protocol: crate::arming::PROTOCOL_VERSION.into(),
         tool: "Bash".into(),
         codex_binary_sha256: "a".repeat(64),
+        codex_bundle_sha256: "b".repeat(64),
+        launch_kind: "npm-bin".into(),
+        launch_artifact_sha256: "c".repeat(64),
+        launch_package_sha256: "d".repeat(64),
     }
 }
 
@@ -186,10 +217,10 @@ mod tests {
             let changed: Target = serde_json::from_value(changed).unwrap();
             assert!(!manifest.admits(&changed), "admitted changed {field}");
         }
-        manifest
-            .revoked_binary_sha256
-            .push(target.codex_binary_sha256.clone());
-        assert!(!manifest.admits(&target));
+        for digest in target.artifact_digests() {
+            manifest.revoked_artifact_sha256 = vec![digest.to_owned()];
+            assert!(!manifest.admits(&target));
+        }
     }
 
     #[test]
@@ -207,9 +238,9 @@ mod tests {
     #[test]
     fn duplicate_keys_unknown_fields_and_incomplete_tuples_are_rejected() {
         for text in [
-            r#"{"schema_version":1,"schema_version":1,"autoapprover_version":"0.1.0","entries":[],"revoked_binary_sha256":[]}"#,
-            r#"{"schema_version":1,"autoapprover_version":"0.1.0","entries":[],"revoked_binary_sha256":[],"bypass":true}"#,
-            r#"{"schema_version":1,"autoapprover_version":"0.1.0","entries":[{"evidence_id":"x","target":{"codex_version":"0.151.0","os":"linux"}}],"revoked_binary_sha256":[]}"#,
+            r#"{"schema_version":2,"schema_version":2,"autoapprover_version":"0.1.0","entries":[],"revoked_artifact_sha256":[]}"#,
+            r#"{"schema_version":2,"autoapprover_version":"0.1.0","entries":[],"revoked_artifact_sha256":[],"bypass":true}"#,
+            r#"{"schema_version":2,"autoapprover_version":"0.1.0","entries":[{"evidence_id":"x","target":{"codex_version":"0.151.0","os":"linux"}}],"revoked_artifact_sha256":[]}"#,
         ] {
             assert!(Manifest::parse(text.as_bytes()).is_err());
         }

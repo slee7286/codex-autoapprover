@@ -19,9 +19,11 @@ class ReleaseGateTests(unittest.TestCase):
         target = dict(codex_version="0.156.0", os="windows", arch="x86_64",
                       os_release="synthetic-windows", os_build="synthetic-build",
                       sandbox="windows-elevated", surface="native-cli",
-                      protocol="permission-request-v1", tool="Bash", codex_binary_sha256="a" * 64)
-        runtime = dict(schema_version=1, autoapprover_version="0.1.0",
-                       entries=[dict(evidence_id="synthetic-test", target=target)], revoked_binary_sha256=[])
+                      protocol="permission-request-v1", tool="Bash", codex_binary_sha256="a" * 64,
+                      codex_bundle_sha256="d" * 64, launch_kind="npm-cmd", launch_artifact_sha256="e" * 64,
+                      launch_package_sha256="f" * 64)
+        runtime = dict(schema_version=2, autoapprover_version="0.1.0",
+                       entries=[dict(evidence_id="synthetic-test", target=target)], revoked_artifact_sha256=[])
         path = root / "compatibility/manifest.json"
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps(runtime))
@@ -107,11 +109,15 @@ class ReleaseGateTests(unittest.TestCase):
                     gate.validate(root, policy, runtime, True, "b" * 64)
 
     def test_revocation_duplicates_and_missing_evidence_fail(self):
-        for change in ["revoked", "duplicate", "missing", "symlink", "artifact-changed"]:
+        for change in ["revoked-binary", "revoked-bundle", "revoked-launcher", "revoked-package",
+                       "duplicate", "missing", "symlink", "artifact-changed"]:
             with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 policy, runtime = self.fixture(root)
-                if change == "revoked": runtime["revoked_binary_sha256"].append("a" * 64)
+                if change.startswith("revoked-"):
+                    digest = {"revoked-binary": "a", "revoked-bundle": "d",
+                              "revoked-launcher": "e", "revoked-package": "f"}[change]
+                    runtime["revoked_artifact_sha256"].append(digest * 64)
                 if change == "duplicate": runtime["entries"].append(copy.deepcopy(runtime["entries"][0]))
                 if change == "missing": policy["certifications"] = []
                 if change == "symlink":

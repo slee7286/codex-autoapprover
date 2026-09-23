@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 
 pub struct Installation {
     pub path: PathBuf,
+    pub native_path: Option<PathBuf>,
     pub version: String,
     pub version_diagnostic: Option<String>,
     pub launcher_kind: LauncherKind,
@@ -59,13 +60,16 @@ pub fn inspect() -> Result<Installation> {
         )
     }
 
-    let (version, version_diagnostic) = match version(&candidate.path) {
-        Ok(version) => (version, None),
-        Err(error) => (UNKNOWN_VERSION.to_owned(), Some(format!("{error:#}"))),
-    };
+    let native_path = crate::artifact::native_path(&candidate.path).ok();
+    let (version, version_diagnostic) =
+        match version(native_path.as_deref().unwrap_or(&candidate.path)) {
+            Ok(version) => (version, None),
+            Err(error) => (UNKNOWN_VERSION.to_owned(), Some(format!("{error:#}"))),
+        };
 
     Ok(Installation {
         path: candidate.path.clone(),
+        native_path,
         version,
         version_diagnostic,
         launcher_kind: candidate.kind,
@@ -146,6 +150,7 @@ fn launcher_kind(path: &Path) -> LauncherKind {
 pub fn version(path: &Path) -> Result<String> {
     let installation = Installation {
         path: path.to_path_buf(),
+        native_path: None,
         version: String::new(),
         version_diagnostic: None,
         launcher_kind: launcher_kind(path),
@@ -224,7 +229,7 @@ impl HookCapability {
 
 pub fn detect_hook_capability(installation: &Installation, launcher: &Path) -> HookCapability {
     let config_override = hook_command_value(launcher);
-    let mut config_command = build_codex_command(installation);
+    let mut config_command = build_probe_command(installation);
     config_command
         .arg("--help")
         .arg("-c")
@@ -249,7 +254,7 @@ pub fn detect_hook_capability(installation: &Installation, launcher: &Path) -> H
         );
     }
 
-    let mut feature_command = build_codex_command(installation);
+    let mut feature_command = build_probe_command(installation);
     feature_command
         .args(["features", "list", "-c"])
         .arg(&config_override)
@@ -427,6 +432,13 @@ pub fn build_codex_command(installation: &Installation) -> Command {
         }
         _ => Command::new(&installation.path),
     }
+}
+
+fn build_probe_command(installation: &Installation) -> Command {
+    installation
+        .native_path
+        .as_ref()
+        .map_or_else(|| build_codex_command(installation), Command::new)
 }
 
 fn absolute_shell_quote(path: &Path) -> String {

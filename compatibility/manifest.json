@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "autoapprover_version": "0.1.0",
   "entries": [],
-  "revoked_binary_sha256": []
+  "revoked_artifact_sha256": []
 }

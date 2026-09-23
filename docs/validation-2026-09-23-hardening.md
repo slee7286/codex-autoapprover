@@ -9,11 +9,20 @@ made additional code, gate, test and documentation changes.
 
 ## Current authoritative state
 
-- The embedded schema-1 `compatibility/manifest.json` has **zero certified
+- The embedded schema-2 `compatibility/manifest.json` has **zero certified
   targets**. Historical Linux 0.151.0 no longer grants production authority.
 - Runtime admission compares version, OS, architecture, exact OS release and
   build, explicitly selected sandbox, foreground CLI surface, protocol, tool
-  and native executable SHA-256. Legacy automatic settings cannot bypass it.
+  and exact native executable, bundle, launcher and launch-package SHA-256.
+  Artifact revocation covers all four digests. Legacy automatic settings
+  cannot bypass it.
+- Recognized npm launchers resolve to the native bundled executable; the
+  launcher is not interpreted in an armed session. The complete native bundle
+  is hashed and retained for per-decision identity checks. Unix files and
+  directory chains writable by other users or groups are ineligible. The
+  present local npm installation fails this restriction and stays unarmed.
+  Windows file handles deny write/delete sharing, but ACL and reparse-point
+  behavior still need native testing and independent review.
 - Linux launches the held executable inode through `/proc/self/fd`; Windows
   holds a file handle without write/delete sharing. The brokers recheck the
   configured path, file identity and actual running process image.
@@ -45,7 +54,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 63 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only |
+| `cargo test --locked --all-targets` | 67 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
@@ -64,7 +73,7 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`a58e4f58e70bb7e768d93ad173d0b99f434b7d4862284e7177b2b506327e620a`.
+`3f2156884b5b0c972d80b1f7a5ce924c54da55f1b297912f67b84b742b693ec4`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
@@ -97,8 +106,9 @@ resolving that approval; continue independent local work. A reviewable PR body
 is prepared at `/tmp/autoapprover-release-foundation-pr.md`.
 
 Available native Linux is Ubuntu 26.04, kernel `7.0.0-31-generic`, x86_64;
-installed CLI reports `0.156.0` via an npm shim. The shim is not presently
-admitted as a native executable. No Windows native result has been obtained.
+installed CLI reports `0.156.0` via an npm shim. The bundle layout is
+recognized, but group-writable package files and directories prevent native
+artifact admission. No Windows native result has been obtained.
 Existing Windows 0.156.0 observations retain their original limits: elevated
 setup also failed without this wrapper, while unelevated `Get-Location` worked;
 neither proves hook compatibility, a long-path cause or a version regression.
@@ -107,7 +117,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 
 | Original requirement | Evidence now | Required work still open |
 | --- | --- | --- |
-| 1. Exact certified compatibility only | Empty manifest; whole-tuple equality; native image checks; unsupported surfaces and legacy aliases fail closed | Certify final artifacts; resolve npm/exe/cmd/ps1 launch chains and helper/resource identity; verify effective sandbox/managed-policy behavior and updates during sessions; implement tested revocation delivery |
+| 1. Exact certified compatibility only | Empty schema-2 manifest; whole-tuple equality; native bundle and npm launch-chain hashes; group/world-write rejection; artifact revocation; unsupported surfaces and legacy aliases fail closed | Certify final artifacts; finish/test exe/cmd/ps1 and other package layouts on native hosts; harden consumer install permissions; verify effective sandbox/managed-policy behavior and updates during sessions; implement revocation delivery |
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately | Native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check | Consumer artifact installer, transactional upgrade/rollback/uninstall and recovery; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |

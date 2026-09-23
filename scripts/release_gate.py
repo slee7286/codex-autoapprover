@@ -16,7 +16,8 @@ from watch_codex import version_key
 
 TARGET_FIELDS = {
     "codex_version", "os", "arch", "os_release", "os_build", "sandbox",
-    "surface", "protocol", "tool", "codex_binary_sha256",
+    "surface", "protocol", "tool", "codex_binary_sha256", "codex_bundle_sha256",
+    "launch_kind", "launch_artifact_sha256", "launch_package_sha256",
 }
 CHECKS = {
     "shell_execution", "file_edit", "one_request_allow", "manual_fallback",
@@ -70,19 +71,25 @@ def validate_target(target):
         raise ValueError("sandbox does not belong to declared OS")
     if (target["surface"], target["protocol"], target["tool"]) != ("native-cli", "permission-request-v1", "Bash"):
         raise ValueError("unsupported surface, protocol or tool")
-    if not digest_value(target["codex_binary_sha256"]):
-        raise ValueError("missing exact Codex executable digest")
+    if target["launch_kind"] not in {"native", "npm-bin", "npm-cmd", "npm-ps1"}:
+        raise ValueError("unsupported launch artifact type")
+    launch_kinds = {"linux": {"native", "npm-bin"},
+                    "windows": {"native", "npm-cmd", "npm-ps1"}}
+    if target["launch_kind"] not in launch_kinds.get(target["os"], set()):
+        raise ValueError("launch artifact type does not belong to declared OS")
+    if any(not digest_value(target[field]) for field in ("codex_binary_sha256", "codex_bundle_sha256", "launch_artifact_sha256", "launch_package_sha256")):
+        raise ValueError("missing exact Codex executable, bundle or launcher digest")
     return tuple(target[field] for field in sorted(TARGET_FIELDS))
 
 
 def validate_manifest(manifest):
-    exact_keys(manifest, {"schema_version", "autoapprover_version", "entries", "revoked_binary_sha256"}, "manifest")
-    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+    exact_keys(manifest, {"schema_version", "autoapprover_version", "entries", "revoked_artifact_sha256"}, "manifest")
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 2:
         raise ValueError("unsupported manifest schema")
     version_key(manifest["autoapprover_version"])
-    if not isinstance(manifest["entries"], list) or not isinstance(manifest["revoked_binary_sha256"], list):
+    if not isinstance(manifest["entries"], list) or not isinstance(manifest["revoked_artifact_sha256"], list):
         raise ValueError("invalid manifest collections")
-    revoked = manifest["revoked_binary_sha256"]
+    revoked = manifest["revoked_artifact_sha256"]
     if any(not digest_value(value) for value in revoked) or len(set(revoked)) != len(revoked):
         raise ValueError("invalid artifact revocations")
     targets, ids = set(), set()
@@ -94,8 +101,9 @@ def validate_manifest(manifest):
         target = validate_target(entry["target"])
         if target in targets or identifier in ids:
             raise ValueError("duplicate certificate")
-        if entry["target"]["codex_binary_sha256"] in revoked:
-            raise ValueError("revoked executable is certified")
+        if any(entry["target"][field] in revoked for field in (
+                "codex_binary_sha256", "codex_bundle_sha256", "launch_artifact_sha256", "launch_package_sha256")):
+            raise ValueError("revoked Codex artifact is certified")
         targets.add(target)
         ids.add(identifier)
 

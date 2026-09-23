@@ -1,5 +1,6 @@
 mod admission;
 mod arming;
+mod artifact;
 mod audit;
 mod broker;
 mod certification;

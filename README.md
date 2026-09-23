@@ -6,7 +6,7 @@ An unofficial, independent launcher for an existing official Codex CLI. It uses 
 
 ## Compatibility
 
-The embedded [compatibility manifest](compatibility/manifest.json) is the sole production authority. It currently certifies **no targets**, including Linux 0.151.0. Admission requires equality across Codex version, native OS/build/distro, architecture, explicitly selected sandbox, foreground CLI surface, hook protocol, tool and executable SHA-256. Unknown versions run ordinary Codex without the launcher's hook or broker credentials. A help/features probe does not establish compatibility. The legacy `--compatibility automatic` option and environment value now behave as `strict`; they cannot enable an unverified version.
+The embedded [compatibility manifest](compatibility/manifest.json) is the sole production authority. It currently certifies **no targets**, including Linux 0.151.0. Admission requires equality across Codex version, native OS/build/distro, architecture, explicitly selected sandbox, foreground CLI surface, hook protocol, tool, native executable and bundled helper/resource SHA-256, and launch artifact/package identity. Unknown versions run ordinary Codex without the launcher's hook or broker credentials. A help/features probe does not establish compatibility. The legacy `--compatibility automatic` option and environment value now behave as `strict`; they cannot enable an unverified version.
 
 The repository retains a historical Linux/local-CLI/Codex 0.151.0 entry. It is not qualification of the current release artifact. **Windows 0.156.0 is unverified**, even when the unelevated sandbox successfully runs a shell command. Public release qualification is deliberately blocked in [release-policy.json](compatibility/release-policy.json). See [compatibility](docs/compatibility.md) and the [production plan](docs/production-plan.md).
 
@@ -41,7 +41,7 @@ codex-autoapprover print-hook-config
 codex-autoapprover verify-local-hook
 ```
 
-The implemented foreground admission adapter requires an explicit `--sandbox-implementation` selection (for example `linux-bwrap`). The manifest is empty, so this option cannot currently arm a session. Profiles, arbitrary config/feature overrides, shims and other subcommands currently use ordinary Codex; their qualification work remains open.
+The implemented foreground admission adapter requires an explicit `--sandbox-implementation` selection (for example `linux-bwrap`). The manifest is empty, so this option cannot currently arm a session. Recognized npm launchers are resolved to a native bundle before admission; packages with writable files or directories cannot qualify. Profiles, arbitrary config/feature overrides and other subcommands currently use ordinary Codex; their qualification work remains open.
 
 No subcommand means `run`. Arguments after `--` are forwarded to Codex. `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` is the default policy. `hook` is a protocol endpoint, not a public approval API. `support-matrix` prints the embedded manifest. `print-hook-config` refuses to print a support configuration without full admission; historical evidence cannot authorize it.
 
