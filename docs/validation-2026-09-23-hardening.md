@@ -103,8 +103,13 @@ made additional code, gate, test and documentation changes.
   targets, includes the manifest in source hashing, requires consumer/upstream
   digests, retained artifact hashes, independent review identities and all
   named checks. It requires the retained consumer SPDX file to identify the
-  reviewed binary digest, native target and current source. It now also
-  requires a retained, clean-tree build record whose commit matches the
+  reviewed binary digest, native target and current source, and compares its
+  packages, locked checksums and dependency edges with the target-filtered
+  Cargo graph. A synthetic one-package report no longer passes for a graph
+  with dependencies. The local Linux 58-package/82-edge document passed this
+  comparison; Windows metadata yielded 58 packages/78 edges on a Linux host,
+  which is not native Windows validation. The gate also requires a retained,
+  clean-tree build record whose commit matches the
   native report and whose source, binary, lockfile, manifest, native target,
   toolchain and host fields pass bounded checks. This remains structural
   validation, not independent proof of build provenance. Source files

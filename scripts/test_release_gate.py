@@ -12,6 +12,14 @@ import release_gate as gate
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def setUp(self):
+        root_id = "SPDXRef-Package-codex-autoapprover-0.1.0"
+        patcher = patch.object(gate, "expected_build_graph", return_value=(
+            {("codex-autoapprover", "0.1.0")}, set(), root_id, {}
+        ))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_source_paths_use_platform_independent_relative_order(self):
         root = PureWindowsPath("C:/source")
         paths = [root / name for name in ("build.rs", "Cargo.toml", "src/main.rs")]
@@ -103,10 +111,14 @@ class ReleaseGateTests(unittest.TestCase):
                 "spdxVersion": "SPDX-2.3",
                 "files": [{"SPDXID": gate.SBOM_FILE_ID, "fileName": f"./{artifact_name}",
                            "checksums": [{"algorithm": "SHA256", "checksumValue": binary_sha}]}],
-                "packages": [{"SPDXID": "SPDXRef-Package-codex-autoapprover-0.1.0"}],
+                "packages": [{"SPDXID": "SPDXRef-Package-codex-autoapprover-0.1.0",
+                              "name": "codex-autoapprover", "versionInfo": "0.1.0"}],
                 "documentDescribes": [gate.SBOM_FILE_ID, "SPDXRef-Package-codex-autoapprover-0.1.0"],
                 "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT",
                                    "relatedSpdxElement": gate.SBOM_FILE_ID,
+                                   "relationshipType": "DESCRIBES"},
+                                  {"spdxElementId": "SPDXRef-DOCUMENT",
+                                   "relatedSpdxElement": "SPDXRef-Package-codex-autoapprover-0.1.0",
                                    "relationshipType": "DESCRIBES"}],
                 "annotations": [{"annotator": "Tool: scripts/binary_sbom.py",
                                  "comment": (f"Native Rust target: {triple}; consumer executable SHA-256: "
@@ -344,6 +356,54 @@ class ReleaseGateTests(unittest.TestCase):
                 artifact for artifact in evidence["artifacts"] if artifact["path"].endswith(".spdx.json")
             ).update(sha256=gate.sha256(path.read_bytes())))
             with self.assertRaisesRegex(ValueError, "binary SBOM"):
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+    def test_binary_sbom_must_contain_exact_native_packages_and_edges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, runtime = self.fixture(root)
+            root_id = "SPDXRef-Package-codex-autoapprover-0.1.0"
+            dependency_id = "SPDXRef-Package-dep-1.0.0"
+            checksum = "a" * 64
+            graph = ({("codex-autoapprover", "0.1.0"), ("dep", "1.0.0")},
+                     {(root_id, dependency_id)}, root_id,
+                     {("dep", "1.0.0"): {"checksum": checksum}})
+            root_only_graph = ({("codex-autoapprover", "0.1.0")}, set(), root_id, {})
+            path = root / "compatibility/evidence/synthetic/binary.spdx.json"
+            document = json.loads(path.read_text())
+
+            def save_sbom():
+                path.write_text(json.dumps(document))
+                self.rewrite_evidence(root, policy, lambda evidence: next(
+                    artifact for artifact in evidence["artifacts"]
+                    if artifact["path"].endswith(".spdx.json")
+                ).update(sha256=gate.sha256(path.read_bytes())))
+
+            with patch.object(gate, "expected_build_graph", side_effect=lambda _root, triple:
+                              graph if triple == "x86_64-pc-windows-msvc" else root_only_graph):
+                with self.assertRaisesRegex(ValueError, "package inventory"):
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+                document["packages"].append({
+                    "SPDXID": dependency_id, "name": "dep", "versionInfo": "1.0.0",
+                    "checksums": [{"algorithm": "SHA256", "checksumValue": "f" * 64}],
+                })
+                document["relationships"].append({
+                    "spdxElementId": root_id, "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": dependency_id,
+                })
+                save_sbom()
+                with self.assertRaisesRegex(ValueError, "package checksum"):
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+                document["packages"][-1]["checksums"][0]["checksumValue"] = checksum
+                document["relationships"].pop()
+                save_sbom()
+                with self.assertRaisesRegex(ValueError, "dependency graph"):
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+                document["relationships"].append({
+                    "spdxElementId": root_id, "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": dependency_id,
+                })
+                save_sbom()
                 gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_build_record_must_bind_reviewed_source_binary_and_clean_native_host(self):

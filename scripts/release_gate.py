@@ -14,7 +14,9 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 
+from cargo_graph import package_id, selected_graph
 from watch_codex import version_key
 
 TARGET_FIELDS = {
@@ -225,7 +227,19 @@ def source_digest(root):
     return digest.hexdigest()
 
 
-def validate_binary_sbom(body, evidence, autoapprover_version):
+def expected_build_graph(root, triple):
+    result = subprocess.run(
+        ["cargo", "metadata", "--locked", "--offline", "--format-version", "1",
+         "--filter-platform", triple],
+        cwd=root, check=True, capture_output=True, timeout=90,
+    )
+    metadata = load_json(result.stdout)
+    locked = tomllib.loads(regular_file(root, "Cargo.lock").read_text(encoding="utf-8"))["package"]
+    keys, edges, root_id = selected_graph(metadata, locked, root)
+    return keys, edges, root_id, {(item["name"], item["version"]): item for item in locked}
+
+
+def validate_binary_sbom(body, evidence, autoapprover_version, graph):
     document = load_json(body)
     target = evidence["target"]
     identity = SBOM_TARGETS.get((target["os"], target["arch"]))
@@ -241,19 +255,52 @@ def validate_binary_sbom(body, evidence, autoapprover_version):
             or file.get("checksums") != [{"algorithm": "SHA256", "checksumValue": evidence["autoapprover_binary_sha256"]}]):
         raise ValueError("binary SBOM does not bind the consumer executable")
     root_id = f"SPDXRef-Package-codex-autoapprover-{autoapprover_version}"
+    keys, edges, graph_root, locked = graph
+    if root_id != graph_root:
+        raise ValueError("binary SBOM root differs from the native Cargo graph")
     packages = document.get("packages")
     describes = document.get("documentDescribes")
-    if (not isinstance(packages, list) or not any(
-            isinstance(item, dict) and item.get("SPDXID") == root_id for item in packages)
+    expected_packages = {package_id(name, version): (name, version) for name, version in keys}
+    if (not isinstance(packages, list) or len(packages) != len(expected_packages)
             or not isinstance(describes, list)
-            or SBOM_FILE_ID not in describes or root_id not in describes):
-        raise ValueError("binary SBOM lacks described build inputs")
+            or len(describes) != 2 or any(not isinstance(item, str) for item in describes)
+            or set(describes) != {SBOM_FILE_ID, root_id}):
+        raise ValueError("binary SBOM package inventory differs from the native Cargo graph")
+    seen_packages = set()
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("binary SBOM has an invalid package")
+        identifier = package.get("SPDXID")
+        if (not isinstance(identifier, str) or identifier not in expected_packages
+                or identifier in seen_packages):
+            raise ValueError("binary SBOM package inventory differs from the native Cargo graph")
+        key = expected_packages[identifier]
+        if (package.get("name"), package.get("versionInfo")) != key:
+            raise ValueError("binary SBOM package identity differs from Cargo.lock")
+        if key != ("codex-autoapprover", autoapprover_version):
+            if key not in locked:
+                raise ValueError("binary SBOM package is absent from Cargo.lock")
+            checksum = locked[key].get("checksum")
+            if not digest_value(checksum) or package.get("checksums") != [
+                    {"algorithm": "SHA256", "checksumValue": checksum}]:
+                raise ValueError("binary SBOM package checksum differs from Cargo.lock")
+        seen_packages.add(identifier)
     relationships = document.get("relationships")
-    if not isinstance(relationships, list) or not any(
-            isinstance(item, dict) and item.get("spdxElementId") == "SPDXRef-DOCUMENT"
-            and item.get("relatedSpdxElement") == SBOM_FILE_ID
-            and item.get("relationshipType") == "DESCRIBES" for item in relationships):
-        raise ValueError("binary SBOM does not describe the consumer file")
+    expected_relationships = {(parent, "DEPENDS_ON", child) for parent, child in edges}
+    expected_relationships.update({("SPDXRef-DOCUMENT", "DESCRIBES", root_id),
+                                   ("SPDXRef-DOCUMENT", "DESCRIBES", SBOM_FILE_ID)})
+    if not isinstance(relationships, list) or len(relationships) != len(expected_relationships):
+        raise ValueError("binary SBOM dependency graph differs from native Cargo metadata")
+    actual_relationships = set()
+    for relationship in relationships:
+        exact_keys(relationship, {"spdxElementId", "relationshipType", "relatedSpdxElement"},
+                   "binary SBOM relationship")
+        if any(not isinstance(value, str) for value in relationship.values()):
+            raise ValueError("binary SBOM relationship has a non-string field")
+        actual_relationships.add((relationship["spdxElementId"], relationship["relationshipType"],
+                                  relationship["relatedSpdxElement"]))
+    if actual_relationships != expected_relationships:
+        raise ValueError("binary SBOM dependency graph differs from native Cargo metadata")
     expected_note = (f"Native Rust target: {triple}; consumer executable SHA-256: "
                      f"{evidence['autoapprover_binary_sha256']}; source SHA-256: {evidence['source_sha256']}")
     annotations = document.get("annotations")
@@ -413,8 +460,14 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         if len(sbom_refs) != 1:
             raise ValueError("consumer binary check requires one retained SPDX document")
         sbom_path = regular_file(root, sbom_refs[0], "compatibility/evidence")
+        target = evidence["target"]
+        identity = SBOM_TARGETS.get((target["os"], target["arch"]))
+        if identity is None:
+            raise ValueError("unsupported native consumer SBOM target")
+        triple = identity[0]
+        graph = expected_build_graph(root, triple)
         validate_binary_sbom(bounded_bytes(sbom_path, MAX_SBOM_BYTES, "consumer binary SBOM"),
-                             evidence, manifest["autoapprover_version"])
+                             evidence, manifest["autoapprover_version"], graph)
         record_refs = checks["consumer_build_record"]["artifacts"]
         if len(record_refs) != 1 or not isinstance(record_refs[0], str) \
                 or not record_refs[0].endswith("/build-record.json"):
