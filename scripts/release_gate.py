@@ -29,11 +29,12 @@ CHECKS = {
     "replay_rejection", "descendant_forgery_rejection", "executable_replacement",
     "cancellation_cleanup", "concurrent_sessions", "clean_disposable_environment",
     "locked_dependency_inventory", "license_notice_review", "vulnerability_review",
-    "consumer_binary_sbom", "signed_provenance", "protected_release_checks",
+    "consumer_binary_sbom", "consumer_build_record", "signed_provenance", "protected_release_checks",
     "exact_consumer_artifact_rollback",
 }
 MAX_EVIDENCE_AGE = timedelta(days=30)
 MAX_SBOM_BYTES = 16 * 1024 * 1024
+MAX_BUILD_RECORD_BYTES = 16 * 1024
 SBOM_FILE_ID = "SPDXRef-File-ConsumerBinary"
 SBOM_TARGETS = {
     ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "codex-autoapprover-linux-x86_64"),
@@ -200,6 +201,50 @@ def validate_binary_sbom(body, evidence, autoapprover_version):
         raise ValueError("binary SBOM does not bind the native target and source")
 
 
+def validate_build_record(body, evidence, root):
+    record = load_json(body)
+    fields = {"schema_version", "status", "target", "binary_sha256", "source_sha256",
+              "cargo_lock_sha256", "manifest_sha256", "git_commit", "git_tree_clean",
+              "toolchain", "host"}
+    exact_keys(record, fields, "consumer build record")
+    target = evidence["target"]
+    identity = SBOM_TARGETS.get((target["os"], target["arch"]))
+    if (identity is None or type(record["schema_version"]) is not int or record["schema_version"] != 1
+            or record["status"] != "unqualified-native-build-observation"
+            or record["target"] != identity[0]):
+        raise ValueError("consumer build record has an unsupported native identity")
+    expected = {
+        "binary_sha256": evidence["autoapprover_binary_sha256"],
+        "source_sha256": evidence["source_sha256"],
+        "cargo_lock_sha256": sha256(regular_file(root, "Cargo.lock").read_bytes()),
+        "manifest_sha256": sha256(regular_file(root, "compatibility/manifest.json").read_bytes()),
+    }
+    if any(record[key] != value for key, value in expected.items()):
+        raise ValueError("consumer build record does not bind the reviewed source and binary")
+    commit = record["git_commit"]
+    if (not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit)
+            or evidence.get("build_commit") != commit or record["git_tree_clean"] is not True):
+        raise ValueError("consumer build record lacks a clean reviewed build revision")
+    toolchain = record["toolchain"]
+    exact_keys(toolchain, {"rustc_verbose", "cargo_version"}, "consumer toolchain")
+    rustc, cargo = toolchain["rustc_verbose"], toolchain["cargo_version"]
+    if (not isinstance(rustc, str) or not rustc.startswith("rustc ") or len(rustc) > 4096
+            or any(ord(char) < 32 and char != "\n" for char in rustc)
+            or re.findall(r"(?m)^host: (\S+)$", rustc) != [identity[0]]
+            or not isinstance(cargo, str) or not cargo.startswith("cargo ") or len(cargo) > 4096
+            or any(ord(char) < 32 for char in cargo)):
+        raise ValueError("consumer build record lacks a native Rust toolchain")
+    host = record["host"]
+    exact_keys(host, {"system", "release", "version", "machine", "distribution_id", "distribution_version"},
+               "consumer build host")
+    if (host["system"] != {"linux": "Linux", "windows": "Windows"}[target["os"]]
+            or not isinstance(host["machine"], str)
+            or host["machine"].casefold() not in {"x86_64", "amd64"}
+            or any(not isinstance(value, str) or not value or len(value) > 256
+                   or any(ord(char) < 32 for char in value) for value in host.values())):
+        raise ValueError("consumer build record has an invalid native host")
+
+
 def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None, now=None):
     root = root.resolve()
     now = now or datetime.now(timezone.utc)
@@ -279,6 +324,14 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         if sbom_path.stat().st_size > MAX_SBOM_BYTES:
             raise ValueError("consumer binary SBOM exceeds attestation size limit")
         validate_binary_sbom(sbom_path.read_bytes(), evidence, manifest["autoapprover_version"])
+        record_refs = checks["consumer_build_record"]["artifacts"]
+        if len(record_refs) != 1 or not isinstance(record_refs[0], str) \
+                or not record_refs[0].endswith("/build-record.json"):
+            raise ValueError("consumer build check requires one retained build-record.json")
+        record_path = regular_file(root, record_refs[0], "compatibility/evidence")
+        if record_path.stat().st_size > MAX_BUILD_RECORD_BYTES:
+            raise ValueError("consumer build record exceeds the retention size limit")
+        validate_build_record(record_path.read_bytes(), evidence, root)
         declared.add(identifier)
     expected = {entry["evidence_id"] for entry in manifest["entries"]}
     if declared != expected:

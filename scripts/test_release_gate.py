@@ -63,13 +63,31 @@ class ReleaseGateTests(unittest.TestCase):
         }
         sbom_path.write_text(json.dumps(sbom))
         sbom_ref = dict(path=sbom_path.relative_to(root).as_posix(), sha256=gate.sha256(sbom_path.read_bytes()))
+        build_path = root / "compatibility/evidence/synthetic/build-record.json"
+        build_commit = "1" * 40
+        build_record = {
+            "schema_version": 1, "status": "unqualified-native-build-observation",
+            "target": "x86_64-pc-windows-msvc", "binary_sha256": binary_sha,
+            "source_sha256": source_sha,
+            "cargo_lock_sha256": gate.sha256((root / "Cargo.lock").read_bytes()),
+            "manifest_sha256": gate.sha256((root / "compatibility/manifest.json").read_bytes()),
+            "git_commit": build_commit, "git_tree_clean": True,
+            "toolchain": {"rustc_verbose": "rustc 1.98.0\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0",
+                          "cargo_version": "cargo 1.98.0"},
+            "host": {"system": "Windows", "release": "synthetic", "version": "synthetic",
+                     "machine": "AMD64", "distribution_id": "n/a", "distribution_version": "n/a"},
+        }
+        build_path.write_text(json.dumps(build_record))
+        build_ref = dict(path=build_path.relative_to(root).as_posix(), sha256=gate.sha256(build_path.read_bytes()))
         evidence = dict(schema_version=2, kind="native-live", evidence_id="synthetic-test", target=target,
                         source_sha256=source_sha, autoapprover_binary_sha256=binary_sha,
+                        build_commit=build_commit,
                         upstream_artifact_sha256="c" * 64, producer="synthetic-producer", reviewer="synthetic-reviewer",
                         review_decision="approved", run_url="https://example.invalid/synthetic-fixture",
-                        observed_at=datetime.now(timezone.utc).isoformat(), artifacts=[artifact_ref, sbom_ref],
+                        observed_at=datetime.now(timezone.utc).isoformat(), artifacts=[artifact_ref, sbom_ref, build_ref],
                         checks={check: {"result": "pass", "artifacts": [
-                            sbom_ref["path"] if check == "consumer_binary_sbom" else artifact_ref["path"]]}
+                            sbom_ref["path"] if check == "consumer_binary_sbom" else
+                            build_ref["path"] if check == "consumer_build_record" else artifact_ref["path"]]}
                                 for check in gate.CHECKS})
         path = root / "compatibility/evidence/synthetic/report.json"
         path.write_text(json.dumps(evidence))
@@ -123,12 +141,14 @@ class ReleaseGateTests(unittest.TestCase):
     def test_forged_or_unsubstantiated_evidence_fails(self):
         changes = {
             "checks": lambda e: e["checks"].pop("one_request_allow"),
+            "missing-build-record": lambda e: e["checks"].pop("consumer_build_record"),
             "self-review": lambda e: e.update(reviewer=e["producer"].upper()),
             "retained-log": lambda e: e.update(artifacts=[]),
             "unchecked-log": lambda e: e["checks"]["one_request_allow"].update(artifacts=["not-retained"]),
             "stale": lambda e: e.update(observed_at=(datetime.now(timezone.utc) - timedelta(days=31)).isoformat()),
             "future": lambda e: e.update(observed_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat()),
             "wrong-source": lambda e: e.update(source_sha256="f" * 64),
+            "wrong-build-commit": lambda e: e.update(build_commit="f" * 40),
             "wrong-tool": lambda e: e["target"].update(tool="apply_patch"),
             "wrong-version": lambda e: e["target"].update(codex_version="0.157.0"),
             "cross-compiled": lambda e: e.update(kind="cross-compiled"),
@@ -175,6 +195,31 @@ class ReleaseGateTests(unittest.TestCase):
             ).update(sha256=gate.sha256(path.read_bytes())))
             with self.assertRaisesRegex(ValueError, "binary SBOM"):
                 gate.validate(root, policy, runtime, True, "b" * 64)
+
+    def test_build_record_must_bind_reviewed_source_binary_and_clean_native_host(self):
+        changes = {
+            "binary": lambda record: record.update(binary_sha256="f" * 64),
+            "source": lambda record: record.update(source_sha256="f" * 64),
+            "lockfile": lambda record: record.update(cargo_lock_sha256="f" * 64),
+            "manifest": lambda record: record.update(manifest_sha256="f" * 64),
+            "dirty": lambda record: record.update(git_tree_clean=False),
+            "target": lambda record: record.update(target="x86_64-unknown-linux-gnu"),
+            "toolchain": lambda record: record["toolchain"].update(rustc_verbose="rustc 1.98.0\nhost: x86_64-unknown-linux-gnu"),
+            "host": lambda record: record["host"].update(system="Linux"),
+        }
+        for label, change in changes.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy, runtime = self.fixture(root)
+                path = root / "compatibility/evidence/synthetic/build-record.json"
+                record = json.loads(path.read_text())
+                change(record)
+                path.write_text(json.dumps(record))
+                self.rewrite_evidence(root, policy, lambda evidence: next(
+                    artifact for artifact in evidence["artifacts"] if artifact["path"].endswith("/build-record.json")
+                ).update(sha256=gate.sha256(path.read_bytes())))
+                with self.assertRaisesRegex(ValueError, "build record"):
+                    gate.validate(root, policy, runtime, True, "b" * 64)
 
     def test_duplicate_json_fields_are_rejected_recursively(self):
         for text in ['{"ready":false,"ready":true}', '{"target":{"os":"linux","os":"windows"}}',

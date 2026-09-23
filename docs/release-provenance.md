@@ -67,6 +67,12 @@ gh attestation verify ./codex-autoapprover-linux-x86_64 \
 Use the corresponding Windows executable name for the Windows artifact. The
 verification bundle can also be passed to `gh attestation verify --bundle`.
 Check the verified source commit and digest against the reviewed release record.
+Retain the candidate `build-record.json` under `compatibility/evidence/` and
+cite it in the native report's `consumer_build_record` check. The report's
+`build_commit` must equal the record's clean Git revision. The release gate
+checks the record's exact source, binary, lockfile, manifest and native target
+fields; independent review must still compare it with the signed provenance
+and real build run.
 Only a run whose **two native qualification jobs also passed** can contribute
 final release evidence. A failed qualification run may still contain useful
 candidate provenance, but remains unqualified. Initial native certification
