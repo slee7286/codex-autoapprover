@@ -83,21 +83,36 @@ jobs:
       - name: Verify native release asset digest
         shell: pwsh
         run: python trusted/scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json
-      - name: Install exact candidate on disposable runner
+      - name: Lock and install exact npm candidate on disposable runner
         shell: pwsh
         run: |
           if ($env:CANDIDATE_VERSION -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid candidate version' }
-          npm install --global --ignore-scripts "@openai/codex@$env:CANDIDATE_VERSION"
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate installation failed' }
+          $env:NPM_CONFIG_CACHE = Join-Path $env:RUNNER_TEMP 'candidate-npm-cache'
+          $env:NPM_CONFIG_USERCONFIG = Join-Path $env:RUNNER_TEMP 'candidate-empty.npmrc'
+          New-Item -ItemType File -Path $env:NPM_CONFIG_USERCONFIG -Force | Out-Null
+          New-Item -ItemType Directory -Path candidate-install -Force | Out-Null
+          npm install --prefix candidate-install --package-lock-only --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org "@openai/codex@$env:CANDIDATE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate lock creation failed' }
+          python trusted/scripts/verify_candidate_npm.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json --lock candidate-install/package-lock.json
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate npm lock differs from official metadata' }
+          npm ci --prefix candidate-install --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate locked installation failed' }
+          npm audit signatures --prefix candidate-install --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate npm registry signatures failed' }
+          python trusted/scripts/verify_candidate_npm.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json --lock candidate-install/package-lock.json --installed-root candidate-install --output npm-verification.json
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate installed npm identity differs from its lock' }
       - name: Inspect without credentials or a live approval session
         shell: pwsh
-        run: python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
+        run: |
+          $shim = if ($IsWindows) { 'candidate-install/node_modules/.bin/codex.cmd' } else { 'candidate-install/node_modules/.bin/codex' }
+          python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION" --binary $shim
       - name: Summarize candidate evidence
         shell: pwsh
         run: |
           Get-Content asset-verification.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Get-Content npm-verification.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Get-Content candidate-probe.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          'Asset checks and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          'Asset/npm integrity checks and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
   candidate-checks:
     needs: [detect, candidate-preflight]
@@ -299,12 +314,29 @@ jobs:
       - name: Verify candidate metadata and native asset after repair
         shell: pwsh
         run: python trusted/scripts/verify_candidate_asset.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json
-      - name: Inspect exact candidate without credentials
+      - name: Lock and install exact npm candidate after repair
         shell: pwsh
         run: |
-          npm install --global --ignore-scripts "@openai/codex@$env:CANDIDATE_VERSION"
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate installation failed' }
-          python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
+          if ($env:CANDIDATE_VERSION -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid candidate version' }
+          $env:NPM_CONFIG_CACHE = Join-Path $env:RUNNER_TEMP 'candidate-npm-cache'
+          $env:NPM_CONFIG_USERCONFIG = Join-Path $env:RUNNER_TEMP 'candidate-empty.npmrc'
+          New-Item -ItemType File -Path $env:NPM_CONFIG_USERCONFIG -Force | Out-Null
+          New-Item -ItemType Directory -Path candidate-install -Force | Out-Null
+          npm install --prefix candidate-install --package-lock-only --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org "@openai/codex@$env:CANDIDATE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate lock creation failed' }
+          python trusted/scripts/verify_candidate_npm.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json --lock candidate-install/package-lock.json
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate npm lock differs from official metadata' }
+          npm ci --prefix candidate-install --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate locked installation failed' }
+          npm audit signatures --prefix candidate-install --registry=https://registry.npmjs.org
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate npm registry signatures failed' }
+          python trusted/scripts/verify_candidate_npm.py "$env:CANDIDATE_VERSION" --candidate candidate-runner.json --recorded-candidate candidate/compatibility/candidate.json --lock candidate-install/package-lock.json --installed-root candidate-install --output npm-verification.json
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate installed npm identity differs from its lock' }
+      - name: Inspect exact installed candidate without credentials
+        shell: pwsh
+        run: |
+          $shim = if ($IsWindows) { 'candidate-install/node_modules/.bin/codex.cmd' } else { 'candidate-install/node_modules/.bin/codex' }
+          python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION" --binary $shim
       - run: cargo fmt --check
         working-directory: candidate
       - run: cargo test --locked --all-targets

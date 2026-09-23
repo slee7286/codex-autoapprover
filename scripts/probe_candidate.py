@@ -15,11 +15,12 @@ from watch_codex import version_key
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version")
+    parser.add_argument("--binary", type=Path, help="Probe the exact candidate installation")
     parser.add_argument("--output", type=Path, default=Path("candidate-probe.json"))
     args = parser.parse_args()
     version_key(args.version)
-    binary = shutil.which("codex")
-    if binary is None:
+    binary = args.binary if args.binary is not None else shutil.which("codex")
+    if binary is None or (args.binary is not None and not args.binary.is_file()):
         raise SystemExit("Codex executable unavailable")
     with tempfile.TemporaryDirectory() as directory:
         environment = dict(os.environ, CODEX_HOME=directory)
@@ -29,15 +30,19 @@ def main():
         results = {}
         for name, arguments in [("version", ["--version"]), ("help", ["--help"]), ("features", ["features", "list"])]:
             # Files bound memory use; workflow timeout also limits the process tree.
-            with tempfile.TemporaryFile() as output:
+            with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
                 completed = subprocess.run([binary, *arguments], env=environment, cwd=directory,
-                                           stdin=subprocess.DEVNULL, stdout=output, stderr=output, timeout=30)
-                size = output.tell()
-                if size > 65536:
+                                           stdin=subprocess.DEVNULL, stdout=output, stderr=errors,
+                                           timeout=30)
+                stdout_bytes, stderr_bytes = output.tell(), errors.tell()
+                if stdout_bytes + stderr_bytes > 65536:
                     raise ValueError("probe output exceeded limit")
                 output.seek(0)
                 text = output.read().decode("utf-8", errors="strict")
-            results[name] = {"exit_code": completed.returncode}
+                errors.seek(0)
+                errors.read().decode("utf-8", errors="strict")
+            results[name] = {"exit_code": completed.returncode,
+                             "stdout_bytes": stdout_bytes, "stderr_bytes": stderr_bytes}
             if completed.returncode != 0:
                 raise ValueError(f"{name} probe failed; candidate remains unverified")
             if name == "version" and text.strip() != f"codex-cli {args.version}":

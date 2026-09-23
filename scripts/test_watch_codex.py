@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import watch_codex as watch
+from npm_candidate import aliases, tarball_url
 
 
 def release(version, **fields):
@@ -16,6 +18,13 @@ def release(version, **fields):
               for index, name in enumerate(watch.REQUIRED_ASSETS)]
     return {"id": 1, "draft": False, "prerelease": False, "tag_name": tag,
             "assets": assets, **fields}
+
+
+def npm_records(version):
+    return [{"alias": alias, "version": package_version,
+             "tarball": tarball_url(package_version),
+             "integrity": "sha512-" + base64.b64encode(bytes([index]) * 64).decode("ascii")}
+            for index, (alias, package_version, _, _) in enumerate(aliases(version))]
 
 
 class ReleaseWatchTests(unittest.TestCase):
@@ -59,7 +68,9 @@ class ReleaseWatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "candidate.json"
             candidate = watch.candidate_from_releases([release("0.156.0")])
-            legacy = {key: value for key, value in candidate.items() if key != "assets"}
+            candidate["npm_packages"] = npm_records("0.156.0")
+            legacy = {key: value for key, value in candidate.items()
+                      if key not in {"assets", "npm_packages"}}
             path.write_text(json.dumps({**legacy, "schema_version": 1, "upstream_release_id": None}))
             self.assertTrue(watch.write_candidate(path, candidate))
             self.assertFalse(watch.write_candidate(path, candidate))
@@ -198,6 +209,7 @@ class ReleaseWatchTests(unittest.TestCase):
             original = path.read_bytes()
             with patch("sys.argv", ["watch_codex.py", "--output", str(path)]), \
                  patch.object(watch, "fetch_latest_release", return_value=latest), \
+                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.2")), \
                  patch.object(watch, "fetch_releases", return_value=[latest, intermediate, release("0.156.0")]):
                 with self.assertRaisesRegex(ValueError, "multiple or inconsistent"):
                     watch.main()
@@ -283,6 +295,7 @@ class ReleaseWatchTests(unittest.TestCase):
             sha = "b" * 40
             with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                  patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.0")), \
                  patch.object(watch, "prepare_pr", return_value=True) as prepare, \
                  patch.object(watch, "candidate_branch_sha", return_value=sha):
                 watch.main()
@@ -292,6 +305,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_unchanged_release_without_candidate_branch_is_a_clean_noop(self):
         selected = watch.candidate_from_releases([release("0.156.0")])
+        selected["npm_packages"] = npm_records("0.156.0")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             candidate = root / "candidate.json"
@@ -300,6 +314,7 @@ class ReleaseWatchTests(unittest.TestCase):
             with patch("sys.argv", ["watch_codex.py", "--output", str(candidate), "--create-pr"]), \
                  patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                  patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.0")), \
                  patch.object(watch, "prepare_pr") as prepare, \
                  patch.object(watch, "candidate_branch_sha") as branch_sha:
                 watch.main()
@@ -311,6 +326,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_existing_pr_is_checked_but_not_automatically_repaired_again(self):
         previous = watch.candidate_from_releases([release("0.156.0")])
+        previous["npm_packages"] = npm_records("0.156.0")
         latest = release("0.156.1", id=2)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -320,6 +336,7 @@ class ReleaseWatchTests(unittest.TestCase):
             with patch("sys.argv", ["watch_codex.py", "--output", str(candidate), "--create-pr"]), \
                  patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                  patch.object(watch, "fetch_latest_release", return_value=latest), \
+                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.1")), \
                  patch.object(watch, "fetch_releases", return_value=[latest, release("0.156.0")]), \
                  patch.object(watch, "prepare_pr", return_value=False) as prepare, \
                  patch.object(watch, "candidate_branch_sha", return_value="c" * 40):
@@ -331,6 +348,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_manual_repair_retry_requires_existing_branch_even_without_update(self):
         selected = watch.candidate_from_releases([release("0.156.0")])
+        selected["npm_packages"] = npm_records("0.156.0")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             candidate = root / "candidate.json"
@@ -339,6 +357,7 @@ class ReleaseWatchTests(unittest.TestCase):
             argv = ["watch_codex.py", "--output", str(candidate), "--create-pr", "--require-branch"]
             with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                  patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.0")), \
                  patch.object(watch, "candidate_branch_sha", return_value="d" * 40) as branch_sha:
                 watch.main()
                 branch_sha.assert_called_once_with("0.156.0")
@@ -347,6 +366,7 @@ class ReleaseWatchTests(unittest.TestCase):
 
             with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": ""}), \
                  patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "fetch_npm_records", return_value=npm_records("0.156.0")), \
                  patch.object(watch, "candidate_branch_sha", side_effect=ValueError("branch missing")):
                 with self.assertRaisesRegex(ValueError, "branch missing"):
                     watch.main()

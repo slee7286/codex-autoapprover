@@ -14,6 +14,8 @@ import tempfile
 import urllib.error
 import urllib.request
 
+from npm_candidate import fetch_npm_records
+
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 UPSTREAM = "https://api.github.com/repos/openai/codex/releases"
@@ -212,7 +214,8 @@ def write_candidate(path, candidate):
         if old == new:
             if previous == candidate:
                 return False
-            legacy = {key: value for key, value in candidate.items() if key != "assets"}
+            legacy = {key: value for key, value in candidate.items()
+                      if key not in {"assets", "npm_packages"}}
             legacy["schema_version"] = 1
             previous_id = previous.get("upstream_release_id")
             if previous_id not in (None, candidate["upstream_release_id"]):
@@ -320,6 +323,8 @@ def main():
             old_tag = previous.get("upstream_tag")
             recent = fetch_releases(stop_tag=old_tag)
             verify_release_gap(previous, candidate, recent)
+    if not args.fixture:
+        candidate["npm_packages"] = fetch_npm_records(candidate["codex_version"])
     changed = write_candidate(args.output, candidate)
     created_pr = False
     if changed and args.create_pr:
