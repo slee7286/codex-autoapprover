@@ -158,8 +158,10 @@ made additional code, gate, test and documentation changes.
   The explicit TOML edit now rejects hardlinked or reparse-point config files,
   symlinked or junction directory chains, and input over 4 MiB. Linux tests
   exercise the link and size refusals; Windows hardlink and junction cases are
-  prepared for PowerShell 5.1/7 CI but have not run natively. Directory ACL
-  preservation and crash recovery still require Windows review.
+  prepared for PowerShell 5.1/7 CI but have not run natively. Configuration
+  repair now reuses the owner/DACL check on its directory and existing file;
+  broad-write directory and file regressions are prepared but unrun. Directory
+  ACL preservation and crash recovery still require Windows review.
 - A Linux prebuilt-artifact installer now checks an expected SHA-256, embedded
   manifest equality and executable health before selecting a release. It uses
   private directories, digest-addressed releases, a lock and atomic symlink

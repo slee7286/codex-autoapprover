@@ -60,6 +60,9 @@ fn update(directory: &Path, mode: &str) -> Result<()> {
     check_plain_directory_chain(directory)?;
     fs::create_dir_all(directory).context("create Codex configuration directory")?;
     check_plain_directory_chain(directory)?;
+    #[cfg(windows)]
+    crate::identity::check_trusted_directory_chain(&std::path::absolute(directory)?)
+        .context("Codex configuration directory is not owner-controlled")?;
     let lock_path = directory.join(".autoapprover-config.lock");
     let lock = fs::OpenOptions::new().write(true).create_new(true).open(&lock_path)
         .context("configuration lock exists or is inaccessible; close other installers, and remove a stale .autoapprover-config.lock only after confirming none is running")?;
@@ -191,6 +194,8 @@ fn read_config(path: &Path) -> Result<Option<String>> {
         if info.nNumberOfLinks != 1 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             bail!("hardlinked or reparse-point config.toml is not safe to replace")
         }
+        crate::identity::check_trusted_file_acl(&file)
+            .context("config.toml owner or DACL is not safe for replacement")?;
     }
     let mut text = String::new();
     file.take(MAX_CONFIG_BYTES + 1)
@@ -335,6 +340,48 @@ mod tests {
         fs::write(&path, &body).unwrap();
         assert!(update(directory.path(), "unelevated").is_err());
         assert_eq!(fs::read(&path).unwrap(), body);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn broad_write_acl_on_directory_or_file_is_rejected_before_replacement() {
+        use std::process::Command;
+
+        let root = tempfile::tempdir().unwrap();
+        for broad_directory in [true, false] {
+            let directory = root.path().join(if broad_directory {
+                "broad-directory"
+            } else {
+                "broad-file"
+            });
+            fs::create_dir(&directory).unwrap();
+            let path = directory.join("config.toml");
+            let original = "[windows]\nsandbox = 'elevated'\n";
+            fs::write(&path, original).unwrap();
+            let target = if broad_directory { &directory } else { &path };
+            let grant = if broad_directory {
+                "*S-1-5-32-545:(OI)(CI)M"
+            } else {
+                "*S-1-5-32-545:M"
+            };
+            assert!(
+                Command::new("icacls")
+                    .arg(target)
+                    .args(["/grant", grant])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(update(&directory, "unelevated").is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+            assert!(!directory.join(".autoapprover-config.lock").exists());
+            assert!(
+                fs::read_dir(&directory)
+                    .unwrap()
+                    .flatten()
+                    .all(|entry| entry.path().extension().is_none_or(|ext| ext != "bak"))
+            );
+        }
     }
 
     #[cfg(unix)]

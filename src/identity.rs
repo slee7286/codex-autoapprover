@@ -292,6 +292,11 @@ pub(crate) fn check_trusted_directory_chain(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+pub(crate) fn check_trusted_file_acl(file: &File) -> Result<()> {
+    windows_acl::check_trusted_file_acl(file)
+}
+
 #[cfg(unix)]
 fn stamp(file: &File) -> Result<Stamp> {
     use std::os::unix::fs::MetadataExt;

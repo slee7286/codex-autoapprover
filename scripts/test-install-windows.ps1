@@ -60,6 +60,25 @@ try {
     if (Test-Path -LiteralPath (Join-Path $realHome 'config.toml')) { throw 'Junction target configuration changed' }
     if (Test-Path -LiteralPath (Join-Path $realHome '.autoapprover-config.lock')) { throw 'Junction target lock created' }
 
+    foreach ($scope in @('directory', 'file')) {
+        $aclHome = Join-Path $root "broad-write-$scope"
+        [System.IO.Directory]::CreateDirectory($aclHome) | Out-Null
+        $aclConfig = Join-Path $aclHome 'config.toml'
+        [System.IO.File]::WriteAllText($aclConfig, $linkedOriginal, $utf8)
+        if ($scope -eq 'directory') {
+            & icacls $aclHome /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null
+        } else {
+            & icacls $aclConfig /grant '*S-1-5-32-545:M' | Out-Null
+        }
+        if ($LASTEXITCODE -ne 0) { throw "Could not prepare broad-write $scope ACL" }
+        $rejected = $false
+        try { & $installer -CodexHome $aclHome -ConfigureOnly -BinaryPath $binary -WindowsSandbox unelevated } catch { $rejected = $true }
+        if (-not $rejected) { throw "Broad-write $scope ACL accepted" }
+        if ([System.IO.File]::ReadAllText($aclConfig) -cne $linkedOriginal) { throw "Broad-write $scope configuration changed" }
+        if (Test-Path -LiteralPath (Join-Path $aclHome '.autoapprover-config.lock')) { throw "Broad-write $scope lock remains" }
+        if (@(Get-ChildItem $aclHome -Filter '*.bak').Count -ne 0) { throw "Broad-write $scope backup created" }
+    }
+
     & $installer -CodexHome (Join-Path $root 'new-home') -ConfigureOnly -BinaryPath $binary -WindowsSandbox unelevated
     Write-Host 'Windows installation configuration tests passed.'
 } finally {
