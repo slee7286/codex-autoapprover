@@ -27,6 +27,7 @@ jobs:
     outputs:
       version: ${{ steps.watch.outputs.version }}
       changed: ${{ steps.watch.outputs.changed }}
+      candidate_sha: ${{ steps.watch.outputs.candidate_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -38,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/watch_codex.py --create-pr
 
-  candidate-checks:
+  candidate-preflight:
     needs: detect
     strategy:
       fail-fast: false
@@ -57,7 +58,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: automation/codex-${{ needs.detect.outputs.version }}
+          ref: ${{ needs.detect.outputs.candidate_sha }}
           path: candidate
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -83,17 +84,38 @@ jobs:
       - name: Inspect without credentials or a live approval session
         shell: pwsh
         run: python trusted/scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: "1.98.0"
-      - run: cargo test --locked --all-targets
-        working-directory: candidate
       - name: Summarize candidate evidence
         shell: pwsh
         run: |
           Get-Content asset-verification.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Get-Content candidate-probe.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          'Asset checks, synthetic tests and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          'Asset checks and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+  candidate-checks:
+    needs: [detect, candidate-preflight]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.detect.outputs.candidate_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.98.0'
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: State the scope of candidate code checks
+        shell: pwsh
+        run: '"Synthetic Rust checks do not verify native PermissionRequest behavior." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8'
 
   repair:
     needs: [detect, candidate-checks]
@@ -110,7 +132,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: automation/codex-${{ needs.detect.outputs.version }}
+          ref: ${{ needs.detect.outputs.candidate_sha }}
           path: candidate
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -155,6 +177,8 @@ jobs:
     if: ${{ always() && needs.repair.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      candidate_sha: ${{ steps.commit-repair.outputs.sha }}
     permissions:
       contents: write
       pull-requests: read
@@ -185,10 +209,12 @@ jobs:
       - name: Validate and apply the untrusted patch without executing it
         run: python trusted/scripts/apply_repair.py --repo candidate --patch repair-output/repair.patch --report repair-output/repair-report.json --version "$CANDIDATE_VERSION"
       - name: Commit a reviewable repair diff
+        id: commit-repair
         run: |
           git -C candidate add -- src tests
           git -C candidate -c core.hooksPath=/dev/null -c user.name=codex-compatibility-bot -c user.email=codex-compatibility-bot@users.noreply.github.com commit -m "Propose bounded Codex $CANDIDATE_VERSION repair"
           git -C candidate -c core.hooksPath=/dev/null push origin "HEAD:refs/heads/automation/codex-$CANDIDATE_VERSION"
+          printf 'sha=%s\n' "$(git -C candidate rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   post-repair-checks:
     needs: [detect, apply-repair]
@@ -210,7 +236,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: automation/codex-${{ needs.detect.outputs.version }}
+          ref: ${{ needs.apply-repair.outputs.candidate_sha }}
           path: candidate
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5

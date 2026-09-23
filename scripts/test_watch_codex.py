@@ -248,6 +248,39 @@ class ReleaseWatchTests(unittest.TestCase):
                         self.assertFalse(any(call.args[0][:3] == ["gh", "pr", "create"]
                                              for call in runner.call_args_list))
 
+    def test_candidate_branch_sha_requires_one_exact_remote_ref(self):
+        sha = "a" * 40
+        ref = "refs/heads/automation/codex-0.156.0"
+        for response, permitted in [
+            (f"{sha}\t{ref}\n", True),
+            (f"{sha}\t{ref}\n{sha}\t{ref}\n", False),
+            (f"{sha}\trefs/heads/automation/codex-0.156.1\n", False),
+            (f"short\t{ref}\n", False),
+            ("", False),
+        ]:
+            with self.subTest(response=response), patch.object(
+                    watch.subprocess, "check_output", return_value=response):
+                if permitted:
+                    self.assertEqual(watch.candidate_branch_sha("0.156.0"), sha)
+                else:
+                    with self.assertRaises(ValueError):
+                        watch.candidate_branch_sha("0.156.0")
+
+    def test_watcher_emits_pinned_branch_commit_after_draft_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate.json"
+            output = root / "github-output.txt"
+            argv = ["watch_codex.py", "--output", str(candidate), "--create-pr"]
+            sha = "b" * 40
+            with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                 patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "prepare_pr") as prepare, \
+                 patch.object(watch, "candidate_branch_sha", return_value=sha):
+                watch.main()
+                prepare.assert_called_once()
+            self.assertIn(f"candidate_sha={sha}\n", output.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

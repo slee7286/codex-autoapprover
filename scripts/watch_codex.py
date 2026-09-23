@@ -284,6 +284,21 @@ def prepare_pr(candidate, path):
                         "--body-file", str(body_path)], check=True)
 
 
+def candidate_branch_sha(version):
+    version_key(version)
+    ref = f"refs/heads/automation/codex-{version}"
+    output = subprocess.check_output(
+        ["git", "ls-remote", "--exit-code", "--heads", "origin", ref],
+        text=True, timeout=30)
+    lines = output.splitlines()
+    if len(lines) != 1:
+        raise ValueError("candidate branch has no unique remote commit")
+    sha, separator, returned_ref = lines[0].partition("\t")
+    if separator != "\t" or returned_ref != ref or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        raise ValueError("candidate branch remote identity is invalid")
+    return sha
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, help="Read a local API fixture instead of using the network")
@@ -301,13 +316,16 @@ def main():
             recent = fetch_releases(stop_tag=old_tag)
             verify_release_gap(previous, candidate, recent)
     changed = write_candidate(args.output, candidate)
-    output_file = os.environ.get("GITHUB_OUTPUT")
-    if output_file:
-        with open(output_file, "a", encoding="utf-8") as output:
-            output.write(f"version={candidate['codex_version']}\nchanged={str(changed).lower()}\n")
-    print(f"Codex {candidate['codex_version']}: unverified; candidate changed={changed}")
     if changed and args.create_pr:
         prepare_pr(candidate, args.output)
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        branch_sha = candidate_branch_sha(candidate["codex_version"]) if args.create_pr else None
+        with open(output_file, "a", encoding="utf-8") as output:
+            output.write(f"version={candidate['codex_version']}\nchanged={str(changed).lower()}\n")
+            if branch_sha:
+                output.write(f"candidate_sha={branch_sha}\n")
+    print(f"Codex {candidate['codex_version']}: unverified; candidate changed={changed}")
 
 
 if __name__ == "__main__":
