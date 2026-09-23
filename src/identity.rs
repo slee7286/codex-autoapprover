@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 
 const MAX_IDENTITY_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+#[cfg(windows)]
+mod windows_acl;
+
 #[derive(Debug, Clone)]
 pub struct Executable {
     requested: PathBuf,
@@ -248,11 +251,12 @@ impl Executable {
 }
 
 /// Files in a writable directory can be swapped without changing their own
-/// permissions. A system-owned sticky directory such as /tmp is safe for an
-/// owner-controlled immediate child; all later path components must be
-/// unwritable by other principals. This does not isolate malicious same-UID
-/// processes or the owner of the filesystem root, which are outside the
-/// security boundary. Root ownership can be UID-mapped inside containers.
+/// permissions. Unix accepts a system-owned sticky directory such as /tmp for
+/// an owner-controlled immediate child; all later path components must be
+/// unwritable by other principals. Windows inspects each local directory's
+/// owner, DACL and reparse-point status. This does not isolate malicious
+/// same-user processes or system administrators. Root ownership can be
+/// UID-mapped inside Unix containers.
 pub(crate) fn check_trusted_directory_chain(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -282,12 +286,9 @@ pub(crate) fn check_trusted_directory_chain(path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = path;
-        bail!(
-            "Windows native artifact directory ACL validation is pending; automatic approval is disabled"
-        )
+        windows_acl::check_trusted_directory_chain(path)?;
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Ok(())
 }
 

@@ -21,9 +21,10 @@ made additional code, gate, test and documentation changes.
   is hashed and retained for per-decision identity checks. Unix files and
   directory chains writable by other users or groups are ineligible. The
   present local npm installation fails this restriction and stays unarmed.
-  Windows file handles deny write/delete sharing, but directory ACL and
-  reparse-point validation is not implemented; Windows bundle admission
-  explicitly fails closed pending native testing and independent review.
+  Windows file handles deny write/delete sharing. A conservative local-drive
+  directory owner/DACL and reparse-point check is implemented and cross-compiled;
+  it has not run natively or received independent review. Unknown ACE forms
+  fail closed. No Windows tuple is certified.
 - Linux launches the held executable inode through `/proc/self/fd`; Windows
   holds a file handle without write/delete sharing. The brokers recheck the
   configured path, file identity and actual running process image.
@@ -78,6 +79,15 @@ made additional code, gate, test and documentation changes.
   the reviewed binary digest, native target and current source. Source files
   sort by canonical relative UTF-8 path so Linux and Windows runners compute
   the same source digest. Reports expire for release qualification after 30 days.
+- Windows bundle directory admission now reads owner and DACL information from
+  no-reparse directory handles. It rejects null DACLs, untrusted ownership,
+  unknown ACE forms and untrusted write, delete, owner or DACL rights; each
+  bundle subdirectory is checked as a leaf. A native regression test is
+  prepared to reject a disposable directory after granting BUILTIN\\Users
+  Modify rights. This remains unexecuted on Windows, and handle/ACL races and
+  normal Windows installation ACLs require independent review. The check uses
+  [Microsoft's file security model](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights)
+  and [handle-based security descriptor API](https://learn.microsoft.com/en-us/windows/win32/api/Aclapi/nf-aclapi-getsecurityinfo).
 - The prepared watcher now checks out the candidate branch separately for
   Rust tests while running metadata and probe scripts from the trusted
   default-branch checkout. Initial and post-repair checks require the branch's
@@ -185,7 +195,7 @@ made additional code, gate, test and documentation changes.
 | `cargo test --locked --all-targets` | 73 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection and Unix descendant cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
-| `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
+| `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL module and native-only ACL regression test; compile/lint only, no Windows execution |
 | `python3 -m unittest discover -s scripts -p 'test_*.py'` | 72 tests passed, adding deterministic Windows ZIP extraction and x86_64 PE guard coverage to the earlier 70 local tests; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
@@ -214,34 +224,34 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`e6b3c03e9350294ef59aab35ad24021edb5528b0c784ca452a9f55725d37b78d`.
+`74d822b50942106a20f4af02a59815e5795aad43e83e3584aeb86ac69648fc95`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v33/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `807dd58d7ab1b3c5edac83d2bc70091ce7485d32bb75693eadbd3879f3c747eb`.
+`/tmp/autoapprover-dev-package-20260923-v34/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `892ac1d2d87c77c53220edf95c5a0c44419d8383e1a9bee0fbeb637d4df01b66`.
 Its recorded source digest is
-`e021adeffcf5e3718bf09acec3a66cea2cfccac7f27926fe48a8d81c3da201c9`.
+`63b6db3fbabef769fdc9956c3b48bff383253d55d71510da6c83ea0f3c362798`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v31.spdx.json`, SHA-256
-`4110853fc56caf930f6e7bb3fd34c61279da576d67999af0f3505b5820ec337b`.
+`/tmp/autoapprover-locked-dependencies-v32.spdx.json`, SHA-256
+`f097c29f3d0dde273556047403b432d7803781cd57883348c50a2028010f1bf9`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v9.spdx.json`, SHA-256
-`f2e38dcd5c2e2a021013328f5891811b5ff64baae3cc816569978660c4dc532e`.
+`/tmp/autoapprover-binary-linux-v10.spdx.json`, SHA-256
+`e6d6130f53a61fdb3a3addbe8b591eead74e20f1ca45c482da25d216d61f2595`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the development executable digest above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v13.tar.gz`, SHA-256
-`7dd6d7a04ed9471bcfeac9366ec900de84a524ee7beaaa2d1f2d78eb4381a348`.
+`/tmp/autoapprover-locked-licenses-v14.tar.gz`, SHA-256
+`0166aed45ceefe12415b7773e7079331c806c90e6dd63c37321a2ffcff29933d`.
 Its indexed source digest matches the archive above. An automatic approval
 review rejected a proposed live OSV batch query because it would transmit the
 potentially sensitive exact `Cargo.lock` inventory to a public API. A local
