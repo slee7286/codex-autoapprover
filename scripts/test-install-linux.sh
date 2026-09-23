@@ -34,6 +34,8 @@ expect_fail "$installer" install --install-dir "$install_dir" --binary "$test_ro
 "$installer" install --install-dir "$install_dir" --binary "$test_root/v1" --sha256 "$sha1" --manifest "$manifest"
 "$install_dir/codex-autoapprover" verify-manifest --manifest "$manifest" >/dev/null
 [[ $("$installer" status --install-dir "$install_dir") == *"Current: $sha1"* ]]
+expect_fail "$installer" install --install-dir "$install_dir" --binary "$test_root/v1" --sha256 "$sha1" --manifest "$test_root/wrong-manifest.json"
+[[ $("$installer" status --install-dir "$install_dir") == *"Current: $sha1"* ]]
 "$installer" install --install-dir "$install_dir" --binary "$test_root/v1" --sha256 "$sha1" --manifest "$manifest"
 [[ ! -e $install_dir/.codex-autoapprover-previous ]]
 "$installer" install --install-dir "$install_dir" --binary "$test_root/v2" --sha256 "$sha2" --manifest "$manifest"

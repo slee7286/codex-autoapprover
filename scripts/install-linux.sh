@@ -231,7 +231,12 @@ prior=$(pointer_digest "$previous")
 
 case "$action" in
   install)
-    if [[ $old == "$expected" ]]; then printf 'Already installed: %s\n' "$old"; exit 0; fi
+    if [[ $old == "$expected" ]]; then
+      timeout 15s "$release_root/$expected/codex-autoapprover" verify-manifest --manifest "$manifest" >/dev/null || die 'installed executable/manifest verification failed'
+      timeout 15s "$release_root/$expected/codex-autoapprover" --help >/dev/null || die 'installed executable health check failed'
+      printf 'Already installed: %s\n' "$old"
+      exit 0
+    fi
     stage=$(mktemp -d "$release_root/.stage.XXXXXXXX")
     trap 'if [[ -n ${stage:-} && -d $stage ]]; then rm -f -- "$stage/codex-autoapprover"; rmdir -- "$stage"; fi' EXIT
     cp -- "$binary" "$stage/codex-autoapprover"

@@ -140,7 +140,7 @@ made additional code, gate, test and documentation changes.
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
 | `verify-manifest --manifest compatibility/manifest.json` | Installed/source manifest comparison passes for the local binary |
-| `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
+| `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
 | Disposable npm Codex 0.156.1 candidate | Fetched seven official registry package identities; exact-version lock and installed Linux parent/native package matched the recorded SHA-512 integrities. Script-free `npm ci` and `npm audit signatures` passed; npm reported two verified registry signatures and attestations. Version/help/features probes passed against the installed shim. This is non-live Linux-only evidence, not approval qualification. |
@@ -161,15 +161,15 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v17/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `875660dc1d4d686a9c530aff6796f981250ac5330f1bcc39caf210e4463b9241`.
+`/tmp/autoapprover-dev-package-20260923-v18/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `07ff35a9351cb0edcd8e966c6b4bbd590a354d4512a0f60ceb8998f0bd4b0dae`.
 Its recorded source digest is
-`f7ae2b2ab189b18b801ccd6b02f766ced7e65007e82dded80a70b6cf8791970a`.
+`9889526d56fc88a2221bb957cbbff73460fe5a79e4d6485f20acbf466705e621`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v17.spdx.json`, SHA-256
-`f0dd9024c65df2b6aa6149520bbbf384755c29a8e3986cb5d8949fd1c85d6e7f`.
+`/tmp/autoapprover-locked-dependencies-v18.spdx.json`, SHA-256
+`dbe79e6a5671ce4742df1869439ab45aebc693d0d293140c2d947692e33faa72`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
