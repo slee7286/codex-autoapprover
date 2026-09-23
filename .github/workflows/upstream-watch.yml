@@ -27,6 +27,7 @@ jobs:
     outputs:
       version: ${{ steps.watch.outputs.version }}
       changed: ${{ steps.watch.outputs.changed }}
+      repair_eligible: ${{ steps.watch.outputs.repair_eligible }}
       candidate_sha: ${{ steps.watch.outputs.candidate_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -37,10 +38,17 @@ jobs:
       - id: watch
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/watch_codex.py --create-pr
+          REPAIR_EXISTING: ${{ inputs.repair_existing }}
+        run: |
+          if [ "$REPAIR_EXISTING" = 'true' ]; then
+            python scripts/watch_codex.py --create-pr --require-branch
+          else
+            python scripts/watch_codex.py --create-pr
+          fi
 
   candidate-preflight:
     needs: detect
+    if: ${{ needs.detect.outputs.changed == 'true' || inputs.repair_existing }}
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +144,7 @@ jobs:
 
   repair:
     needs: [detect, candidate-checks]
-    if: ${{ always() && needs.detect.result == 'success' && needs.candidate-checks.result == 'failure' && (needs.detect.outputs.changed == 'true' || inputs.repair_existing) }}
+    if: ${{ always() && needs.detect.result == 'success' && needs.candidate-checks.result == 'failure' && (needs.detect.outputs.repair_eligible == 'true' || inputs.repair_existing) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

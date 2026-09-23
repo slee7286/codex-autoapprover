@@ -239,7 +239,7 @@ class ReleaseWatchTests(unittest.TestCase):
                      patch.object(watch.subprocess, "check_output", side_effect=output), \
                      patch.object(watch.subprocess, "run", runner):
                     if permitted:
-                        watch.prepare_pr(selected, Path("compatibility/candidate.json"))
+                        self.assertTrue(watch.prepare_pr(selected, Path("compatibility/candidate.json")))
                         self.assertTrue(any(call.args[0][:3] == ["gh", "pr", "create"]
                                             for call in runner.call_args_list))
                     else:
@@ -247,6 +247,14 @@ class ReleaseWatchTests(unittest.TestCase):
                             watch.prepare_pr(selected, Path("compatibility/candidate.json"))
                         self.assertFalse(any(call.args[0][:3] == ["gh", "pr", "create"]
                                              for call in runner.call_args_list))
+
+    def test_existing_pr_does_not_authorize_another_repair(self):
+        selected = watch.candidate_from_releases([release("0.156.0")])
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+             patch.object(watch.subprocess, "check_output", return_value='[{"number": 12}]'), \
+             patch.object(watch.subprocess, "run") as runner:
+            self.assertFalse(watch.prepare_pr(selected, Path("compatibility/candidate.json")))
+            runner.assert_not_called()
 
     def test_candidate_branch_sha_requires_one_exact_remote_ref(self):
         sha = "a" * 40
@@ -275,11 +283,73 @@ class ReleaseWatchTests(unittest.TestCase):
             sha = "b" * 40
             with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                  patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
-                 patch.object(watch, "prepare_pr") as prepare, \
+                 patch.object(watch, "prepare_pr", return_value=True) as prepare, \
                  patch.object(watch, "candidate_branch_sha", return_value=sha):
                 watch.main()
                 prepare.assert_called_once()
             self.assertIn(f"candidate_sha={sha}\n", output.read_text())
+            self.assertIn("repair_eligible=true\n", output.read_text())
+
+    def test_unchanged_release_without_candidate_branch_is_a_clean_noop(self):
+        selected = watch.candidate_from_releases([release("0.156.0")])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps(selected))
+            output = root / "github-output.txt"
+            with patch("sys.argv", ["watch_codex.py", "--output", str(candidate), "--create-pr"]), \
+                 patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                 patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "prepare_pr") as prepare, \
+                 patch.object(watch, "candidate_branch_sha") as branch_sha:
+                watch.main()
+                prepare.assert_not_called()
+                branch_sha.assert_not_called()
+            self.assertIn("changed=false\n", output.read_text())
+            self.assertIn("repair_eligible=false\n", output.read_text())
+            self.assertNotIn("candidate_sha=", output.read_text())
+
+    def test_existing_pr_is_checked_but_not_automatically_repaired_again(self):
+        previous = watch.candidate_from_releases([release("0.156.0")])
+        latest = release("0.156.1", id=2)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps(previous))
+            output = root / "github-output.txt"
+            with patch("sys.argv", ["watch_codex.py", "--output", str(candidate), "--create-pr"]), \
+                 patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                 patch.object(watch, "fetch_latest_release", return_value=latest), \
+                 patch.object(watch, "fetch_releases", return_value=[latest, release("0.156.0")]), \
+                 patch.object(watch, "prepare_pr", return_value=False) as prepare, \
+                 patch.object(watch, "candidate_branch_sha", return_value="c" * 40):
+                watch.main()
+                prepare.assert_called_once()
+            self.assertIn("changed=true\n", output.read_text())
+            self.assertIn("repair_eligible=false\n", output.read_text())
+            self.assertIn(f"candidate_sha={'c' * 40}\n", output.read_text())
+
+    def test_manual_repair_retry_requires_existing_branch_even_without_update(self):
+        selected = watch.candidate_from_releases([release("0.156.0")])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate.json"
+            candidate.write_text(json.dumps(selected))
+            output = root / "github-output.txt"
+            argv = ["watch_codex.py", "--output", str(candidate), "--create-pr", "--require-branch"]
+            with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                 patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "candidate_branch_sha", return_value="d" * 40) as branch_sha:
+                watch.main()
+                branch_sha.assert_called_once_with("0.156.0")
+            self.assertIn(f"candidate_sha={'d' * 40}\n", output.read_text())
+            self.assertIn("repair_eligible=false\n", output.read_text())
+
+            with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": ""}), \
+                 patch.object(watch, "fetch_latest_release", return_value=release("0.156.0")), \
+                 patch.object(watch, "candidate_branch_sha", side_effect=ValueError("branch missing")):
+                with self.assertRaisesRegex(ValueError, "branch missing"):
+                    watch.main()
 
 
 if __name__ == "__main__":

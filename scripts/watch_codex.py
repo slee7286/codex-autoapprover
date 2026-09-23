@@ -246,7 +246,7 @@ def prepare_pr(candidate, path):
     ], text=True)
     if json.loads(existing):
         print(f"Candidate PR already exists for Codex {version}; left unchanged")
-        return
+        return False
     remote = subprocess.check_output(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"], text=True)
     if remote.strip():
         subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin",
@@ -282,6 +282,7 @@ def prepare_pr(candidate, path):
         subprocess.run(["gh", "pr", "create", "--repo", repository, "--head", branch,
                         "--draft", "--title", f"Validate Codex {version} compatibility",
                         "--body-file", str(body_path)], check=True)
+    return True
 
 
 def candidate_branch_sha(version):
@@ -304,9 +305,13 @@ def main():
     parser.add_argument("--fixture", type=Path, help="Read a local API fixture instead of using the network")
     parser.add_argument("--output", type=Path, default=Path("compatibility/candidate.json"))
     parser.add_argument("--create-pr", action="store_true")
+    parser.add_argument("--require-branch", action="store_true",
+                        help="Require an existing candidate branch for an explicit repair retry")
     args = parser.parse_args()
     if args.fixture and args.create_pr:
         parser.error("fixtures cannot create PRs")
+    if args.require_branch and not args.create_pr:
+        parser.error("--require-branch requires --create-pr")
     releases = json.loads(args.fixture.read_text()) if args.fixture else [fetch_latest_release()]
     candidate = candidate_from_releases(releases)
     if not args.fixture and args.output.exists():
@@ -316,13 +321,16 @@ def main():
             recent = fetch_releases(stop_tag=old_tag)
             verify_release_gap(previous, candidate, recent)
     changed = write_candidate(args.output, candidate)
+    created_pr = False
     if changed and args.create_pr:
-        prepare_pr(candidate, args.output)
+        created_pr = prepare_pr(candidate, args.output) is True
+    branch_sha = (candidate_branch_sha(candidate["codex_version"])
+                  if args.create_pr and (changed or args.require_branch) else None)
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
-        branch_sha = candidate_branch_sha(candidate["codex_version"]) if args.create_pr else None
         with open(output_file, "a", encoding="utf-8") as output:
-            output.write(f"version={candidate['codex_version']}\nchanged={str(changed).lower()}\n")
+            output.write(f"version={candidate['codex_version']}\nchanged={str(changed).lower()}\n"
+                         f"repair_eligible={str(created_pr).lower()}\n")
             if branch_sha:
                 output.write(f"candidate_sha={branch_sha}\n")
     print(f"Codex {candidate['codex_version']}: unverified; candidate changed={changed}")
