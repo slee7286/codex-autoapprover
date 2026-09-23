@@ -8,7 +8,7 @@ The product is an unofficial launcher around an existing official Codex CLI. It 
 
 ## Compatibility
 
-General automatic approval MUST require an exact certified Codex version, OS/build or distro, architecture, sandbox implementation, local surface, protocol/tool schema and executable identity. Runtime, installer and release manifests MUST agree. Broad version ranges and help/feature probes MUST NOT establish verification. The historical Linux 0.151.0 record requires fresh qualification of the current artifact. Windows 0.156.0 shell recovery is not hook evidence.
+General automatic approval MUST require an exact certified Codex version, OS/build or distro, architecture, sandbox implementation, local surface, protocol/tool schema and executable identity. Arming MUST also require an explicit `workspace-write` choice and use `on-request` for otherwise undecided actions; managed requirements MUST NOT be bypassed. Runtime, installer and release manifests MUST agree. Broad version ranges and help/feature probes MUST NOT establish verification. The historical Linux 0.151.0 record requires fresh qualification of the current artifact. Windows 0.156.0 shell recovery is not hook evidence.
 
 Strict is the normal policy. Legacy `automatic` options MUST NOT bypass it. Unsupported/malformed/prerelease/revoked/mismatched targets MUST remain unarmed or stop with a clear diagnostic. Normal fallback MUST remove inherited broker credentials and preserve ordinary Codex approval behavior. Arguments after `--` MUST remain Codex arguments. Changes of executable identity during launch or a session MUST disarm approval.
 

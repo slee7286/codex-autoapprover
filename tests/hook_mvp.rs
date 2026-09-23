@@ -420,7 +420,18 @@ fn run_forwards_arguments_and_exit_status_without_arming_unverified_version() {
     command
         .env("PATH", path)
         .env("INHERITED_TEST_VALUE", "present")
-        .args(["run", "--", "exec", "--model", "synthetic", "prompt"])
+        .args([
+            "run",
+            "--sandbox-implementation",
+            "linux-bwrap",
+            "--sandbox-mode",
+            "workspace-write",
+            "--",
+            "exec",
+            "--model",
+            "synthetic",
+            "prompt",
+        ])
         .assert()
         .code(23)
         .stdout(predicate::str::contains("inherited=present\n"))
@@ -428,6 +439,8 @@ fn run_forwards_arguments_and_exit_status_without_arming_unverified_version() {
         .stdout(predicate::str::contains(
             "exec\n--model\nsynthetic\nprompt\n",
         ))
+        .stdout(predicate::str::contains("-s\nworkspace-write").not())
+        .stdout(predicate::str::contains("-a\non-request").not())
         .stderr(predicate::str::contains("automatic approval is DISABLED"));
 }
 

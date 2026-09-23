@@ -56,6 +56,9 @@ pub struct RunArgs {
     /// Explicit sandbox selection for a certified foreground launch; otherwise use ordinary Codex.
     #[arg(long, value_parser = ["linux-bwrap", "linux-landlock", "windows-elevated", "windows-unelevated"])]
     pub sandbox_implementation: Option<String>,
+    /// Explicit workspace-write choice for a certified launch; otherwise preserve Codex's configured permissions.
+    #[arg(long, value_parser = ["workspace-write"])]
+    pub sandbox_mode: Option<String>,
     /// Only reviewed exact tuples may arm. The legacy automatic value is an alias for strict.
     #[arg(long, value_enum)]
     pub compatibility: Option<CompatibilityMode>,
@@ -88,6 +91,32 @@ mod tests {
     #[test]
     fn live_verification_requires_an_explicit_separate_login_home() {
         assert!(Cli::try_parse_from(["codex-autoapprover", "verify-local-hook"]).is_err());
+    }
+
+    #[test]
+    fn certified_sandbox_mode_must_be_explicit_and_supported() {
+        let cli = Cli::try_parse_from([
+            "codex-autoapprover",
+            "run",
+            "--sandbox-implementation",
+            "linux-bwrap",
+            "--sandbox-mode",
+            "workspace-write",
+        ])
+        .expect("parse explicit certified mode");
+        let Some(Command::Run(args)) = cli.command else {
+            panic!("expected run command")
+        };
+        assert_eq!(args.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert!(
+            Cli::try_parse_from([
+                "codex-autoapprover",
+                "run",
+                "--sandbox-mode",
+                "danger-full-access",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

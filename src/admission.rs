@@ -24,6 +24,7 @@ impl Admission {
     pub fn inspect(
         installation: &codex::Installation,
         sandbox: Option<&str>,
+        sandbox_mode: Option<&str>,
         args: &[OsString],
     ) -> Result<Self> {
         let manifest = Manifest::embedded()?;
@@ -43,6 +44,7 @@ impl Admission {
         }
         let sandbox = sandbox.context("select an explicitly certified --sandbox-implementation; existing Codex settings are preserved in manual mode")?;
         sandbox_overrides(sandbox)?;
+        require_workspace_write(sandbox_mode)?;
         let bundle = Bundle::discover(&installation.path, &installation.version)?;
         let executable = bundle.executable.clone();
         let target = Target {
@@ -88,7 +90,7 @@ impl Admission {
         // This admission adapter covers the local foreground CLI only. Remote,
         // IDE, daemon, config/profile overrides and other subcommands are manual.
         self.bundle.configure_child(command)?;
-        command.arg("--no-daemon");
+        command.args(["--no-daemon", "-s", "workspace-write", "-a", "on-request"]);
         for setting in sandbox_overrides(&self.target.sandbox)? {
             command.arg("-c").arg(setting);
         }
@@ -97,10 +99,9 @@ impl Admission {
 
     pub fn check_execution_health(&self) -> Result<()> {
         self.recheck()?;
-        // Resolve the same project and managed configuration as the final CLI.
-        // Do not replace a user's read-only/custom permission profile just to
-        // make a health probe succeed. Inability to write the disposable file
-        // means manual fallback, not a permission downgrade.
+        // The user explicitly selected workspace-write for the armed child.
+        // Resolve project and managed configuration from the same working
+        // directory. If a managed policy rejects this mode, leave it unarmed.
         let cwd = std::env::current_dir()?;
         let directory = tempfile::Builder::new()
             .prefix(".autoapprover-health-")
@@ -111,8 +112,14 @@ impl Admission {
         let mut command = self.executable.command();
         self.bundle.configure_child(&mut command)?;
         command
-            .args(["sandbox", "--cd"])
-            .arg(&cwd)
+            .args([
+                "sandbox",
+                "-c",
+                "sandbox_mode=\"workspace-write\"",
+                "-c",
+                "approval_policy=\"on-request\"",
+            ])
+            .current_dir(&cwd)
             .stdin(Stdio::null());
         for setting in sandbox_overrides(&self.target.sandbox)? {
             command.arg("-c").arg(setting);
@@ -174,6 +181,15 @@ fn sandbox_overrides(sandbox: &str) -> Result<Vec<&'static str>> {
     }
 }
 
+fn require_workspace_write(mode: Option<&str>) -> Result<()> {
+    if mode != Some("workspace-write") {
+        bail!(
+            "select --sandbox-mode workspace-write explicitly for a certified launch; otherwise Codex uses its configured permissions in manual mode"
+        )
+    }
+    Ok(())
+}
+
 fn validate_arguments(arguments: &[OsString]) -> Result<()> {
     let mut values = arguments.iter();
     let mut prompt_seen = false;
@@ -206,6 +222,15 @@ fn validate_arguments(arguments: &[OsString]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn certification_requires_an_explicit_workspace_write_choice() {
+        assert!(require_workspace_write(None).is_err());
+        assert!(require_workspace_write(Some("read-only")).is_err());
+        assert!(require_workspace_write(Some("danger-full-access")).is_err());
+        require_workspace_write(Some("workspace-write")).expect("explicit certified mode");
+    }
+
     #[test]
     fn forwarded_arguments_cannot_replace_certified_sandbox_or_surface() {
         for args in [

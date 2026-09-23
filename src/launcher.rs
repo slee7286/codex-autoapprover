@@ -39,6 +39,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     let admission = match crate::admission::Admission::inspect(
         &installation,
         args.sandbox_implementation.as_deref(),
+        args.sandbox_mode.as_deref(),
         &args.codex_args,
     ) {
         Ok(admission) => admission,
@@ -228,6 +229,7 @@ pub fn diagnose() -> Result<i32> {
     let configured_mode = resolve_compatibility_mode(&RunArgs {
         compatibility: None,
         sandbox_implementation: None,
+        sandbox_mode: None,
         codex_args: Vec::new(),
     });
     match &configured_mode {
@@ -294,7 +296,7 @@ pub fn diagnose() -> Result<i32> {
 
 pub fn print_hook_config() -> Result<i32> {
     let installation = codex::inspect()?;
-    crate::admission::Admission::inspect(&installation, None, &[]).context(
+    crate::admission::Admission::inspect(&installation, None, None, &[]).context(
         "no locally verified PermissionRequest compatibility; use a certified run instead",
     )?;
 

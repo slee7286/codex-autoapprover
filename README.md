@@ -68,13 +68,14 @@ It manages a private install directory under `LOCALAPPDATA` (default `%LOCALAPPD
 ```text
 codex-autoapprover run [-- <codex arguments...>]
 codex-autoapprover run --compatibility strict -- <codex arguments...>
+codex-autoapprover run --sandbox-implementation linux-bwrap --sandbox-mode workspace-write -- <codex arguments...>
 codex-autoapprover diagnose
 codex-autoapprover support-matrix
 codex-autoapprover print-hook-config
 codex-autoapprover verify-local-hook --verification-auth-home <separate-test-login-home> [--diagnostic-dir <existing-directory>]
 ```
 
-The implemented foreground admission adapter requires an explicit `--sandbox-implementation` selection (for example `linux-bwrap`). The manifest is empty, so this option cannot currently arm a session. Recognized npm launchers are resolved to a native bundle before admission; Unix packages with group/world-writable files or directories cannot qualify. A conservative Windows directory owner/DACL and reparse-point check is now prepared and cross-compiled, but has not run on native Windows or received independent review; no Windows tuple is certified. Profiles, arbitrary config/feature overrides and other subcommands currently use ordinary Codex; their qualification work remains open.
+The implemented foreground admission adapter requires explicit `--sandbox-implementation` and `--sandbox-mode workspace-write` choices. If an exact tuple is eventually certified, the armed child receives `workspace-write` and `on-request` invocation settings; these do not rewrite persistent configuration, and a managed restriction can still refuse the run. Omitting either choice uses ordinary Codex with its configured permissions. The manifest is empty, so no choice can currently arm a session. Recognized npm launchers are resolved to a native bundle before admission; Unix packages with group/world-writable files or directories cannot qualify. A conservative Windows directory owner/DACL and reparse-point check is prepared and cross-compiled, but has not run on native Windows or received independent review; no Windows tuple is certified. Profiles, arbitrary config/feature overrides and other subcommands currently use ordinary Codex; their qualification work remains open. [OpenAI Docs: permission profiles and legacy sandbox settings](https://learn.chatgpt.com/docs/permissions)
 
 No subcommand means `run`. Arguments after `--` are forwarded to Codex. `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` is the default policy. `hook` is a protocol endpoint, not a public approval API. `support-matrix` prints the embedded manifest. `print-hook-config` refuses to print a support configuration without full admission; historical evidence cannot authorize it.
 

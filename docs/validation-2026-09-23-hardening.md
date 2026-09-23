@@ -32,12 +32,14 @@ made additional code, gate, test and documentation changes.
   namespace environments, including runners whose filesystem root UID is
   remapped away from host root. Missing host facts remain inconclusive. These checks
   are conservative detection, not hardware attestation or same-user isolation.
-- Foreground admission restricts forwarded options and explicitly pins the
-  selected sandbox while preserving the active permission profile. A bounded disposable
-  shell/file health probe is implemented. It has not yet qualified a real
-  Codex tuple; configuration/managed-policy coercion remains unresolved qualification work.
-  Health probes resolve the same project cwd and only write a disposable child
-  directory; a read-only profile that rejects the write stays manual.
+- Foreground admission restricts forwarded options and requires explicit
+  sandbox-implementation and `workspace-write` choices. A prospective armed
+  child receives `workspace-write` and `on-request` settings for that invocation;
+  ordinary fallback preserves the configured permissions. A bounded disposable
+  shell/file health probe uses the same project cwd and sandbox-mode override,
+  writes only a temporary child directory, and leaves a policy rejection
+  unarmed. It has not qualified a real Codex tuple; effective managed-policy
+  behavior remains native qualification work.
 - Brokers bind the first accepted session, consume a hook process invocation
   once, reject identical request replays, cap the ledger at 4096 invocations,
   and permit **at most one allow** in the isolated verifier. Consumed requests
@@ -246,7 +248,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 83 unit tests and 22 integration tests passed on Linux with host Unix-socket and loopback access; synthetic regression evidence only. The verifier now requires a separate test login home, stages only a bounded private auth file into a temporary child home, rejects unsafe auth sources and clears inherited state/auth/startup overrides. New cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection, Unix descendant cleanup, nonblocking worker reaping, whole-frame slow-sender deadlines, the exact loopback witness and redacted diagnostic retention after temporary-state cleanup. |
+| `cargo test --locked --all-targets` | 85 unit tests and 22 integration tests passed on Linux with host Unix-socket and loopback access; synthetic regression evidence only. The verifier requires a separate test login home, stages only a bounded private auth file into a temporary child home, rejects unsafe auth sources and clears inherited state/auth/startup overrides. New admission cases require an explicit `workspace-write` choice. Other cases cover linked/oversized configuration refusal, malformed/denied/replayed broker audit accounting, log-injection rejection, Unix descendant cleanup, nonblocking worker reaping, whole-frame slow-sender deadlines, the exact loopback witness and redacted diagnostic retention after temporary-state cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL, suspended Job Object child-tree module, and native-only descendant and stalled-pipe regressions; compile/lint only, no Windows execution |
@@ -280,35 +282,45 @@ version spoofing, native-image replacement, symlink retargeting/hardlinks,
 hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
+A disposable, unauthenticated local Codex 0.156.0 probe exposed a health-check
+CLI mismatch: `codex sandbox --cd` requires `--permission-profile`, while an
+explicit profile omits managed requirements unless `--include-managed-config`
+is also supplied. The health check now runs from the same project directory
+without `--cd` and passes the explicit `workspace-write` override selected by
+the user for the armed child. The revised command passed CLI argument parsing,
+then this host stopped it because its shared app-server socket directory did
+not meet Codex's 0700 ownership-mode requirement. No shell/file health outcome
+was observed, and this is not a live PermissionRequest qualification.
+
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`bb66e8150d9ab9c44d8dcc5eb5b114313a0e2de25a5ea4271655b31d512a5b7b`.
+`5fff0fc668fa5a5c05db453d0c9e0c41a4dcecf8554b814918648dc7489afeed`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-isolated-verifier/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `c9663bdae42e449b9b793564f5d7ad01be66c1c00291daa7e3a66efb2b5518c8`.
+`/tmp/autoapprover-dev-package-20260923-health-policy-v2/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `5cd45d01c8b031393697c77f99e01879549e5b0b0e764f60d3370d28deb60881`.
 Its recorded source digest is
-`9c099c97ed56c6d05d549bff94813170f6b7c2cb5fd7849059ab38237b6c98fb`.
+`e6a7e5e0ccd28fbe390c2144b247810eb45781b24a1623db6f621077d9b4e995`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-isolated-verifier.spdx.json`, SHA-256
-`456c48e84a441a3b41ddbbb25b89f2d10851d1b2f4f6dc83fedabf41afc3b3db`.
+`/tmp/autoapprover-locked-dependencies-health-policy-v2.spdx.json`, SHA-256
+`f542a1cfc366ed051a642b978bfb75eddb918e11378b4f6d5042ae25868d4575`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The matching Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-isolated-verifier.spdx.json`, SHA-256
-`82727b699265b61e96e31654b08000e693b8ae773e9b47825f0d9db20d86b022`.
+`/tmp/autoapprover-binary-linux-health-policy-v2.spdx.json`, SHA-256
+`003ac9a2292423c06bd765ed9e5676da2349c3f3b55bae13457d5f11df079ca8`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the current development executable and source digests above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-isolated-verifier.tar.gz`, SHA-256
-`874aac23389a44d08035e02a91e56617ac5e317c8270fb2c1e938a26b4208695`.
+`/tmp/autoapprover-locked-licenses-health-policy-v2.tar.gz`, SHA-256
+`663bf979192b228bdf20166317c66dada86cd5e8f4983c2df72c53d71a332803`.
 Its indexed source digest matches the archive above.
 
 An earlier Linux candidate build observation is
