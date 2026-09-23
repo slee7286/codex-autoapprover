@@ -110,9 +110,26 @@ jobs:
         with:
           toolchain: '1.98.0'
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo test --locked --all-targets
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - id: format
+        run: cargo fmt --check
+      - id: rust_tests
+        run: cargo test --locked --all-targets
+      - id: clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Record an actual Rust-check failure
+        id: repair_signal
+        if: ${{ failure() && (steps.format.outcome == 'failure' || steps.rust_tests.outcome == 'failure' || steps.clippy.outcome == 'failure') }}
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'candidate-code-failure-${{ matrix.os }}.txt'
+          Set-Content -LiteralPath $path -Value 'candidate-code-check-failed' -NoNewline
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() && steps.repair_signal.outcome == 'success' }}
+        with:
+          name: codex-code-failure-${{ matrix.os }}
+          path: ${{ runner.temp }}/candidate-code-failure-${{ matrix.os }}.txt
+          retention-days: 7
+          if-no-files-found: error
       - name: State the scope of candidate code checks
         shell: pwsh
         run: '"Synthetic Rust checks do not verify native PermissionRequest behavior." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8'
@@ -126,6 +143,23 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: codex-code-failure-*
+          path: repair-signals
+          merge-multiple: true
+      - name: Require a failed Rust-check signal before repair setup
+        run: |
+          shopt -s nullglob
+          markers=(repair-signals/candidate-code-failure-*.txt)
+          if [ "${#markers[@]}" -lt 1 ]; then echo 'No Rust-check failure signal; repair stopped'; exit 1; fi
+          for marker in "${markers[@]}"; do
+            case "$(basename "$marker")" in
+              candidate-code-failure-ubuntu-24.04.txt|candidate-code-failure-windows-2022.txt) ;;
+              *) echo 'Unexpected repair signal name'; exit 1 ;;
+            esac
+            if [ "$(cat "$marker")" != 'candidate-code-check-failed' ]; then echo 'Invalid repair signal'; exit 1; fi
+          done
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: trusted

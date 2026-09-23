@@ -80,9 +80,11 @@ made additional code, gate, test and documentation changes.
   default-branch checkout. Initial and post-repair checks require the branch's
   recorded candidate metadata to equal a freshly fetched official record
   before downloading either native asset. Asset/CLI preflight is now a separate
-  job; its failures cannot reach the repair worker. A later code-check job
-  failure still requires classification because runner or toolchain outages
-  could trigger an unnecessary bounded repair attempt. The
+  job; its failures cannot reach the repair worker. The repair job now also
+  requires a short signal artifact created only after an actual Rust check
+  command fails. Checkout and toolchain setup failures cannot produce it.
+  Cargo failures caused by a runner problem can still spend one bounded
+  attempt; no live workflow run has confirmed the classification. The
   watcher resolves a single candidate commit and pins preflight, Rust checks
   and repair to it; post-repair checks pin the pushed repair commit. This has
   local fixtures and workflow structure checks only; no default-branch run or
@@ -127,7 +129,7 @@ made additional code, gate, test and documentation changes.
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
-| Candidate provenance workflow static review | YAML structure, main-only dispatch, token permissions, job order, Bash and inline Python syntax passed locally; no GitHub run, environment approval, provenance signature or Windows PowerShell execution occurred |
+| Candidate provenance and watcher workflow static review | YAML structure, main-only provenance dispatch, token permissions, job order, Bash and inline Python syntax passed locally. The watcher repair-signal guard rejected missing/invalid fixtures and accepted an exact fixture; no GitHub run, environment approval, provenance signature or Windows PowerShell execution occurred |
 | Disposable `verify-local-hook` attempt | No live Codex child started: host-access PTY was classified `isolated-namespace`; default PTY could not create the private broker socket. Both copied-auth temporary homes were removed. No PermissionRequest, allow or command outcome exists. |
 | `git diff --check` | Passed |
 
@@ -144,15 +146,15 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v13/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `373764bcd4baad0ea028cf180a38b7e5692077d9e089900af62e99a5cc5350bb`.
+`/tmp/autoapprover-dev-package-20260923-v14/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `1b193f9fff91dd6490cdf1173bd002be52b712ba2bda085eae25efa4fe7a6454`.
 Its recorded source digest is
-`8144bb443471b7299ab01f1436f3518bef2d67f6b4f43ee2b3e7af94dc69c248`.
+`889d328b52e44453043234d5f7f5e438baa1049bcf06e887b8143964964faf6f`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v13.spdx.json`, SHA-256
-`1dfd3493d06a3af57c5b73bb21fe649ed5b7c62604b5eac93bafcf68c091fdeb`.
+`/tmp/autoapprover-locked-dependencies-v14.spdx.json`, SHA-256
+`3a4d8ee9f93f1e7bb5b2ed5f8e5cfc9ab4a566514d743bd0147c4c8477876b5d`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
@@ -239,7 +241,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
-| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests retained; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight failures cannot spend repair authority; candidate runners stream and compare downloads; changed metadata and multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
+| 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan verified against 0.156.1; exact native asset IDs/sizes/digests retained; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; candidate runners stream and compare downloads; changed metadata and multi-release gaps fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; handle missed stable releases automatically rather than only alarming; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
