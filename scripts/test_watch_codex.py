@@ -102,12 +102,118 @@ class ReleaseWatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pagination limit"):
                 watch.fetch_releases(open_url=lambda request, timeout: Response(request.full_url))
 
+    def test_default_page_size_reads_a_second_bounded_page(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        pages = [
+            [release(f"0.{minor}.0") for minor in range(156, 151, -1)],
+            [release("0.151.0")],
+        ]
+        requested = []
+
+        class Response:
+            def __init__(self, url, page):
+                self.url = url
+                self.page = page
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def geturl(self):
+                return self.url
+
+            def read(self, _limit):
+                return json.dumps(self.page).encode()
+
+        def open_page(request, timeout):
+            query = parse_qs(urlsplit(request.full_url).query)
+            requested.append(query)
+            self.assertEqual(query["per_page"], ["5"])
+            return Response(request.full_url, pages[int(query["page"][0]) - 1])
+
+        releases = watch.fetch_releases(open_url=open_page)
+        self.assertEqual(len(releases), 6)
+        self.assertEqual([page["page"] for page in requested], [["1"], ["2"]])
+        requested.clear()
+        recent = watch.fetch_releases(open_url=open_page, stop_tag="rust-v0.152.0")
+        self.assertEqual(len(recent), 5)
+        self.assertEqual([page["page"] for page in requested], [["1"]])
+        with self.assertRaisesRegex(ValueError, "previous release absent"):
+            watch.fetch_releases(open_url=lambda request, timeout:
+                                 Response(request.full_url, [release("0.156.0")]),
+                                 stop_tag="rust-v0.150.0")
+
+    def test_latest_full_release_uses_one_bounded_official_request(self):
+        selected = release("0.156.1")
+
+        class Response:
+            def __init__(self, url, body):
+                self.url = url
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def geturl(self):
+                return self.url
+
+            def read(self, limit):
+                return self.body[:limit]
+
+        requested = []
+
+        def open_latest(request, timeout):
+            requested.append(request.full_url)
+            self.assertEqual(request.full_url, watch.LATEST)
+            self.assertEqual(timeout, 30)
+            return Response(request.full_url, json.dumps(selected).encode())
+
+        self.assertEqual(watch.fetch_latest_release(open_url=open_latest), selected)
+        self.assertEqual(requested, [watch.LATEST])
+
+        with patch.object(watch, "LIMIT", 8), self.assertRaisesRegex(ValueError, "exceeded limit"):
+            watch.fetch_latest_release(open_url=open_latest)
+        with self.assertRaisesRegex(ValueError, "redirect"):
+            watch.fetch_latest_release(open_url=lambda request, timeout:
+                                       Response("https://example.invalid/redirect", b"{}"))
+        with self.assertRaisesRegex(ValueError, "unexpected response"):
+            watch.fetch_latest_release(open_url=lambda request, timeout:
+                                       Response(request.full_url, b"[]"))
+
+    def test_missed_stable_release_stops_before_candidate_write(self):
+        previous = watch.candidate_from_releases([release("0.156.0")])
+        latest = release("0.156.2", id=3)
+        intermediate = release("0.156.1", id=2)
+        watch.verify_release_gap(previous, watch.candidate_from_releases([latest]),
+                                 [latest, release("0.156.0")])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "candidate.json"
+            path.write_text(json.dumps(previous))
+            original = path.read_bytes()
+            with patch("sys.argv", ["watch_codex.py", "--output", str(path)]), \
+                 patch.object(watch, "fetch_latest_release", return_value=latest), \
+                 patch.object(watch, "fetch_releases", return_value=[latest, intermediate, release("0.156.0")]):
+                with self.assertRaisesRegex(ValueError, "multiple or inconsistent"):
+                    watch.main()
+            self.assertEqual(path.read_bytes(), original)
+
+        changed_old = release("0.156.0", id=99)
+        with self.assertRaisesRegex(ValueError, "previous release identity"):
+            watch.verify_release_gap(previous, watch.candidate_from_releases([latest]),
+                                     [latest, changed_old])
+
     def test_network_failure_is_not_treated_as_no_update(self):
         def fail(_request, timeout):
             raise TimeoutError
 
         with self.assertRaises(TimeoutError):
-            watch.fetch_releases(open_url=fail)
+            watch.fetch_latest_release(open_url=fail)
 
     def test_candidate_branch_recovery_checks_metadata_and_changes_before_pr(self):
         selected = watch.candidate_from_releases([release("0.156.0")])

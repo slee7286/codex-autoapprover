@@ -17,8 +17,10 @@ import urllib.request
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 UPSTREAM = "https://api.github.com/repos/openai/codex/releases"
+LATEST = f"{UPSTREAM}/latest"
 LIMIT = 4 * 1024 * 1024
-PAGE_SIZE = 100
+# Five asset-heavy releases fit the per-response cap observed in the live API.
+PAGE_SIZE = 5
 MAX_PAGES = 20
 REQUIRED_ASSETS = (
     "codex-x86_64-unknown-linux-musl.tar.gz",
@@ -29,6 +31,17 @@ REQUIRED_ASSETS = (
 class NoApiRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         raise ValueError("release API redirected unexpectedly")
+
+
+def api_headers():
+    headers = {"Accept": "application/vnd.github+json",
+               "User-Agent": "codex-autoapprover-release-watch"}
+    token = os.environ.get("GH_TOKEN")
+    if token:
+        if "\n" in token or "\r" in token:
+            raise ValueError("invalid GitHub API token format")
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def version_key(value):
@@ -110,21 +123,35 @@ def candidate_from_releases(releases):
     }
 
 
-def fetch_releases(open_url=None):
+def fetch_latest_release(open_url=None):
+    """Use GitHub's latest full-release pointer instead of crawling all history."""
+    open_url = open_url or urllib.request.build_opener(NoApiRedirect()).open
+    request = urllib.request.Request(LATEST, headers=api_headers())
+    with open_url(request, timeout=30) as response:
+        if response.geturl() != request.full_url:
+            raise ValueError("unexpected latest release API redirect")
+        body = response.read(LIMIT + 1)
+    if len(body) > LIMIT:
+        raise ValueError("latest release API response exceeded limit")
+    release = json.loads(body)
+    if not isinstance(release, dict):
+        raise ValueError("latest release API returned an unexpected response")
+    return release
+
+
+def fetch_releases(open_url=None, stop_tag=None):
+    """Audit a bounded window or stop at the previously recorded stable tag."""
+    if stop_tag is not None:
+        if not isinstance(stop_tag, str) or not stop_tag.startswith("rust-v"):
+            raise ValueError("invalid previous release tag")
+        version_key(stop_tag.removeprefix("rust-v"))
     releases = []
     open_url = open_url or urllib.request.build_opener(NoApiRedirect()).open
     # Bounded pagination accommodates bursts of prereleases without an unbounded crawl.
     for page in range(1, MAX_PAGES + 1):
-        headers = {"Accept": "application/vnd.github+json",
-                   "User-Agent": "codex-autoapprover-release-watch"}
-        token = os.environ.get("GH_TOKEN")
-        if token:
-            if "\n" in token or "\r" in token:
-                raise ValueError("invalid GitHub API token format")
-            headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
             f"{UPSTREAM}?per_page={PAGE_SIZE}&page={page}",
-            headers=headers,
+            headers=api_headers(),
         )
         with open_url(request, timeout=30) as response:
             if response.geturl() != request.full_url:
@@ -136,9 +163,42 @@ def fetch_releases(open_url=None):
         if not isinstance(batch, list):
             raise ValueError("invalid release page")
         releases.extend(batch)
+        if stop_tag is not None and any(isinstance(item, dict) and item.get("tag_name") == stop_tag
+                                    for item in batch):
+            return releases
         if len(batch) < PAGE_SIZE:
+            if stop_tag is not None:
+                raise ValueError("previous release absent from bounded API window; manual recovery required")
             return releases
     raise ValueError("release API pagination limit reached; refusing a truncated candidate window")
+
+
+def verify_release_gap(previous, candidate, recent):
+    """Do not silently skip stable releases that appeared since the last poll."""
+    old_version = previous["codex_version"]
+    version_key(old_version)
+    old_tag = f"rust-v{old_version}"
+    if previous.get("upstream_tag") != old_tag:
+        raise ValueError("previous candidate tag/version mismatch")
+    old = [item for item in recent if isinstance(item, dict) and item.get("tag_name") == old_tag]
+    if len(old) != 1 or (previous.get("upstream_release_id") is not None
+                         and old[0].get("id") != previous["upstream_release_id"]):
+        raise ValueError("previous release identity changed or became ambiguous")
+    selected = candidate_from_releases(recent)
+    if selected != candidate:
+        raise ValueError("latest release and recent release listing disagree")
+    newer = set()
+    for item in recent:
+        if not isinstance(item, dict):
+            raise ValueError("invalid release record")
+        if item.get("draft") is not False or item.get("prerelease") is not False:
+            continue
+        tag = item.get("tag_name")
+        if isinstance(tag, str) and tag.startswith("rust-v") and VERSION.fullmatch(tag[6:]):
+            if version_key(tag[6:]) > version_key(old_version):
+                newer.add(tag)
+    if newer != {candidate["upstream_tag"]}:
+        raise ValueError("multiple or inconsistent new stable releases; manual recovery required")
 
 
 def write_candidate(path, candidate):
@@ -232,8 +292,14 @@ def main():
     args = parser.parse_args()
     if args.fixture and args.create_pr:
         parser.error("fixtures cannot create PRs")
-    releases = json.loads(args.fixture.read_text()) if args.fixture else fetch_releases()
+    releases = json.loads(args.fixture.read_text()) if args.fixture else [fetch_latest_release()]
     candidate = candidate_from_releases(releases)
+    if not args.fixture and args.output.exists():
+        previous = json.loads(args.output.read_text(encoding="utf-8"))
+        if version_key(candidate["codex_version"]) > version_key(previous["codex_version"]):
+            old_tag = previous.get("upstream_tag")
+            recent = fetch_releases(stop_tag=old_tag)
+            verify_release_gap(previous, candidate, recent)
     changed = write_candidate(args.output, candidate)
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
