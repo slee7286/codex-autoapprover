@@ -151,7 +151,10 @@ def source_digest(root):
     architecture or a binary digest invalidates every previous report.
     """
     root = root.resolve()
-    paths = [root / name for name in ["Cargo.toml", "Cargo.lock", "compatibility/manifest.json"]]
+    paths = [root / name for name in [
+        "Cargo.toml", "Cargo.lock", "compatibility/manifest.json",
+        "tools/repair-cli/package.json", "tools/repair-cli/package-lock.json",
+    ]]
     paths.extend(root / name for name in ["build.rs", "rust-toolchain", "rust-toolchain.toml", ".gitattributes"] if (root / name).exists())
     for directory in ["src", "tests", "scripts", ".github/workflows", ".cargo"]:
         paths.extend(path for path in (root / directory).rglob("*")

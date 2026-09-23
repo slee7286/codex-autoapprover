@@ -25,7 +25,10 @@ class ReleaseGateTests(unittest.TestCase):
         )
 
     def fixture(self, root, platforms=("windows", "linux")):
-        for filename in ["Cargo.toml", "Cargo.lock", "src/main.rs"]:
+        for filename in [
+            "Cargo.toml", "Cargo.lock", "src/main.rs",
+            "tools/repair-cli/package.json", "tools/repair-cli/package-lock.json",
+        ]:
             path = root / filename
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("synthetic source")
@@ -195,6 +198,16 @@ class ReleaseGateTests(unittest.TestCase):
             self.rewrite_evidence(root, policy, lambda evidence: evidence["target"].update(os_build="another-build"))
             with self.assertRaisesRegex(ValueError, "different source"):
                 gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+    def test_repair_cli_inputs_are_bound_to_native_evidence(self):
+        for filename in ("package.json", "package-lock.json"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy, runtime = self.fixture(root)
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+                (root / "tools/repair-cli" / filename).write_text("different repair CLI input")
+                with self.assertRaisesRegex(ValueError, "different source"):
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_forged_or_unsubstantiated_evidence_fails(self):
         changes = {
