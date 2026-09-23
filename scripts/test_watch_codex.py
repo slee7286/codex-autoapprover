@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import urllib.error
 import unittest
 from unittest.mock import Mock, patch
 
@@ -39,6 +40,9 @@ class ReleaseWatchTests(unittest.TestCase):
         source = patch.object(watch, "fetch_upstream_source", return_value=SOURCE_ID)
         source.start()
         self.addCleanup(source.stop)
+        window = patch.object(watch, "complete_release_window", side_effect=lambda recent, _previous: recent)
+        window.start()
+        self.addCleanup(window.stop)
 
     def test_selects_stable_semver_not_api_order_or_release_text(self):
         result = watch.candidate_from_releases([
@@ -639,6 +643,79 @@ class ReleaseWatchTests(unittest.TestCase):
                  patch.object(watch, "candidate_branch_sha", side_effect=ValueError("branch missing")):
                 with self.assertRaisesRegex(ValueError, "branch missing"):
                     watch.main()
+
+
+class BackdatedReleaseTests(unittest.TestCase):
+    def test_tag_ref_backstop_is_bounded_and_rejects_ambiguous_responses(self):
+        class Response:
+            def __init__(self, address, body):
+                self.address = address
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def geturl(self):
+                return self.address
+
+            def read(self, limit):
+                return self.body[:limit]
+
+        body = json.dumps([{"ref": "refs/tags/rust-v0.156.0"},
+                           {"ref": "refs/tags/rust-v0.156.1"},
+                           {"ref": "refs/tags/rust-v0.157.0-alpha.1"}]).encode()
+        opener = lambda request, timeout: Response(request.full_url, body)
+        self.assertEqual(watch.fetch_stable_tag_versions(open_url=opener),
+                         {"0.156.0", "0.156.1"})
+        with patch.object(watch, "TAG_REF_LIMIT", 8), self.assertRaisesRegex(ValueError, "exceeded limit"):
+            watch.fetch_stable_tag_versions(open_url=opener)
+        with self.assertRaisesRegex(ValueError, "redirected"):
+            watch.fetch_stable_tag_versions(open_url=lambda request, timeout:
+                                            Response("https://example.invalid/redirect", body))
+        duplicate = json.dumps([{"ref": "refs/tags/rust-v0.156.0"}] * 2).encode()
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            watch.fetch_stable_tag_versions(open_url=lambda request, timeout:
+                                            Response(request.full_url, duplicate))
+
+    def test_published_release_after_baseline_is_recovered_from_tag_ref(self):
+        baseline = release("0.156.0")
+        latest = release("0.156.1", id=2)
+        backdated = release("0.156.2", id=3)
+        with patch.object(watch, "fetch_stable_tag_versions", return_value={
+                "0.156.0", "0.156.1", "0.156.2"}), \
+             patch.object(watch, "fetch_tagged_record", return_value=backdated) as tagged:
+            complete = watch.complete_release_window([latest, baseline], "0.156.0")
+            tagged.assert_called_once_with("0.156.2")
+        previous = bound([baseline])
+        backlog = watch.verified_release_backlog(previous,
+            watch.candidate_from_releases([latest]), complete, SOURCE_ID)
+        self.assertEqual([item["codex_version"] for item in backlog], ["0.156.1", "0.156.2"])
+
+    def test_unpublished_tag_is_not_promoted_and_missing_baseline_fails(self):
+        baseline = release("0.156.0")
+        missing = urllib.error.HTTPError("https://api.github.com/", 404, "not found", {}, None)
+        with patch.object(watch, "fetch_stable_tag_versions", return_value={
+                "0.156.0", "0.156.1"}), \
+             patch.object(watch, "fetch_tagged_record", side_effect=missing):
+            self.assertEqual(watch.complete_release_window([baseline], "0.156.0"), [baseline])
+        missing.close()
+        for unpublished in (release("0.156.1", draft=True),
+                            release("0.156.1", prerelease=True)):
+            with patch.object(watch, "fetch_stable_tag_versions", return_value={
+                    "0.156.0", "0.156.1"}), \
+                 patch.object(watch, "fetch_tagged_record", return_value=unpublished):
+                self.assertEqual(watch.complete_release_window([baseline], "0.156.0"), [baseline])
+        with patch.object(watch, "fetch_stable_tag_versions", return_value={"0.156.1"}), \
+             self.assertRaisesRegex(ValueError, "previous release tag missing"):
+            watch.complete_release_window([baseline], "0.156.0")
+        with patch.object(watch, "fetch_stable_tag_versions", return_value={
+                "0.156.0", "0.156.1", "0.156.2"}), \
+             patch.object(watch, "MAX_UNLISTED_TAG_LOOKUPS", 1), \
+             self.assertRaisesRegex(ValueError, "too many unlisted stable tags"):
+            watch.complete_release_window([baseline], "0.156.0")
 
 
 class SourcePinTests(unittest.TestCase):

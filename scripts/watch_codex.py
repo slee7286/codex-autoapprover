@@ -24,6 +24,9 @@ LATEST = f"{UPSTREAM}/latest"
 GIT_API = "https://api.github.com/repos/openai/codex/git"
 LIMIT = 4 * 1024 * 1024
 GIT_LIMIT = 128 * 1024
+TAG_REF_LIMIT = 2 * 1024 * 1024
+MAX_TAG_REFS = 5000
+MAX_UNLISTED_TAG_LOOKUPS = 16
 # Five asset-heavy releases fit the per-response cap observed in the live API.
 PAGE_SIZE = 5
 MAX_PAGES = 20
@@ -149,8 +152,8 @@ def fetch_latest_release(open_url=None):
     return release
 
 
-def fetch_tagged_release(version, open_url=None):
-    """Refresh one candidate by its exact official release tag."""
+def fetch_tagged_record(version, open_url=None):
+    """Fetch one exact release tag, including an unpublished draft if visible."""
     version_key(version)
     tag = f"rust-v{version}"
     url = f"{UPSTREAM}/tags/{tag}"
@@ -165,7 +168,12 @@ def fetch_tagged_release(version, open_url=None):
     release = json.loads(body, object_pairs_hook=strict_json_object)
     if not isinstance(release, dict) or release.get("tag_name") != tag:
         raise ValueError("tagged release API returned an unexpected response")
-    # Also reject a tag that has become a draft, prerelease or incomplete release.
+    return release
+
+
+def fetch_tagged_release(version, open_url=None):
+    """Refresh one complete stable candidate by its exact official release tag."""
+    release = fetch_tagged_record(version, open_url)
     candidate_from_releases([release])
     return release
 
@@ -212,6 +220,63 @@ def fetch_upstream_source(version, open_url=None):
             raise ValueError("upstream annotated release tag is invalid")
         commit = target["sha"]
     return {"upstream_tag_ref_sha": oid, "upstream_source_sha": commit}
+
+
+def fetch_stable_tag_versions(open_url=None):
+    """List all stable numeric Rust tag refs as a backstop for release ordering."""
+    open_url = open_url or urllib.request.build_opener(NoApiRedirect()).open
+    url = f"{GIT_API}/matching-refs/tags/rust-v"
+    request = urllib.request.Request(url, headers=api_headers())
+    with open_url(request, timeout=30) as response:
+        if response.geturl() != request.full_url:
+            raise ValueError("upstream tag-ref API redirected unexpectedly")
+        body = response.read(TAG_REF_LIMIT + 1)
+    if len(body) > TAG_REF_LIMIT:
+        raise ValueError("upstream tag-ref API response exceeded limit")
+    records = json.loads(body, object_pairs_hook=strict_json_object)
+    if not isinstance(records, list) or len(records) > MAX_TAG_REFS:
+        raise ValueError("upstream tag-ref listing is invalid or too large")
+    versions, refs = set(), set()
+    for record in records:
+        ref = record.get("ref") if isinstance(record, dict) else None
+        if not isinstance(ref, str) or not ref.startswith("refs/tags/rust-v") or ref in refs:
+            raise ValueError("upstream tag-ref listing is ambiguous")
+        refs.add(ref)
+        version = ref.removeprefix("refs/tags/rust-v")
+        if VERSION.fullmatch(version):
+            versions.add(version)
+    return versions
+
+
+def complete_release_window(recent, previous_version):
+    """Recover published numeric tags that sorted behind the recorded baseline."""
+    version_key(previous_version)
+    tags = fetch_stable_tag_versions()
+    if previous_version not in tags:
+        raise ValueError("previous release tag missing from official refs; manual recovery required")
+    listed = {item["tag_name"].removeprefix("rust-v") for item in recent
+              if isinstance(item, dict) and isinstance(item.get("tag_name"), str)
+              and item["tag_name"].startswith("rust-v")
+              and VERSION.fullmatch(item["tag_name"].removeprefix("rust-v"))
+              and item.get("draft") is False and item.get("prerelease") is False}
+    missing = sorted((version for version in tags
+                      if version_key(version) > version_key(previous_version)
+                      and version not in listed), key=version_key)
+    if len(missing) > MAX_UNLISTED_TAG_LOOKUPS:
+        raise ValueError("too many unlisted stable tags; manual recovery required")
+    complete = list(recent)
+    for version in missing:
+        try:
+            record = fetch_tagged_record(version)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                continue  # A Git tag alone is not a published release.
+            raise
+        if record.get("draft") is True or record.get("prerelease") is True:
+            continue
+        candidate_from_releases([record])
+        complete.append(record)
+    return complete
 
 
 def bind_upstream_source(candidate, identity):
@@ -500,7 +565,8 @@ def main():
         previous = json.loads(args.output.read_text(encoding="utf-8"),
                               object_pairs_hook=strict_json_object)
         latest = candidate_from_releases([fetch_latest_release()])
-        recent = fetch_releases(stop_tag=previous.get("upstream_tag"))
+        recent = complete_release_window(
+            fetch_releases(stop_tag=previous.get("upstream_tag")), previous["codex_version"])
         prior_source = fetch_upstream_source(previous["codex_version"])
         backlog = verified_release_backlog(previous, latest, recent, prior_source)
         prior_npm = fetch_npm_records(previous["codex_version"])

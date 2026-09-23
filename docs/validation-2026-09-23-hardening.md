@@ -153,8 +153,14 @@ made additional code, gate, test and documentation changes.
   stable version oldest first; each poll selects one with no earlier
   same-repository PR, including closed decisions. Exact by-tag refresh keeps
   candidate and post-repair runners pinned to that selected version even when
-  newer releases exist. Open same-repository PR files are fetched at the PR's
-  exact head commit and checked against current official asset, npm and Git
+  newer releases exist. A bounded official Rust tag-ref listing also catches
+  numeric stable versions newer than the baseline that GitHub's release order
+  placed behind it. Each omitted tag is checked through the exact release API;
+  unpublished and draft tags are skipped, while excessive omissions fail
+  closed. A read-only live rehearsal of this backstop advanced only a temporary
+  candidate to unverified 0.156.1; it did not create a branch or PR. Open
+  same-repository PR files are fetched at the PR's exact head commit and
+  checked against current official asset, npm and Git
   tag identities; drift or a branch race stops catch-up. The repair worker
   checks its checkout against the pinned tag object and commit before using
   upstream source as untrusted context. An explicit dispatch can
@@ -241,7 +247,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL, suspended Job Object child-tree module, and native-only descendant and stalled-pipe regressions; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 89 tests passed. Reproducibility archive tests reject traversal, links, case collisions and a linked expected binary; a release-gate case changes each reproducibility binding while updating its retained hash and confirms the gate still rejects it. Synthetic fixtures are not production evidence. |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 99 tests passed. Reproducibility archive tests reject traversal, links, case collisions and a linked expected binary; release-gate cases check source links and Cargo graph completeness; watcher cases recover a release sorted behind the baseline and reject ambiguous tag-ref data. Synthetic fixtures are not production evidence. |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
