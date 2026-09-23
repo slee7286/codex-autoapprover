@@ -525,9 +525,8 @@ fn read_frame_until(
     maximum: usize,
     deadline: Instant,
 ) -> io::Result<Vec<u8>> {
-    stream.set_read_timeout(Some(remaining(deadline)?))?;
     let mut header = [0_u8; 4];
-    stream.read_exact(&mut header)?;
+    read_exact_until(stream, &mut header, deadline)?;
     let length = u32::from_be_bytes(header) as usize;
     if length == 0 || length > maximum {
         return Err(io::Error::new(
@@ -535,10 +534,43 @@ fn read_frame_until(
             "invalid frame length",
         ));
     }
-    stream.set_read_timeout(Some(remaining(deadline)?))?;
     let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes)?;
+    read_exact_until(stream, &mut bytes, deadline)?;
     Ok(bytes)
+}
+
+fn read_exact_until(
+    stream: &mut UnixStream,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_read_timeout(Some(remaining(deadline)?))?;
+        match stream.read(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "broker peer closed an incomplete frame",
+                ));
+            }
+            Ok(length) => bytes = &mut bytes[length..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "broker decision timed out",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    remaining(deadline)?;
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -560,11 +592,38 @@ fn write_frame_until(
     }
     let length = u32::try_from(bytes.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
-    stream.set_write_timeout(Some(remaining(deadline)?))?;
-    stream.write_all(&length.to_be_bytes())?;
-    stream.set_write_timeout(Some(remaining(deadline)?))?;
-    stream.write_all(bytes)?;
+    write_all_until(stream, &length.to_be_bytes(), deadline)?;
+    write_all_until(stream, bytes, deadline)?;
     stream.flush()
+}
+
+fn write_all_until(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(remaining(deadline)?))?;
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "broker write returned zero",
+                ));
+            }
+            Ok(length) => bytes = &bytes[length..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "broker decision timed out",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn ensure_no_trailing_data(stream: &mut UnixStream, deadline: Instant) -> io::Result<()> {
@@ -875,6 +934,27 @@ mod tests {
         drop(writer);
         assert!(read_frame(&mut reader, MAX_BROKER_MESSAGE_BYTES).is_err());
         assert!(write_frame(&mut reader, b"", MAX_BROKER_RESPONSE_BYTES).is_err());
+    }
+
+    #[test]
+    fn slow_sender_cannot_extend_the_whole_frame_deadline() {
+        let (mut writer, mut reader) = UnixStream::pair().expect("paired broker streams");
+        let sender = thread::spawn(move || {
+            writer
+                .write_all(&10_u32.to_be_bytes())
+                .expect("write frame header");
+            for byte in b"abcdefghij" {
+                thread::sleep(Duration::from_millis(40));
+                if writer.write_all(&[*byte]).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_millis(180);
+        let error = read_frame_until(&mut reader, 10, deadline)
+            .expect_err("a frame completed after its deadline must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        sender.join().expect("join slow sender");
     }
 
     #[cfg(target_os = "linux")]
