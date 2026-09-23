@@ -136,7 +136,8 @@ def lock_dependency_id(reference: str, versions: dict[str, list[str]]) -> str:
     return package_id(name, version)
 
 
-def generate(cache_dir: Path, offline: bool) -> dict:
+def generate(cache_dir: Path, offline: bool,
+             package_filter: set[tuple[str, str]] | None = None) -> dict:
     lock_body = (ROOT / "Cargo.lock").read_bytes()
     locked = tomllib.loads(lock_body.decode())["package"]
     root_manifest = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]
@@ -146,10 +147,14 @@ def generate(cache_dir: Path, offline: bool) -> dict:
     root_matches = [p for p in locked if p["name"] == root_manifest["name"] and p["version"] == root_manifest["version"]]
     if len(root_matches) != 1 or root_manifest.get("license") != "MIT":
         raise ValueError("local package identity or license differs from Cargo.lock")
+    if package_filter is not None and (root_manifest["name"], root_manifest["version"]) not in package_filter:
+        raise ValueError("selected Cargo packages omit the root package")
     packages = []
     relationships = []
     for item in sorted(locked, key=lambda p: (p["name"], p["version"])):
         name, version = item["name"], item["version"]
+        if package_filter is not None and (name, version) not in package_filter:
+            continue
         is_root = name == root_manifest["name"] and version == root_manifest["version"]
         if is_root:
             declared, original = "MIT", None
@@ -185,6 +190,8 @@ def generate(cache_dir: Path, offline: bool) -> dict:
                 "relatedSpdxElement": lock_dependency_id(reference, versions),
                 "relationshipType": "DEPENDS_ON",
             })
+    if package_filter is not None and {(item["name"], item["versionInfo"]) for item in packages} != package_filter:
+        raise ValueError("selected Cargo packages differ from Cargo.lock")
     relationships.append({
         "spdxElementId": "SPDXRef-DOCUMENT",
         "relatedSpdxElement": package_id(root_manifest["name"], root_manifest["version"]),

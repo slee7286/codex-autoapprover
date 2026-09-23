@@ -74,7 +74,10 @@ made additional code, gate, test and documentation changes.
 - The schema-2 release gate compares the entire compiled manifest and evidence
   targets, includes the manifest in source hashing, requires consumer/upstream
   digests, retained artifact hashes, independent review identities and all
-  named checks. Reports expire for release qualification after 30 days.
+  named checks. It now requires the retained consumer SPDX file to identify
+  the reviewed binary digest, native target and current source. Source files
+  sort by canonical relative UTF-8 path so Linux and Windows runners compute
+  the same source digest. Reports expire for release qualification after 30 days.
 - The prepared watcher now checks out the candidate branch separately for
   Rust tests while running metadata and probe scripts from the trusted
   default-branch checkout. Initial and post-repair checks require the branch's
@@ -128,6 +131,14 @@ made additional code, gate, test and documentation changes.
   `Cargo.lock`; declared licenses were read from those archives. It passed the
   official SPDX 2.3 JSON schema locally, but no independent license or
   vulnerability conclusion has been made.
+- A native Linux x86_64 binary build-input SPDX 2.3 rehearsal selects 58
+  normal/build packages from Cargo's target-filtered graph, excluding dev-only
+  and Windows packages. The document binds the exact local executable and
+  source digests, passes the official SPDX schema, and rejects a changed binary
+  when compared with the staged document. The candidate workflow prepares the
+  same path for native Windows and binary-subject SBOM attestations, but has not
+  run. Exact linked-code composition, toolchain/OS inventory and independent
+  dependency review are still missing.
 - An offline, deterministic license-text bundle now indexes top-level license
   and notice files from the same 88 checksum-verified crate archives and the
   project's own MIT license. `difflib 0.4.0` and `r-efi 6.0.0` lack matching
@@ -149,7 +160,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 57 tests passed, including deterministic license material and unsafe archive-member rejection, prior-release asset/npm drift and duplicate-key rejection, exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression, explicit retry, pinned candidate-commit output, candidate-branch metadata mismatch, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 63 tests passed, including native build-input graph filtering and binary/SBOM binding, cross-platform source-path ordering, deterministic license material and unsafe archive-member rejection, prior-release asset/npm drift and duplicate-key rejection, exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression, explicit retry, pinned candidate-commit output, candidate-branch metadata mismatch, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -157,6 +168,7 @@ made additional code, gate, test and documentation changes.
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall, journal recovery at each install-pointer boundary and interrupted first install passed; malformed/conflicting journals were rejected and Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
+| `python3 scripts/binary_sbom.py --offline --binary ... --output /tmp/...` | Generated a 58-package Linux x86_64 native binary build-input SPDX 2.3 document, rechecked staged bytes and document idempotently, rejected a modified executable, and passed the locally retained official SPDX schema; no Windows execution or signed attestation |
 | `python3 scripts/locked_licenses.py --output /tmp/...` | Reproduced a deterministic 171-file local bundle with an exact inventory; top-level license/notice text was absent for two of 88 registry crates. This is review material, not a legal conclusion. |
 | Disposable npm Codex 0.156.1 candidate | Fetched seven official registry package identities; exact-version lock and installed Linux parent/native package matched the recorded SHA-512 integrities. Script-free `npm ci` and `npm audit signatures` passed; npm reported two verified registry signatures and attestations. Version/help/features probes passed against the installed shim. This is non-live Linux-only evidence, not approval qualification. |
 | Candidate provenance and watcher workflow static review | YAML structure, main-only provenance dispatch, token permissions, job order, Bash and inline Python syntax passed locally. The watcher repair-signal guard rejected missing/invalid fixtures and accepted an exact fixture; no GitHub run, environment approval, provenance signature or Windows PowerShell execution occurred |
@@ -176,21 +188,29 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v22/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `3cc18e4f109f713e33c4025546795c6c57c3af8ba3d46031638b20f0596f533e`.
+`/tmp/autoapprover-dev-package-20260923-v25/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `1e9f79e364dc0daa0d36d3ce9acaf2c43481cd961b380b5e50e49b28d6ca3c68`.
 Its recorded source digest is
-`b4aff8146884df62581fbff80c93782360fdf41988f087daf4439b1a229bb629`.
+`8d2b35872d95d529c10f9f23c05a1fd5bdee46347c3f931cb597fcf154d6c01c`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v22.spdx.json`, SHA-256
-`a747347416d613cb35ae819fc7730d0efb148cb4a7eeec3df64a9a0f6f95845b`.
+`/tmp/autoapprover-locked-dependencies-v24.spdx.json`, SHA-256
+`df4955d61c9945c7082b5ecc64f4a75ab417d3426032540f4f4120fd09304e8d`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
+The local Linux binary build-input document is
+`/tmp/autoapprover-binary-linux-v2.spdx.json`, SHA-256
+`9a700b4468f8dfe12394692e0f5fff66fd4ac1b5f9e79b1bef56436944728a98`.
+It records 58 packages and 84 relationships, passed the same SPDX schema,
+and binds the development executable digest above. Both SPDX files used
+`SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
+a signed SBOM attestation nor a conclusion about exact linked components.
+
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v4.tar.gz`, SHA-256
-`d2f40a8699e5d7deff8836e7b2a115ab0ad0339f6188d8f77a30fdc6ec8fe02c`.
+`/tmp/autoapprover-locked-licenses-v6.tar.gz`, SHA-256
+`b890b85085bb33c62ff263f5e26776fdfef576a6a973fd0bd996e3b588cf0e2f`.
 Its indexed source digest matches the archive above. An automatic approval
 review rejected a proposed live OSV batch query because it would transmit the
 potentially sensitive exact `Cargo.lock` inventory to a public API. A local

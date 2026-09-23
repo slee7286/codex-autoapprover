@@ -26,6 +26,7 @@ jobs:
       - run: ./scripts/test-install-linux.sh target/release/codex-autoapprover
       - run: ./scripts/test-package-linux.sh target/release/codex-autoapprover
       - run: python scripts/locked_sbom.py --output "$RUNNER_TEMP/codex-autoapprover-locked-dependencies.spdx.json"
+      - run: python scripts/binary_sbom.py --offline --binary target/release/codex-autoapprover --output "$RUNNER_TEMP/codex-autoapprover-linux-x86_64.spdx.json"
       - run: python scripts/release_gate.py --require-ready --binary target/release/codex-autoapprover
       # This checks qualification only. The separate provenance-candidate
       # workflow attests build origin and independently gates native binaries.

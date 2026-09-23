@@ -3,7 +3,7 @@ import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import tempfile
 import unittest
 
@@ -11,6 +11,19 @@ import release_gate as gate
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_source_paths_use_platform_independent_relative_order(self):
+        root = PureWindowsPath("C:/source")
+        paths = [root / name for name in ("build.rs", "Cargo.toml", "src/main.rs")]
+        self.assertEqual(
+            [path.relative_to(root).as_posix() for path in sorted(paths)],
+            ["build.rs", "Cargo.toml", "src/main.rs"],
+        )
+        self.assertEqual(
+            [path.relative_to(root).as_posix() for path in sorted(
+                paths, key=lambda item: item.relative_to(root).as_posix().encode("utf-8"))],
+            ["Cargo.toml", "build.rs", "src/main.rs"],
+        )
+
     def fixture(self, root):
         for filename in ["Cargo.toml", "Cargo.lock", "src/main.rs"]:
             path = root / filename
@@ -31,12 +44,33 @@ class ReleaseGateTests(unittest.TestCase):
         artifact.parent.mkdir(parents=True)
         artifact.write_text("Synthetic fixture only; this is never committed as live evidence.\n")
         artifact_ref = dict(path=artifact.relative_to(root).as_posix(), sha256=gate.sha256(artifact.read_bytes()))
+        sbom_path = root / "compatibility/evidence/synthetic/binary.spdx.json"
+        binary_sha = "b" * 64
+        source_sha = gate.source_digest(root)
+        sbom = {
+            "spdxVersion": "SPDX-2.3",
+            "files": [{"SPDXID": gate.SBOM_FILE_ID,
+                       "fileName": "./codex-autoapprover-windows-x86_64.exe",
+                       "checksums": [{"algorithm": "SHA256", "checksumValue": binary_sha}]}],
+            "packages": [{"SPDXID": "SPDXRef-Package-codex-autoapprover-0.1.0"}],
+            "documentDescribes": [gate.SBOM_FILE_ID, "SPDXRef-Package-codex-autoapprover-0.1.0"],
+            "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT",
+                               "relatedSpdxElement": gate.SBOM_FILE_ID,
+                               "relationshipType": "DESCRIBES"}],
+            "annotations": [{"annotator": "Tool: scripts/binary_sbom.py",
+                             "comment": ("Native Rust target: x86_64-pc-windows-msvc; consumer executable SHA-256: "
+                                         f"{binary_sha}; source SHA-256: {source_sha}")}],
+        }
+        sbom_path.write_text(json.dumps(sbom))
+        sbom_ref = dict(path=sbom_path.relative_to(root).as_posix(), sha256=gate.sha256(sbom_path.read_bytes()))
         evidence = dict(schema_version=2, kind="native-live", evidence_id="synthetic-test", target=target,
-                        source_sha256=gate.source_digest(root), autoapprover_binary_sha256="b" * 64,
+                        source_sha256=source_sha, autoapprover_binary_sha256=binary_sha,
                         upstream_artifact_sha256="c" * 64, producer="synthetic-producer", reviewer="synthetic-reviewer",
                         review_decision="approved", run_url="https://example.invalid/synthetic-fixture",
-                        observed_at=datetime.now(timezone.utc).isoformat(), artifacts=[artifact_ref],
-                        checks={check: {"result": "pass", "artifacts": [artifact_ref["path"]]} for check in gate.CHECKS})
+                        observed_at=datetime.now(timezone.utc).isoformat(), artifacts=[artifact_ref, sbom_ref],
+                        checks={check: {"result": "pass", "artifacts": [
+                            sbom_ref["path"] if check == "consumer_binary_sbom" else artifact_ref["path"]]}
+                                for check in gate.CHECKS})
         path = root / "compatibility/evidence/synthetic/report.json"
         path.write_text(json.dumps(evidence))
         certificate = dict(evidence_id="synthetic-test", evidence=path.relative_to(root).as_posix(),
@@ -128,8 +162,23 @@ class ReleaseGateTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     gate.validate(root, policy, runtime, True, "b" * 64)
 
+    def test_binary_sbom_must_bind_the_reviewed_consumer_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, runtime = self.fixture(root)
+            path = root / "compatibility/evidence/synthetic/binary.spdx.json"
+            document = json.loads(path.read_text())
+            document["files"][0]["checksums"][0]["checksumValue"] = "f" * 64
+            path.write_text(json.dumps(document))
+            self.rewrite_evidence(root, policy, lambda evidence: next(
+                artifact for artifact in evidence["artifacts"] if artifact["path"].endswith(".spdx.json")
+            ).update(sha256=gate.sha256(path.read_bytes())))
+            with self.assertRaisesRegex(ValueError, "binary SBOM"):
+                gate.validate(root, policy, runtime, True, "b" * 64)
+
     def test_duplicate_json_fields_are_rejected_recursively(self):
-        for text in ['{"ready":false,"ready":true}', '{"target":{"os":"linux","os":"windows"}}']:
+        for text in ['{"ready":false,"ready":true}', '{"target":{"os":"linux","os":"windows"}}',
+                     '{"score":NaN}', '{"score":Infinity}']:
             with self.assertRaises(ValueError):
                 gate.load_json(text)
 

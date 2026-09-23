@@ -40,6 +40,8 @@ There is **no authenticated public consumer artifact yet**. Local lifecycle test
 
 `scripts/locked_sbom.py` creates a preliminary SPDX 2.3 inventory from every package in `Cargo.lock`. It verifies each registry source archive against the locked SHA-256 before reading its declared license. The inventory covers optional, target, build and development dependencies; it is not a binary-specific SBOM or a completed license/vulnerability review. See [dependency review](docs/dependencies.md).
 
+`scripts/binary_sbom.py` creates a native Linux or Windows x86_64 SPDX document for one exact executable SHA-256 and its Cargo normal/build dependency graph. It verifies the embedded support manifest, uses checksum-verified crate sources, excludes dev-only and other-platform crates, and refuses an existing output that differs from the executable or source. It records build inputs, including proc macros; exact linked code, the Rust toolchain, OS components and independent dependency review still need separate assessment. The prepared candidate workflow stages and rechecks this document for each native binary, then requests a binary-subject SBOM attestation under the protected candidate environment. No workflow run has validated the Windows path or produced a signed consumer artifact.
+
 `scripts/locked_licenses.py` creates an offline, deterministic bundle of available license and notice texts from those verified archives. Two locked crates lack matching top-level texts; independent license review and a final consumer notice selection remain necessary.
 
 ## Commands
@@ -74,11 +76,13 @@ cargo fmt --check
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo check --locked --target x86_64-pc-windows-msvc --all-targets
+cargo build --release --locked --bin codex-autoapprover
 python -m unittest discover -s scripts -p 'test_*.py'
 python scripts/release_gate.py
 ./scripts/test-install-linux.sh target/debug/codex-autoapprover
 ./scripts/test-package-linux.sh target/debug/codex-autoapprover
 python scripts/locked_sbom.py --output /tmp/codex-autoapprover-locked-dependencies.spdx.json
+python scripts/binary_sbom.py --offline --binary target/release/codex-autoapprover --output /tmp/codex-autoapprover-linux-x86_64.spdx.json
 ```
 
 Native Windows CI also runs installer tests in Windows PowerShell 5.1 and PowerShell 7. Cross-compilation is not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.

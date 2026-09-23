@@ -18,10 +18,22 @@ generated document passed the [official SPDX 2.3 JSON schema](https://raw.github
 This is the complete **locked graph**, including optional, build, development
 and target-specific packages. It does not identify which components are in a
 particular Linux or Windows binary, conclude license compliance, ship notices,
-or establish that dependencies have no known vulnerabilities. Independent
-review, target-specific SBOMs and a signed release artifact remain required.
-The CI job retains this inventory as a review artifact, not as a production
-attestation.
+or establish that dependencies have no known vulnerabilities. The CI job
+retains it as review material, not a production attestation.
+
+`scripts/binary_sbom.py` additionally selects the normal and build dependency
+closure from Cargo's native target-filtered resolved graph. Its SPDX 2.3 file
+names one candidate executable and binds its exact SHA-256 and source digest.
+It checks the embedded support manifest and the selected crate archives
+against `Cargo.lock`. A local Linux x86_64 release-build rehearsal selected 58
+packages and passed the same official SPDX JSON schema. Dev-only and Windows
+crates were excluded. The prepared native candidate workflow generates one
+such document per Linux/Windows build, checks its bytes again after download,
+and requests a binary-subject SBOM attestation. That workflow has not run.
+This records build inputs, including proc macros; it does not prove exact
+linked-code composition, enumerate compiler/standard-library/OS components,
+or establish license and vulnerability clearance. Final consumer artifacts and
+independent review remain necessary.
 
 `scripts/locked_licenses.py` additionally creates a deterministic local archive
 of top-level license and notice files from the same checksum-verified crate
@@ -43,6 +55,8 @@ Generate a new inventory with Python 3.11 or later:
 
 ```sh
 python scripts/locked_sbom.py --output /tmp/codex-autoapprover-locked-dependencies.spdx.json
+cargo build --release --locked --bin codex-autoapprover
+python scripts/binary_sbom.py --offline --binary target/release/codex-autoapprover --output /tmp/codex-autoapprover-linux-x86_64.spdx.json
 ```
 
 Use `--offline` to require already cached exact crate archives. An existing

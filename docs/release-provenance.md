@@ -5,9 +5,11 @@ is prepared for the repository's protected `main` branch. It has not run. It
 does not publish a GitHub Release or qualify Codex approval behavior.
 
 The Linux and Windows jobs build native release executables from the same
-checkout, run local tests, stage the raw binaries with SHA-256 checksums and
-upload seven-day **unqualified candidate** artifacts. Separate native Linux
-and Windows jobs download those bytes, verify their digests and require
+checkout, run local tests, and stage each raw binary with a target-specific
+SPDX build-input document and SHA-256 checksums for both files. They upload
+seven-day **unqualified candidate** artifacts. Separate native Linux and
+Windows jobs download those bytes, verify both digests, regenerate the SBOM
+against the downloaded executable and current source, and require
 `release_gate.py --require-ready --binary` to match each executable to fresh,
 reviewed evidence and the complete embedded support manifest. The present
 empty manifest and pending policy cause both qualification jobs to fail.
@@ -15,9 +17,10 @@ empty manifest and pending policy cause both qualification jobs to fail.
 An independent attestation job runs after both builds, even if qualification
 is still pending. It downloads the same candidates, checks their staged
 digests, and uses pinned GitHub `actions/attest` to record build provenance for
-the exact raw bytes. This attestation proves a signed statement about the
-build workflow and subject digest; it does **not** certify native Codex
-behavior or make the candidate a release. It can supply preliminary signed
+the exact raw bytes and a separate SPDX SBOM attestation whose subject is the
+same binary digest. These attestations prove signed statements about their
+subjects; they do **not** certify native Codex
+behavior or make the candidate a release. They can supply preliminary signed
 provenance for later independent review, avoiding a cycle in which the gate
 requires provenance before the workflow can create it. The job retains
 verification bundles for 90 days and uses the `release-candidate` environment.
@@ -43,6 +46,12 @@ gh attestation verify ./codex-autoapprover-linux-x86_64 \
   --repo slee7286/codex-autoapprover \
   --signer-workflow slee7286/codex-autoapprover/.github/workflows/provenance-candidate.yml \
   --source-ref refs/heads/main
+gh attestation verify ./codex-autoapprover-linux-x86_64 \
+  --repo slee7286/codex-autoapprover \
+  --signer-workflow slee7286/codex-autoapprover/.github/workflows/provenance-candidate.yml \
+  --source-ref refs/heads/main \
+  --predicate-type https://spdx.dev/Document/v2.3 \
+  --bundle linux-sbom.json
 ```
 
 Use the corresponding Windows executable name for the Windows artifact. The
@@ -59,8 +68,8 @@ and [verification command](https://cli.github.com/manual/gh_attestation_verify).
 
 These raw candidates are not yet consumer packages. The Linux development
 archive remains unsigned and unqualified, and the Windows consumer lifecycle
-is unfinished. The preliminary locked-dependency SPDX inventory is not a
-binary-specific SBOM, so this workflow does not attest it as one. Final release
-also requires exact consumer-artifact installation and rollback, independent
-license/vulnerability review, protected publishing, and explicit publication
-authorization.
+is unfinished. The separate all-lockfile SPDX inventory is not the binary SBOM;
+the new target-specific document records build inputs, not exact linked code
+or a reviewed dependency conclusion. Final release also requires exact
+consumer-artifact installation and rollback, independent license/vulnerability
+review, protected publishing, and explicit publication authorization.

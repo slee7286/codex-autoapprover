@@ -33,6 +33,12 @@ CHECKS = {
     "exact_consumer_artifact_rollback",
 }
 MAX_EVIDENCE_AGE = timedelta(days=30)
+MAX_SBOM_BYTES = 16 * 1024 * 1024
+SBOM_FILE_ID = "SPDXRef-File-ConsumerBinary"
+SBOM_TARGETS = {
+    ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "codex-autoapprover-linux-x86_64"),
+    ("windows", "x86_64"): ("x86_64-pc-windows-msvc", "codex-autoapprover-windows-x86_64.exe"),
+}
 
 
 def unique_object(pairs):
@@ -45,7 +51,10 @@ def unique_object(pairs):
 
 
 def load_json(body):
-    return json.loads(body, object_pairs_hook=unique_object)
+    def reject_nonfinite(value):
+        raise ValueError(f"non-finite JSON value: {value}")
+
+    return json.loads(body, object_pairs_hook=unique_object, parse_constant=reject_nonfinite)
 
 
 def sha256(body):
@@ -143,12 +152,52 @@ def source_digest(root):
         paths.extend(path for path in (root / directory).rglob("*")
                      if path.is_file() and "__pycache__" not in path.parts)
     digest = hashlib.sha256()
-    for path in sorted(paths):
+    # Native Path ordering differs between Windows and Unix for mixed-case names.
+    # Evidence produced on either runner must hash the same source byte sequence.
+    for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix().encode("utf-8")):
         relative = path.relative_to(root).as_posix()
         regular_file(root, relative)
         digest.update(relative.encode() + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
+
+
+def validate_binary_sbom(body, evidence, autoapprover_version):
+    document = load_json(body)
+    target = evidence["target"]
+    identity = SBOM_TARGETS.get((target["os"], target["arch"]))
+    if identity is None or not isinstance(document, dict) or document.get("spdxVersion") != "SPDX-2.3":
+        raise ValueError("binary SBOM has an unsupported native target or SPDX version")
+    triple, artifact_name = identity
+    files = document.get("files")
+    if not isinstance(files, list) or len(files) != 1:
+        raise ValueError("binary SBOM lacks one exact consumer file")
+    file = files[0]
+    if (not isinstance(file, dict) or file.get("SPDXID") != SBOM_FILE_ID
+            or file.get("fileName") != f"./{artifact_name}"
+            or file.get("checksums") != [{"algorithm": "SHA256", "checksumValue": evidence["autoapprover_binary_sha256"]}]):
+        raise ValueError("binary SBOM does not bind the consumer executable")
+    root_id = f"SPDXRef-Package-codex-autoapprover-{autoapprover_version}"
+    packages = document.get("packages")
+    describes = document.get("documentDescribes")
+    if (not isinstance(packages, list) or not any(
+            isinstance(item, dict) and item.get("SPDXID") == root_id for item in packages)
+            or not isinstance(describes, list)
+            or SBOM_FILE_ID not in describes or root_id not in describes):
+        raise ValueError("binary SBOM lacks described build inputs")
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list) or not any(
+            isinstance(item, dict) and item.get("spdxElementId") == "SPDXRef-DOCUMENT"
+            and item.get("relatedSpdxElement") == SBOM_FILE_ID
+            and item.get("relationshipType") == "DESCRIBES" for item in relationships):
+        raise ValueError("binary SBOM does not describe the consumer file")
+    expected_note = (f"Native Rust target: {triple}; consumer executable SHA-256: "
+                     f"{evidence['autoapprover_binary_sha256']}; source SHA-256: {evidence['source_sha256']}")
+    annotations = document.get("annotations")
+    if not isinstance(annotations, list) or not any(
+            isinstance(item, dict) and item.get("annotator") == "Tool: scripts/binary_sbom.py"
+            and item.get("comment") == expected_note for item in annotations):
+        raise ValueError("binary SBOM does not bind the native target and source")
 
 
 def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None, now=None):
@@ -222,6 +271,14 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
             refs = item.get("artifacts", []) if isinstance(item, dict) else []
             if not isinstance(item, dict) or item.get("result") != "pass" or not isinstance(refs, list) or not refs or any(ref not in retained for ref in refs):
                 raise ValueError(f"native check has no passing retained evidence: {check}")
+        sbom_refs = [reference for reference in checks["consumer_binary_sbom"]["artifacts"]
+                     if reference.endswith(".spdx.json")]
+        if len(sbom_refs) != 1:
+            raise ValueError("consumer binary check requires one retained SPDX document")
+        sbom_path = regular_file(root, sbom_refs[0], "compatibility/evidence")
+        if sbom_path.stat().st_size > MAX_SBOM_BYTES:
+            raise ValueError("consumer binary SBOM exceeds attestation size limit")
+        validate_binary_sbom(sbom_path.read_bytes(), evidence, manifest["autoapprover_version"])
         declared.add(identifier)
     expected = {entry["evidence_id"] for entry in manifest["entries"]}
     if declared != expected:

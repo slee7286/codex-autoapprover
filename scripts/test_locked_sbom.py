@@ -10,6 +10,19 @@ import locked_sbom
 
 
 class LockedSbomTests(unittest.TestCase):
+    def test_filtered_inventory_requires_root_and_exact_selected_packages(self):
+        root_key = ("codex-autoapprover", "0.1.0")
+        document = locked_sbom.generate(Path(tempfile.gettempdir()), offline=True,
+                                        package_filter={root_key})
+        self.assertEqual([(item["name"], item["versionInfo"]) for item in document["packages"]],
+                         [root_key])
+        with self.assertRaisesRegex(ValueError, "omit the root"):
+            locked_sbom.generate(Path(tempfile.gettempdir()), offline=True,
+                                 package_filter={("missing", "1.0.0")})
+        with self.assertRaisesRegex(ValueError, "differ from Cargo.lock"):
+            locked_sbom.generate(Path(tempfile.gettempdir()), offline=True,
+                                 package_filter={root_key, ("missing", "1.0.0")})
+
     def test_locked_archive_digest_and_license_are_verified_before_use(self):
         manifest = b'[package]\nname = "fixture"\nversion = "1.2.3"\nlicense = "MIT/Apache-2.0"\n'
         output = io.BytesIO()
