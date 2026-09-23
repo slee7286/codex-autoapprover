@@ -152,15 +152,15 @@ tests/
 
 The listed modules are implementation seams, not evidence that every future property is complete. Configuration installation should be a later module or separate command with its own review.
 
-## Linux-first plan
+## Native qualification plan
 
-Linux remains the first verified target because the evidence is Ubuntu-based and ordinary inherited terminal I/O is straightforward to validate there. Native Windows has an implemented adapter and response-delivery regression coverage, but its requested Codex 0.154.0 tuple remains experimental/unverified. The verified Linux path covers process resolution, `-c` hook registration, child environment behavior, request parsing, response handling, interruption, exit status, argument forwarding, and temporary test configuration without writing the user's live Codex home.
+Linux has historical Ubuntu evidence, but no current binary or Codex tuple is certified. Native Windows has an implemented adapter and synthetic response-delivery coverage, but no native approval result. Both platforms require fresh live qualification of the exact final artifacts. Local tests cover process resolution, `-c` hook registration, child environment behavior, request parsing, response handling, interruption, exit status, argument forwarding, and temporary test configuration; they do not prove current native approval behavior.
 
 Future registry entries require fresh native positive and negative evidence and independent review. Every unreviewed tuple remains unarmed in normal run. The experimental verifier is limited to its exact command and tool.
 
 ## Unsupported platforms and future IDE integration
 
-macOS remains unsupported. Windows requires independent live validation of executable resolution, inherited terminal behavior, environment inheritance, interruption, signing, packaging, process creation, console/pseudoconsole behavior, quoting, environment scope, exit codes, configuration paths, and the Codex 0.154.0 PermissionRequest exchange; it does not inherit Linux review claims. VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud surfaces are also unsupported and unverified.
+macOS remains unsupported. Windows requires independent live validation of executable resolution, inherited terminal behavior, environment inheritance, interruption, signing, packaging, process creation, console/pseudoconsole behavior, quoting, environment scope, exit codes, configuration paths, and the current exact Codex PermissionRequest exchange; it does not inherit Linux review claims. VS Code/IDE, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud surfaces are also unsupported and unverified.
 
 IDE-extension integration is planned separately. It needs a persistent-hook composition design and secure arming/process binding that can distinguish the intended IDE session; the current child-local CLI design and evidence cannot be reused as that guarantee.
 

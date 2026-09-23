@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use crate::{
@@ -300,7 +301,7 @@ pub fn print_hook_config() -> Result<i32> {
     Ok(0)
 }
 
-pub fn verify_local_hook() -> Result<i32> {
+pub fn verify_local_hook(diagnostic_dir: Option<&Path>) -> Result<i32> {
     if compatibility::is_wsl_runtime() {
         bail!("verify-local-hook requires native Windows, not WSL")
     }
@@ -316,6 +317,11 @@ pub fn verify_local_hook() -> Result<i32> {
     if crate::environment::surface()? != "native-cli" {
         bail!("verify-local-hook requires an identifiable native foreground CLI environment")
     }
+    if let Some(parent) = diagnostic_dir
+        && !parent.is_dir()
+    {
+        bail!("verification diagnostic parent must be an existing directory")
+    }
 
     let installation = codex::inspect()?;
     let verification_target = compatibility::resolved_verification_target(&installation.version)
@@ -330,7 +336,7 @@ pub fn verify_local_hook() -> Result<i32> {
     let probe_command = probe.command().to_owned();
 
     eprintln!();
-    eprintln!("!!! ISOLATED LOCAL HOOK VERIFICATION !!!");
+    eprintln!("!!! LOCAL HOOK VERIFICATION EXPERIMENT !!!");
     eprintln!("This starts the official Codex executable with a child-local hook override.");
     eprintln!("Automatic approval is armed only for this verification child.");
     eprintln!("No persistent Codex configuration will be written.");
@@ -442,7 +448,7 @@ pub fn verify_local_hook() -> Result<i32> {
     }
 
     eprintln!(
-        "codex-autoapprover: launching isolated verification child; do not approve any action other than the displayed curl request"
+        "codex-autoapprover: launching temporary-repository verification child; do not approve any action other than the displayed curl request"
     );
     let (mut child, tree) = match ChildTree::spawn(&mut command).with_context(|| {
         format!(
@@ -497,10 +503,17 @@ pub fn verify_local_hook() -> Result<i32> {
         let cleanup = cleanup_bound_verification(state, broker, session);
         return Err(with_cleanup_error(error, cleanup));
     }
+    // Freeze the audit before deriving counts or retaining a copy. A late
+    // client must not change the log after the diagnostic summary is made.
+    broker.stop_accepting();
+    if let Err(error) = broker.shutdown() {
+        let cleanup = cleanup_verification_state(state, session);
+        return Err(with_cleanup_error(error, cleanup));
+    }
     let observation = match probe.finish() {
         Ok(observation) => observation,
         Err(error) => {
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -510,7 +523,7 @@ pub fn verify_local_hook() -> Result<i32> {
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -519,7 +532,7 @@ pub fn verify_local_hook() -> Result<i32> {
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -528,7 +541,7 @@ pub fn verify_local_hook() -> Result<i32> {
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -542,7 +555,7 @@ pub fn verify_local_hook() -> Result<i32> {
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -555,7 +568,7 @@ pub fn verify_local_hook() -> Result<i32> {
     {
         Ok(count) => count,
         Err(error) => {
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
@@ -565,7 +578,7 @@ pub fn verify_local_hook() -> Result<i32> {
             eprintln!("verification evidence: post-run repository status: unavailable");
             eprintln!("verification diagnostics: post-run Git status could not be read");
             let message = error.context("read temporary repository status after Codex exit");
-            let cleanup = cleanup_bound_verification(state, broker, session);
+            let cleanup = cleanup_verification_state(state, session);
             return Err(with_cleanup_error(message, cleanup));
         }
     };
@@ -601,12 +614,37 @@ pub fn verify_local_hook() -> Result<i32> {
         );
     }
 
-    let cleanup_result = cleanup_bound_verification(state, broker, session);
+    let retained = diagnostic_dir.map(|parent| {
+        state.retain_diagnostic(
+            parent,
+            &VerificationDiagnostic {
+                codex_version: &expected_version,
+                command: &probe_command,
+                child_exit_code: codex::status_code(status),
+                baseline_clean,
+                repository_clean,
+                attempt_count,
+                invocation_count,
+                exact_request_count,
+                allow_count,
+                emitted_allow_count,
+                exact_head_requests: observation.exact_head_requests,
+                unexpected_requests: observation.unexpected_requests,
+            },
+        )
+    });
+    let cleanup_result = cleanup_verification_state(state, session);
     let cleanup_completed = cleanup_result.is_ok();
     eprintln!(
         "verification evidence: temporary state cleanup completed: {}",
         if cleanup_completed { "yes" } else { "no" }
     );
+    if let Some(Ok(path)) = &retained {
+        eprintln!("verification diagnostic retained at: {}", path.display());
+    }
+    if let Some(Err(error)) = retained {
+        return Err(with_cleanup_error(error, cleanup_result));
+    }
     if let Err(error) = cleanup_result {
         eprintln!("verification diagnostics: temporary state cleanup failed");
         return Err(error);
@@ -765,6 +803,21 @@ struct VerificationState {
     audit_path: PathBuf,
 }
 
+struct VerificationDiagnostic<'a> {
+    codex_version: &'a str,
+    command: &'a str,
+    child_exit_code: i32,
+    baseline_clean: bool,
+    repository_clean: bool,
+    attempt_count: usize,
+    invocation_count: usize,
+    exact_request_count: usize,
+    allow_count: usize,
+    emitted_allow_count: usize,
+    exact_head_requests: usize,
+    unexpected_requests: usize,
+}
+
 impl VerificationState {
     fn new() -> Result<Self> {
         let repository = TempDir::new().context("create isolated temporary repository")?;
@@ -802,9 +855,63 @@ impl VerificationState {
         })
     }
 
+    fn retain_diagnostic(
+        &self,
+        parent: &Path,
+        diagnostic: &VerificationDiagnostic<'_>,
+    ) -> Result<PathBuf> {
+        let output = tempfile::Builder::new()
+            .prefix("codex-autoapprover-verification-")
+            .tempdir_in(parent)
+            .context("create unique verification diagnostic directory")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(output.path(), fs::Permissions::from_mode(0o700))
+                .context("protect verification diagnostic directory")?;
+        }
+        let audit = fs::read(&self.audit_path).context("read final redacted broker audit")?;
+        let audit_sha256 = sha256_hex(&audit);
+        fs::write(output.path().join("hook-audit.log"), audit)
+            .context("retain redacted broker audit")?;
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "status": "unqualified-verification-diagnostic",
+            "note": "This diagnostic is not native certification or release-gate evidence.",
+            "codex_version": diagnostic.codex_version,
+            "operating_system": std::env::consts::OS,
+            "probe_command_sha256": sha256_hex(diagnostic.command.as_bytes()),
+            "child_exit_code": diagnostic.child_exit_code,
+            "baseline_clean": diagnostic.baseline_clean,
+            "repository_clean": diagnostic.repository_clean,
+            "broker_connections": diagnostic.attempt_count,
+            "parsed_hook_requests": diagnostic.invocation_count,
+            "exact_permission_requests": diagnostic.exact_request_count,
+            "allowed_permission_requests": diagnostic.allow_count,
+            "structured_allow_emissions": diagnostic.emitted_allow_count,
+            "witnessed_exact_head_requests": diagnostic.exact_head_requests,
+            "unexpected_loopback_requests": diagnostic.unexpected_requests,
+            "redacted_audit": "hook-audit.log",
+            "redacted_audit_sha256": audit_sha256,
+        });
+        let mut report_bytes =
+            serde_json::to_vec_pretty(&report).context("serialize verification diagnostic")?;
+        report_bytes.push(b'\n');
+        fs::write(output.path().join("diagnostic.json"), report_bytes)
+            .context("retain verification diagnostic")?;
+        Ok(output.keep())
+    }
+
     fn cleanup(self) -> Result<()> {
         close_temp_dirs(self.repository, self.evidence)
     }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn close_temp_dirs(repository: TempDir, evidence: TempDir) -> Result<()> {
@@ -851,6 +958,10 @@ fn cleanup_bound_verification(
         combine_cleanup(broker.shutdown(), session.cleanup()),
         state.cleanup(),
     )
+}
+
+fn cleanup_verification_state(state: VerificationState, session: Session) -> Result<()> {
+    combine_cleanup(session.cleanup(), state.cleanup())
 }
 
 fn cleanup_child_then_verification(
@@ -1180,6 +1291,64 @@ mod tests {
                 .is_clean()
         );
         state.cleanup().expect("cleanup state");
+    }
+
+    #[test]
+    fn retained_verification_diagnostic_is_redacted_and_survives_cleanup() {
+        let state = VerificationState::new().expect("temporary verification state");
+        let parent = TempDir::new().expect("diagnostic parent");
+        let secret_command = compatibility::verification_probe_command_fixture();
+        let input = serde_json::json!({"command": secret_command});
+        audit::broker_attempt_at(&state.audit_path).expect("audit connection");
+        audit::hook_invoked_at(&state.audit_path, Some("Bash"), Some("PermissionRequest"))
+            .expect("audit invocation");
+        audit::hook_request_at(
+            &state.audit_path,
+            Some("Bash"),
+            Some("PermissionRequest"),
+            Some(&input),
+        )
+        .expect("audit request");
+        let diagnostic = VerificationDiagnostic {
+            codex_version: "0.156.0",
+            command: secret_command,
+            child_exit_code: 0,
+            baseline_clean: true,
+            repository_clean: true,
+            attempt_count: 1,
+            invocation_count: 1,
+            exact_request_count: 1,
+            allow_count: 0,
+            emitted_allow_count: 0,
+            exact_head_requests: 0,
+            unexpected_requests: 0,
+        };
+        let retained = state
+            .retain_diagnostic(parent.path(), &diagnostic)
+            .expect("retain diagnostic");
+        state.cleanup().expect("cleanup temporary state");
+        assert!(retained.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&retained).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let audit_bytes = fs::read(retained.join("hook-audit.log")).expect("retained audit");
+        let report_bytes = fs::read(retained.join("diagnostic.json")).expect("retained report");
+        let report: serde_json::Value =
+            serde_json::from_slice(&report_bytes).expect("parse diagnostic report");
+        assert_eq!(report["status"], "unqualified-verification-diagnostic");
+        assert_eq!(report["redacted_audit_sha256"], sha256_hex(&audit_bytes));
+        assert_eq!(
+            report["probe_command_sha256"],
+            sha256_hex(secret_command.as_bytes())
+        );
+        assert_eq!(report["broker_connections"], 1);
+        assert!(!String::from_utf8_lossy(&audit_bytes).contains(secret_command));
+        assert!(!String::from_utf8_lossy(&report_bytes).contains(secret_command));
     }
 
     #[test]

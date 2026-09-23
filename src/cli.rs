@@ -39,8 +39,12 @@ pub enum Command {
     Diagnose,
     /// Print the hook configuration snippet without writing it.
     PrintHookConfig,
-    /// Run one explicitly confirmed, isolated local hook verification.
-    VerifyLocalHook,
+    /// Run one explicitly confirmed local hook diagnostic.
+    VerifyLocalHook {
+        /// Existing directory in which to retain an unqualified redacted diagnostic.
+        #[arg(long)]
+        diagnostic_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Debug, Args)]

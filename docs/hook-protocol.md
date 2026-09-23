@@ -1,6 +1,6 @@
 # Hook protocol
 
-This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI tuple Codex 0.151.0. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets remain unarmed until independently verified and admitted.
+This document separates official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. The production manifest currently certifies no tuple. Linux/local-CLI/Codex 0.151.0 is historical evidence only and does not qualify the current artifact. Linux 0.153.0 was inspected but has no retained independent live evidence. Earlier Linux 0.153.4 and Windows 0.154.0 requests were exploratory; all current and newer stable targets remain unarmed until independently verified and admitted.
 
 ## Officially documented facts
 

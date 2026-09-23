@@ -38,7 +38,9 @@ fn main() {
         cli::Command::Hook => hook::run(),
         cli::Command::Diagnose => launcher::diagnose(),
         cli::Command::PrintHookConfig => launcher::print_hook_config(),
-        cli::Command::VerifyLocalHook => launcher::verify_local_hook(),
+        cli::Command::VerifyLocalHook { diagnostic_dir } => {
+            launcher::verify_local_hook(diagnostic_dir.as_deref())
+        }
     };
 
     match result {
