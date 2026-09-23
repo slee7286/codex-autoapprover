@@ -41,8 +41,9 @@ made additional code, gate, test and documentation changes.
   once, reject identical request replays, cap the ledger at 4096 invocations,
   and permit **at most one allow** in the isolated verifier. Consumed requests
   stay consumed if response delivery fails. Identical legitimate retries use
-  normal approval. Both brokers now audit each parsed request before deciding;
-  a denied or replayed request invalidates the verifier's one-invocation check.
+  normal approval. Both brokers now count connections before parsing and audit
+  each parsed request before deciding; a malformed broker frame, denied request
+  or replay invalidates the verifier's one-request check.
   Audit event names are reduced to fixed labels before logging, so malformed
   hook input cannot inject additional audit lines.
   A malformed hook input that never reaches the broker is outside this count.
@@ -54,6 +55,13 @@ made additional code, gate, test and documentation changes.
   follows the [official JSONL event documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
   and the inspected upstream 0.156.0 event source. It has synthetic tests only;
   no unattended native hook run or independently witnessed outcome exists yet.
+- Inspection of the [Codex 0.156.0 headless exec source](https://github.com/openai/codex/blob/rust-v0.156.0/codex-rs/exec/src/lib.rs)
+  found that it forces approvals to `never` unless auto-review is selected.
+  A proposed `codex exec` verifier was withdrawn because ordinary headless mode
+  cannot produce the required `PermissionRequest`, while enabling auto-review
+  would expand authority beyond this exact-command verification. The existing
+  interactive verifier remains non-promoting. A different bounded live harness
+  and native validation are still required.
 - Probe output uses private temporary files rather than unbounded thread joins
   on inherited pipes. Unix probe process groups are terminated on completion or
   timeout. The isolated interactive verifier now requests no shared daemon and
@@ -95,7 +103,7 @@ made additional code, gate, test and documentation changes.
 
 | Check | Result and scope |
 | --- | --- |
-| `cargo test --locked --all-targets` | 69 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover denied/replayed broker audit accounting, log-injection rejection and Unix descendant cleanup. |
+| `cargo test --locked --all-targets` | 70 unit tests and 22 integration tests passed on Linux with host Unix-socket access; synthetic regression evidence only. New cases cover malformed/denied/replayed broker audit accounting, log-injection rejection and Unix descendant cleanup. |
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
@@ -119,20 +127,20 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`dc36d00891cd97af4ee769fd834e226a7e6b85c429a37d401269743c2362f558`.
+`d9de9eb71b755734cf0ed26e8ac3651f933ac919c5bf03580ed9c5f53dee6faf`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v9/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `c184c323a40a670478e16aa5eae8e4dca8247746c63a8714f34dd1b7b3d11147`.
+`/tmp/autoapprover-dev-package-20260923-v10/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `0ab133385149503d42519fc11075f900675d63c20fc5df0980a7a9d52b99a200`.
 Its recorded source digest is
-`f66bea0fe167a54a5f0b4e6cf91253c5b68b563dfd0e4269ba8b348e9d2c40bc`.
+`06b7f39f3b161e712fd75e16700812c203563fa134c6dfdc8338527869f333c6`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v9.spdx.json`, SHA-256
-`df4001c0427fd4c68761fd65cd77d87f11b999e070e1cf7671d499e00ecc2b1b`.
+`/tmp/autoapprover-locked-dependencies-v10.spdx.json`, SHA-256
+`42cd89b36be5d0e9c23cf5a9f6fb74cc1d77c19451575705d4b99f6c04bd86aa`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 

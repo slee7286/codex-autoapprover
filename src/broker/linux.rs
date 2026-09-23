@@ -298,6 +298,11 @@ fn handle_connection(mut stream: UnixStream, shared: &SharedState) {
     let Some(credentials) = peer_credentials(&stream) else {
         return;
     };
+    if let Some(path) = shared.config.audit_path.as_deref()
+        && audit::broker_attempt_at(path).is_err()
+    {
+        return;
+    }
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
     let Ok(frame) = read_frame_until(&mut stream, MAX_BROKER_MESSAGE_BYTES, deadline) else {
         return;
@@ -941,12 +946,29 @@ mod tests {
         assert!(threads.into_iter().all(|thread| !thread.join().unwrap()));
         unsafe { env::set_var(arming::SESSION_TOKEN_ENV, "b".repeat(64)) };
         assert!(!request(&input).unwrap());
+        let mut malformed = UnixStream::connect(session.socket_path()).unwrap();
+        let deadline = Instant::now() + CONNECTION_TIMEOUT;
+        write_frame_until(
+            &mut malformed,
+            b"not json",
+            MAX_BROKER_MESSAGE_BYTES,
+            deadline,
+        )
+        .unwrap();
+        malformed.shutdown(Shutdown::Write).unwrap();
+        assert!(
+            !parse_response(
+                &read_frame_until(&mut malformed, MAX_BROKER_RESPONSE_BYTES, deadline).unwrap()
+            )
+            .unwrap()
+        );
         unsafe {
             env::remove_var(arming::SESSION_SOCKET_ENV);
             env::remove_var(arming::SESSION_TOKEN_ENV);
             env::remove_var(arming::PROTOCOL_ENV);
         }
         broker.shutdown().unwrap();
+        assert_eq!(audit::broker_attempt_count(&audit_path).unwrap(), 7);
         assert_eq!(audit::invocation_count(&audit_path).unwrap(), 6);
         assert_eq!(audit::allow_record_count(&audit_path).unwrap(), 1);
         let expected_input =

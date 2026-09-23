@@ -503,6 +503,15 @@ pub fn verify_local_hook() -> Result<i32> {
     // alive. Stop its isolated group before inspecting and deleting state.
     stop_verification_descendants(&child);
 
+    let attempt_count = match audit::broker_attempt_count(&audit_path)
+        .context("read temporary broker connection audit")
+    {
+        Ok(count) => count,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
     let invocation_count = match audit::invocation_count(&audit_path)
         .context("read temporary hook invocation audit")
     {
@@ -560,7 +569,8 @@ pub fn verify_local_hook() -> Result<i32> {
     };
     let repository_clean = post_status.is_clean();
 
-    eprintln!("verification evidence: hook invocation count: {invocation_count}");
+    eprintln!("verification evidence: broker connection count: {attempt_count}");
+    eprintln!("verification evidence: parsed hook request count: {invocation_count}");
     eprintln!(
         "verification evidence: exact authorized request hash match count: {exact_request_count}"
     );
@@ -598,13 +608,14 @@ pub fn verify_local_hook() -> Result<i32> {
     if !baseline_clean {
         bail!("temporary repository baseline was dirty; compatibility was not promoted")
     }
-    if invocation_count != 1
+    if attempt_count != 1
+        || invocation_count != 1
         || exact_request_count != 1
         || allow_count != 1
         || emitted_allow_count != 1
     {
         bail!(
-            "expected exactly one exact hook request, allow record, and structured allow emission, recorded {invocation_count} invocation(s), {exact_request_count} exact request(s), {allow_count} allow record(s), and {emitted_allow_count} emission(s); compatibility was not promoted"
+            "expected exactly one broker connection, parsed hook request, exact hook request, allow record, and structured allow emission; recorded {attempt_count} connection(s), {invocation_count} parsed request(s), {exact_request_count} exact request(s), {allow_count} allow record(s), and {emitted_allow_count} emission(s); compatibility was not promoted"
         )
     }
     if !repository_clean {

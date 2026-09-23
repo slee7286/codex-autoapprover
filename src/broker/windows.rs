@@ -258,6 +258,12 @@ fn handle_connection(pipe: SendHandle, shared: &Arc<SharedState>) {
         close_handle(pipe);
         return;
     }
+    if let Some(path) = shared.config.audit_path.as_deref()
+        && audit::broker_attempt_at(path).is_err()
+    {
+        close_handle(pipe);
+        return;
+    }
     let deadline = Instant::now() + CONNECTION_TIMEOUT;
     let frame = match read_frame_until(
         pipe,

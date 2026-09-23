@@ -99,6 +99,10 @@ pub fn initialize(path: &Path) -> io::Result<()> {
     append_private(path, b"")
 }
 
+pub fn broker_attempt_at(path: &Path) -> io::Result<()> {
+    append_private(path, b"broker connection\n")
+}
+
 fn append_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(file) => file,
@@ -139,6 +143,10 @@ pub fn invocation_count(path: &Path) -> io::Result<usize> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error),
     }
+}
+
+pub fn broker_attempt_count(path: &Path) -> io::Result<usize> {
+    count_matching_lines(path, |line| line == "broker connection")
 }
 
 pub fn exact_request_count(
@@ -266,6 +274,21 @@ mod tests {
         assert_eq!(invocation_count(&path).unwrap(), 1);
         assert_eq!(allow_record_count(&path).unwrap(), 0);
         assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn broker_attempts_are_counted_without_request_content() {
+        let directory = TempDir::new().expect("temporary audit directory");
+        let path = directory.path().join("audit.log");
+        initialize(&path).unwrap();
+        broker_attempt_at(&path).unwrap();
+        broker_attempt_at(&path).unwrap();
+        assert_eq!(broker_attempt_count(&path).unwrap(), 2);
+        assert_eq!(invocation_count(&path).unwrap(), 0);
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "broker connection\nbroker connection\n"
+        );
     }
 
     #[test]
