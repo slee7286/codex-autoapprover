@@ -80,7 +80,11 @@ cite it in the native report's `consumer_build_record` check. The report's
 `build_commit` must equal the record's clean Git revision. The release gate
 checks the record's exact source, binary, lockfile, manifest and native target
 fields; independent review must still compare it with the signed provenance
-and real build run.
+and real build run. Retain `reproducibility.json` alongside it and cite it in
+`consumer_reproducibility`. The gate requires two reported rebuild digests
+equal to the reviewed consumer binary and checks the report's source, commit,
+host and toolchain bindings against the build record. This is structural
+validation of a self-reported native run, not independent reproduction.
 Only a run whose **two native qualification jobs also passed** can contribute
 final release evidence. A failed qualification run may still contain useful
 candidate provenance, but remains unqualified. Initial native certification

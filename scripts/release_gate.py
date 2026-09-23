@@ -29,12 +29,14 @@ CHECKS = {
     "replay_rejection", "descendant_forgery_rejection", "executable_replacement",
     "cancellation_cleanup", "concurrent_sessions", "clean_disposable_environment",
     "locked_dependency_inventory", "license_notice_review", "vulnerability_review",
-    "consumer_binary_sbom", "consumer_build_record", "signed_provenance", "protected_release_checks",
+    "consumer_binary_sbom", "consumer_build_record", "consumer_reproducibility",
+    "signed_provenance", "protected_release_checks",
     "exact_consumer_artifact_rollback",
 }
 MAX_EVIDENCE_AGE = timedelta(days=30)
 MAX_SBOM_BYTES = 16 * 1024 * 1024
 MAX_BUILD_RECORD_BYTES = 16 * 1024
+MAX_REPRODUCIBILITY_RECORD_BYTES = 16 * 1024
 SBOM_FILE_ID = "SPDXRef-File-ConsumerBinary"
 SBOM_TARGETS = {
     ("linux", "x86_64"): ("x86_64-unknown-linux-gnu", "codex-autoapprover-linux-x86_64"),
@@ -243,6 +245,30 @@ def validate_build_record(body, evidence, root):
             or any(not isinstance(value, str) or not value or len(value) > 256
                    or any(ord(char) < 32 for char in value) for value in host.values())):
         raise ValueError("consumer build record has an invalid native host")
+    return record
+
+
+def validate_reproducibility_record(body, evidence, build_record):
+    report = load_json(body)
+    fields = {"schema_version", "status", "git_commit", "host", "rustc", "cargo",
+              "source_archive_sha256", "source_sha256", "expected_binary_sha256",
+              "independent_build_sha256", "byte_identical"}
+    exact_keys(report, fields, "consumer reproducibility record")
+    binary = evidence["autoapprover_binary_sha256"]
+    expected_host = {"linux": "linux", "windows": "win32"}[evidence["target"]["os"]]
+    rustc_line = build_record["toolchain"]["rustc_verbose"].splitlines()[0]
+    if (type(report["schema_version"]) is not int or report["schema_version"] != 1
+            or report["status"] != "unqualified-native-reproducibility-observation"
+            or report["git_commit"] != evidence["build_commit"]
+            or report["host"] != expected_host
+            or report["rustc"] != rustc_line
+            or report["cargo"] != build_record["toolchain"]["cargo_version"]
+            or not digest_value(report["source_archive_sha256"])
+            or report["source_sha256"] != evidence["source_sha256"]
+            or report["expected_binary_sha256"] != binary
+            or report["independent_build_sha256"] != [binary, binary]
+            or report["byte_identical"] is not True):
+        raise ValueError("consumer reproducibility record does not bind the reviewed native build")
 
 
 def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None, now=None):
@@ -331,7 +357,15 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         record_path = regular_file(root, record_refs[0], "compatibility/evidence")
         if record_path.stat().st_size > MAX_BUILD_RECORD_BYTES:
             raise ValueError("consumer build record exceeds the retention size limit")
-        validate_build_record(record_path.read_bytes(), evidence, root)
+        build_record = validate_build_record(record_path.read_bytes(), evidence, root)
+        reproducibility_refs = checks["consumer_reproducibility"]["artifacts"]
+        if (len(reproducibility_refs) != 1 or not isinstance(reproducibility_refs[0], str)
+                or not reproducibility_refs[0].endswith("/reproducibility.json")):
+            raise ValueError("consumer reproducibility check requires one retained reproducibility.json")
+        reproducibility_path = regular_file(root, reproducibility_refs[0], "compatibility/evidence")
+        if reproducibility_path.stat().st_size > MAX_REPRODUCIBILITY_RECORD_BYTES:
+            raise ValueError("consumer reproducibility record exceeds the retention size limit")
+        validate_reproducibility_record(reproducibility_path.read_bytes(), evidence, build_record)
         declared.add(identifier)
     expected = {entry["evidence_id"] for entry in manifest["entries"]}
     if declared != expected:

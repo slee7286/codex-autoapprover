@@ -79,15 +79,29 @@ class ReleaseGateTests(unittest.TestCase):
         }
         build_path.write_text(json.dumps(build_record))
         build_ref = dict(path=build_path.relative_to(root).as_posix(), sha256=gate.sha256(build_path.read_bytes()))
+        reproducibility_path = root / "compatibility/evidence/synthetic/reproducibility.json"
+        reproducibility = {
+            "schema_version": 1, "status": "unqualified-native-reproducibility-observation",
+            "git_commit": build_commit, "host": "win32", "rustc": "rustc 1.98.0",
+            "cargo": "cargo 1.98.0", "source_archive_sha256": "c" * 64,
+            "source_sha256": source_sha, "expected_binary_sha256": binary_sha,
+            "independent_build_sha256": [binary_sha, binary_sha], "byte_identical": True,
+        }
+        reproducibility_path.write_text(json.dumps(reproducibility))
+        reproducibility_ref = dict(path=reproducibility_path.relative_to(root).as_posix(),
+                                   sha256=gate.sha256(reproducibility_path.read_bytes()))
         evidence = dict(schema_version=2, kind="native-live", evidence_id="synthetic-test", target=target,
                         source_sha256=source_sha, autoapprover_binary_sha256=binary_sha,
                         build_commit=build_commit,
                         upstream_artifact_sha256="c" * 64, producer="synthetic-producer", reviewer="synthetic-reviewer",
                         review_decision="approved", run_url="https://example.invalid/synthetic-fixture",
-                        observed_at=datetime.now(timezone.utc).isoformat(), artifacts=[artifact_ref, sbom_ref, build_ref],
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                        artifacts=[artifact_ref, sbom_ref, build_ref, reproducibility_ref],
                         checks={check: {"result": "pass", "artifacts": [
                             sbom_ref["path"] if check == "consumer_binary_sbom" else
-                            build_ref["path"] if check == "consumer_build_record" else artifact_ref["path"]]}
+                            build_ref["path"] if check == "consumer_build_record" else
+                            reproducibility_ref["path"] if check == "consumer_reproducibility" else
+                            artifact_ref["path"]]}
                                 for check in gate.CHECKS})
         path = root / "compatibility/evidence/synthetic/report.json"
         path.write_text(json.dumps(evidence))
@@ -142,6 +156,7 @@ class ReleaseGateTests(unittest.TestCase):
         changes = {
             "checks": lambda e: e["checks"].pop("one_request_allow"),
             "missing-build-record": lambda e: e["checks"].pop("consumer_build_record"),
+            "missing-reproducibility": lambda e: e["checks"].pop("consumer_reproducibility"),
             "self-review": lambda e: e.update(reviewer=e["producer"].upper()),
             "retained-log": lambda e: e.update(artifacts=[]),
             "unchecked-log": lambda e: e["checks"]["one_request_allow"].update(artifacts=["not-retained"]),
@@ -219,6 +234,32 @@ class ReleaseGateTests(unittest.TestCase):
                     artifact for artifact in evidence["artifacts"] if artifact["path"].endswith("/build-record.json")
                 ).update(sha256=gate.sha256(path.read_bytes())))
                 with self.assertRaisesRegex(ValueError, "build record"):
+                    gate.validate(root, policy, runtime, True, "b" * 64)
+
+    def test_reproducibility_record_must_bind_the_reviewed_build(self):
+        changes = {
+            "binary": lambda report: report.update(expected_binary_sha256="f" * 64),
+            "source": lambda report: report.update(source_sha256="f" * 64),
+            "commit": lambda report: report.update(git_commit="f" * 40),
+            "host": lambda report: report.update(host="linux"),
+            "toolchain": lambda report: report.update(rustc="rustc 9.9.9"),
+            "archive": lambda report: report.update(source_archive_sha256="invalid"),
+            "rebuild": lambda report: report.update(independent_build_sha256=["b" * 64, "f" * 64]),
+            "mismatch": lambda report: report.update(byte_identical=False),
+        }
+        for label, change in changes.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy, runtime = self.fixture(root)
+                path = root / "compatibility/evidence/synthetic/reproducibility.json"
+                report = json.loads(path.read_text())
+                change(report)
+                path.write_text(json.dumps(report))
+                self.rewrite_evidence(root, policy, lambda evidence: next(
+                    artifact for artifact in evidence["artifacts"]
+                    if artifact["path"].endswith("/reproducibility.json")
+                ).update(sha256=gate.sha256(path.read_bytes())))
+                with self.assertRaisesRegex(ValueError, "reproducibility record"):
                     gate.validate(root, policy, runtime, True, "b" * 64)
 
     def test_duplicate_json_fields_are_rejected_recursively(self):
