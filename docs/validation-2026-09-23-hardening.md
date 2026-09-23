@@ -196,8 +196,8 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v28/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `93123ab62648fceca45b55d0bc3afdd45cd296545507a2531207e2e15f432262`.
+`/tmp/autoapprover-dev-package-20260923-v29/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `bed6430fa98a117407597a865dfb4bce58f282f7cb69d7c2d79e32f246e4762d`.
 Its recorded source digest is
 `f87e2e46454e8a82be507ac6c07c9a0945e9c34c0ae4bc62a9b6e20f0365b754`.
 It is unsigned, unqualified and stored only in temporary local storage.
