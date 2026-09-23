@@ -6,20 +6,28 @@ does not publish a GitHub Release or qualify Codex approval behavior.
 
 The Linux and Windows jobs build native release executables from the same
 checkout, run local tests, and stage each raw binary with a target-specific
-SPDX build-input document, a native build observation, and SHA-256 checksums
-for all three files. The bounded `build-record.json` identifies the exact
+SPDX build-input document, a native build observation, a two-build
+reproducibility observation, and SHA-256 checksums for all four files. The
+bounded `build-record.json` identifies the exact
 binary/source/lockfile/manifest digests, Git revision, clean-tree status,
 compiler and Cargo versions, native target and selected OS facts. It omits
 hostnames and environment variables. The qualification jobs compare the
 record to downloaded bytes and source and require the same compiler/Cargo
 versions; they do not require the OS patch level to remain identical across
-runner jobs. The record is self-reported review material, not proof that
+runner jobs. The reproducibility check archives the clean commit, builds it
+twice in separate directories with the pinned local toolchain and offline
+locked dependencies, and requires both executable digests to equal the staged
+binary. Its JSON report binds the commit, canonical source digest, toolchain,
+archive and executable, and is checked again after download. This establishes
+byte repeatability under one host/toolchain environment; it does not establish
+independent source provenance, cross-host reproducibility, or native approval
+behavior. The record is self-reported review material, not proof that
 the binary came from those inputs or a complete linked-component inventory.
 The workflow provenance and independent review must establish that
 relationship. The jobs upload seven-day **unqualified candidate** artifacts.
-Separate native Linux and Windows jobs download those bytes, verify all three
+Separate native Linux and Windows jobs download those bytes, verify all four
 digests, regenerate the SBOM against the downloaded executable and current
-source, validate the build observation, and require
+source, validate the build and reproducibility observations, and require
 `release_gate.py --require-ready --binary` to match each executable to fresh,
 reviewed evidence and the complete embedded support manifest. The present
 empty manifest and pending policy cause both qualification jobs to fail.
@@ -86,7 +94,7 @@ These raw candidates are not yet consumer packages. The Linux development
 archive remains unsigned and unqualified, and the Windows consumer lifecycle
 is unfinished. The separate all-lockfile SPDX inventory is not the binary SBOM;
 the new target-specific document records build inputs, not exact linked code
-or a reviewed dependency conclusion. The build observation records toolchain
-and host facts but does not establish reproducibility. Final release also requires exact
+or a reviewed dependency conclusion. The two-build observation is a local
+repeatability check, not independent reproducibility proof. Final release also requires exact
 consumer-artifact installation and rollback, independent license/vulnerability
 review, protected publishing, and explicit publication authorization.

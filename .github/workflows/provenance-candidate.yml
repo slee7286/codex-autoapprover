@@ -40,8 +40,9 @@ jobs:
           python3 scripts/binary_sbom.py --offline --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --output "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64.spdx.json"
           python3 scripts/build_record.py --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --output "$RUNNER_TEMP/candidate-linux/build-record.json" --require-clean
           python3 scripts/build_record.py --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --verify "$RUNNER_TEMP/candidate-linux/build-record.json" --require-clean
+          python3 scripts/check_reproducible_build.py --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --output "$RUNNER_TEMP/candidate-linux/reproducibility.json"
           cd "$RUNNER_TEMP/candidate-linux"
-          sha256sum codex-autoapprover-linux-x86_64 codex-autoapprover-linux-x86_64.spdx.json build-record.json > SHA256SUMS
+          sha256sum codex-autoapprover-linux-x86_64 codex-autoapprover-linux-x86_64.spdx.json build-record.json reproducibility.json > SHA256SUMS
           sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -106,10 +107,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows native build observation failed' }
           python scripts/build_record.py --binary $destination --verify $record --require-clean
           if ($LASTEXITCODE -ne 0) { throw 'Windows native build observation does not verify' }
+          $reproducibility = Join-Path $directory 'reproducibility.json'
+          python scripts/check_reproducible_build.py --binary $destination --output $reproducibility
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native reproducibility observation failed' }
           $binaryDigest = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
           $sbomDigest = (Get-FileHash -LiteralPath $sbom -Algorithm SHA256).Hash.ToLowerInvariant()
           $recordDigest = (Get-FileHash -LiteralPath $record -Algorithm SHA256).Hash.ToLowerInvariant()
-          [System.IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS'), "$binaryDigest  $name`n$sbomDigest  $sbomName`n$recordDigest  build-record.json`n", [System.Text.Encoding]::ASCII)
+          $reproDigest = (Get-FileHash -LiteralPath $reproducibility -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS'), "$binaryDigest  $name`n$sbomDigest  $sbomName`n$recordDigest  build-record.json`n$reproDigest  reproducibility.json`n", [System.Text.Encoding]::ASCII)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-candidate
@@ -147,6 +152,7 @@ jobs:
           chmod u+x codex-autoapprover-linux-x86_64
           python3 "$GITHUB_WORKSPACE/scripts/binary_sbom.py" --binary "$PWD/codex-autoapprover-linux-x86_64" --output "$PWD/codex-autoapprover-linux-x86_64.spdx.json"
           python3 "$GITHUB_WORKSPACE/scripts/build_record.py" --binary "$PWD/codex-autoapprover-linux-x86_64" --verify "$PWD/build-record.json" --require-clean
+          python3 "$GITHUB_WORKSPACE/scripts/check_reproducible_build.py" --binary "$PWD/codex-autoapprover-linux-x86_64" --verify-report "$PWD/reproducibility.json"
           python3 "$GITHUB_WORKSPACE/scripts/release_gate.py" --require-ready --binary "$PWD/codex-autoapprover-linux-x86_64"
 
   windows-qualify:
@@ -177,7 +183,7 @@ jobs:
           $directory = Join-Path $env:RUNNER_TEMP 'candidate-windows'
           $name = 'codex-autoapprover-windows-x86_64.exe'
           $sbomName = 'codex-autoapprover-windows-x86_64.spdx.json'
-          $names = @($name, $sbomName, 'build-record.json')
+          $names = @($name, $sbomName, 'build-record.json', 'reproducibility.json')
           $lines = @(Get-Content -LiteralPath (Join-Path $directory 'SHA256SUMS'))
           if ($lines.Count -ne $names.Count) { throw 'Invalid candidate checksum record count' }
           for ($index = 0; $index -lt $names.Count; $index++) {
@@ -192,6 +198,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows binary SBOM differs from source or executable' }
           python scripts/build_record.py --binary $binary --verify (Join-Path $directory 'build-record.json') --require-clean
           if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows build record differs from source, executable or toolchain' }
+          python scripts/check_reproducible_build.py --binary $binary --verify-report (Join-Path $directory 'reproducibility.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows reproducibility report differs from source, executable or toolchain' }
           python scripts/release_gate.py --require-ready --binary $binary
           if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows binary lacks native qualification' }
 
