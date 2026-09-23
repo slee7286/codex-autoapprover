@@ -31,15 +31,17 @@ jobs:
       - run: cargo build --release --locked --bin codex-autoapprover
       - run: ./scripts/test-install-linux.sh target/release/codex-autoapprover
       - run: ./scripts/test-package-linux.sh target/release/codex-autoapprover
-      - name: Stage exact checked Linux binary, build-input SBOM and checksums
+      - name: Stage exact checked Linux binary, SBOM, build record and checksums
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/candidate-linux"
           cp target/release/codex-autoapprover "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64"
           python3 scripts/binary_sbom.py --offline --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --output "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64.spdx.json"
+          python3 scripts/build_record.py --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --output "$RUNNER_TEMP/candidate-linux/build-record.json" --require-clean
+          python3 scripts/build_record.py --binary "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64" --verify "$RUNNER_TEMP/candidate-linux/build-record.json" --require-clean
           cd "$RUNNER_TEMP/candidate-linux"
-          sha256sum codex-autoapprover-linux-x86_64 codex-autoapprover-linux-x86_64.spdx.json > SHA256SUMS
+          sha256sum codex-autoapprover-linux-x86_64 codex-autoapprover-linux-x86_64.spdx.json build-record.json > SHA256SUMS
           sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -86,7 +88,7 @@ jobs:
       - name: Test Windows development archive and exact extracted bytes
         shell: pwsh
         run: ./scripts/test-package-windows.ps1
-      - name: Stage exact checked Windows binary, build-input SBOM and checksums
+      - name: Stage exact checked Windows binary, SBOM, build record and checksums
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -99,9 +101,15 @@ jobs:
           $sbom = Join-Path $directory $sbomName
           python scripts/binary_sbom.py --offline --binary $destination --output $sbom
           if ($LASTEXITCODE -ne 0) { throw 'Windows binary build-input SBOM failed' }
+          $record = Join-Path $directory 'build-record.json'
+          python scripts/build_record.py --binary $destination --output $record --require-clean
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native build observation failed' }
+          python scripts/build_record.py --binary $destination --verify $record --require-clean
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native build observation does not verify' }
           $binaryDigest = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
           $sbomDigest = (Get-FileHash -LiteralPath $sbom -Algorithm SHA256).Hash.ToLowerInvariant()
-          [System.IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS'), "$binaryDigest  $name`n$sbomDigest  $sbomName`n", [System.Text.Encoding]::ASCII)
+          $recordDigest = (Get-FileHash -LiteralPath $record -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS'), "$binaryDigest  $name`n$sbomDigest  $sbomName`n$recordDigest  build-record.json`n", [System.Text.Encoding]::ASCII)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-candidate
@@ -138,6 +146,7 @@ jobs:
           sha256sum --check SHA256SUMS
           chmod u+x codex-autoapprover-linux-x86_64
           python3 "$GITHUB_WORKSPACE/scripts/binary_sbom.py" --binary "$PWD/codex-autoapprover-linux-x86_64" --output "$PWD/codex-autoapprover-linux-x86_64.spdx.json"
+          python3 "$GITHUB_WORKSPACE/scripts/build_record.py" --binary "$PWD/codex-autoapprover-linux-x86_64" --verify "$PWD/build-record.json" --require-clean
           python3 "$GITHUB_WORKSPACE/scripts/release_gate.py" --require-ready --binary "$PWD/codex-autoapprover-linux-x86_64"
 
   windows-qualify:
@@ -168,7 +177,7 @@ jobs:
           $directory = Join-Path $env:RUNNER_TEMP 'candidate-windows'
           $name = 'codex-autoapprover-windows-x86_64.exe'
           $sbomName = 'codex-autoapprover-windows-x86_64.spdx.json'
-          $names = @($name, $sbomName)
+          $names = @($name, $sbomName, 'build-record.json')
           $lines = @(Get-Content -LiteralPath (Join-Path $directory 'SHA256SUMS'))
           if ($lines.Count -ne $names.Count) { throw 'Invalid candidate checksum record count' }
           for ($index = 0; $index -lt $names.Count; $index++) {
@@ -181,6 +190,8 @@ jobs:
           $binary = Join-Path $directory $name
           python scripts/binary_sbom.py --binary $binary --output (Join-Path $directory $sbomName)
           if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows binary SBOM differs from source or executable' }
+          python scripts/build_record.py --binary $binary --verify (Join-Path $directory 'build-record.json') --require-clean
+          if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows build record differs from source, executable or toolchain' }
           python scripts/release_gate.py --require-ready --binary $binary
           if ($LASTEXITCODE -ne 0) { throw 'Downloaded Windows binary lacks native qualification' }
 
