@@ -55,6 +55,11 @@ made additional code, gate, test and documentation changes.
   private directories, digest-addressed releases, a lock and atomic symlink
   updates; rollback and uninstall journals permit recovery after interruption.
   It has no authenticated public artifact to install yet.
+- A deterministic Linux development archive includes the exact installer,
+  binary, manifest, licence, README and per-file digest metadata. Two local
+  builds compared byte-for-byte, and the extracted executable installed and
+  uninstalled from a disposable directory. Its checksum is unsigned and its
+  metadata explicitly says unqualified.
 
 ## Verification performed
 
@@ -70,6 +75,7 @@ made additional code, gate, test and documentation changes.
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
 | `verify-manifest --manifest compatibility/manifest.json` | Installed/source manifest comparison passes for the local binary |
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
+| `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | `git diff --check` | Passed |
 
 The first sandboxed test run could not create private Unix sockets. Running the
@@ -144,7 +150,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
 | 5. Default-branch detection/adaptation | Watcher retains exact official native asset IDs/sizes/digests; candidate runners stream and compare downloads; duplicate metadata and exhausted pagination fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
-| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded | Semantic release/changelog; final consumer binaries/installers; reproducible inputs; SBOM/license/dependency review; checksums/provenance/signing; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; exact-artifact installation and rollback |
+| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; SBOM/license/dependency review; authenticated checksums/provenance/signing; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
 
 **Completion is unproven and contradicted by the open items above.** The goal

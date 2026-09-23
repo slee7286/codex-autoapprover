@@ -24,6 +24,8 @@ jobs:
       - run: cargo build --locked
       - name: Exercise Linux artifact install lifecycle
         run: ./scripts/test-install-linux.sh target/debug/codex-autoapprover
+      - name: Rehearse deterministic Linux development archive
+        run: ./scripts/test-package-linux.sh target/debug/codex-autoapprover
       - run: cargo run --locked -- diagnose
       - run: git diff --check
 

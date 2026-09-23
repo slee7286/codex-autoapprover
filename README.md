@@ -36,6 +36,8 @@ Configuration is parsed as TOML, unrelated values and comments are retained, and
 
 There is **no authenticated public consumer artifact yet**. Local lifecycle tests use a development executable and a synthetic changed copy; they do not qualify a production release or exercise native Codex approval. Existing Cargo-installed executables are intentionally not adopted automatically.
 
+`scripts/package_linux.py` creates a deterministic, explicitly unqualified development archive with the executable, installer, manifest, licence, README and a per-file digest record. `scripts/test-package-linux.sh` compares two independently built archives and installs the exact extracted bytes into a disposable directory. The adjacent checksum is unsigned and must not be treated as release authentication.
+
 ## Commands
 
 ```text
@@ -71,6 +73,7 @@ cargo check --locked --target x86_64-pc-windows-msvc --all-targets
 python -m unittest discover -s scripts -p 'test_*.py'
 python scripts/release_gate.py
 ./scripts/test-install-linux.sh target/debug/codex-autoapprover
+./scripts/test-package-linux.sh target/debug/codex-autoapprover
 ```
 
 Native Windows CI also runs installer tests in Windows PowerShell 5.1 and PowerShell 7. Cross-compilation is not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.
