@@ -23,8 +23,10 @@ def candidate():
             "digest": "sha256:" + hashlib.sha256(PAYLOAD).hexdigest(),
             "url": f"https://github.com/openai/codex/releases/download/rust-v{VERSION}/{name}",
         })
-    return {"schema_version": 2, "codex_version": VERSION,
+    return {"schema_version": 3, "codex_version": VERSION,
             "upstream_tag": f"rust-v{VERSION}",
+            "upstream_tag_ref_sha": "a" * 40,
+            "upstream_source_sha": "b" * 40,
             "required_platforms": ["linux-x86_64", "windows-x86_64"],
             "status": "unverified", "assets": assets}
 
@@ -63,6 +65,8 @@ class VerifyCandidateAssetTests(unittest.TestCase):
             (candidate(), "Darwin", VERSION),
             (candidate(), "Linux", "0.157.0"),
             ({**candidate(), "status": "certified"}, "Linux", VERSION),
+            ({**candidate(), "schema_version": 2}, "Linux", VERSION),
+            ({**candidate(), "upstream_source_sha": "invalid"}, "Linux", VERSION),
             ({**candidate(), "assets": candidate()["assets"][:1]}, "Linux", VERSION),
         ]:
             with self.subTest(system=system, version=version, changed=changed):

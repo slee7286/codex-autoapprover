@@ -18,9 +18,12 @@ from npm_candidate import fetch_npm_records, strict_json_object
 
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 UPSTREAM = "https://api.github.com/repos/openai/codex/releases"
 LATEST = f"{UPSTREAM}/latest"
+GIT_API = "https://api.github.com/repos/openai/codex/git"
 LIMIT = 4 * 1024 * 1024
+GIT_LIMIT = 128 * 1024
 # Five asset-heavy releases fit the per-response cap observed in the live API.
 PAGE_SIZE = 5
 MAX_PAGES = 20
@@ -167,6 +170,61 @@ def fetch_tagged_release(version, open_url=None):
     return release
 
 
+def fetch_upstream_source(version, open_url=None):
+    """Bind a release tag ref and its peeled source commit through the Git API."""
+    version_key(version)
+    tag = f"rust-v{version}"
+    open_url = open_url or urllib.request.build_opener(NoApiRedirect()).open
+
+    def read(url):
+        request = urllib.request.Request(url, headers=api_headers())
+        with open_url(request, timeout=30) as response:
+            if response.geturl() != request.full_url:
+                raise ValueError("upstream Git API redirected unexpectedly")
+            body = response.read(GIT_LIMIT + 1)
+        if len(body) > GIT_LIMIT:
+            raise ValueError("upstream Git API response exceeded limit")
+        record = json.loads(body, object_pairs_hook=strict_json_object)
+        if not isinstance(record, dict):
+            raise ValueError("invalid upstream Git API record")
+        return record
+
+    ref = read(f"{GIT_API}/ref/tags/{tag}")
+    pointer = ref.get("object")
+    if ref.get("ref") != f"refs/tags/{tag}" or not isinstance(pointer, dict):
+        raise ValueError("upstream release tag reference is invalid")
+    kind = pointer.get("type")
+    oid = pointer.get("sha")
+    if kind not in {"commit", "tag"} or not isinstance(oid, str) or not GIT_SHA.fullmatch(oid):
+        raise ValueError("upstream release tag object is invalid")
+    expected_url = f"{GIT_API}/{'tags' if kind == 'tag' else 'commits'}/{oid}"
+    if pointer.get("url") != expected_url:
+        raise ValueError("upstream release tag object URL is invalid")
+    commit = oid
+    if kind == "tag":
+        annotation = read(f"{GIT_API}/tags/{oid}")
+        target = annotation.get("object")
+        if (annotation.get("sha") != oid or annotation.get("tag") != tag
+                or not isinstance(target, dict) or target.get("type") != "commit"
+                or not isinstance(target.get("sha"), str)
+                or not GIT_SHA.fullmatch(target["sha"])
+                or target.get("url") != f"{GIT_API}/commits/{target['sha']}"):
+            raise ValueError("upstream annotated release tag is invalid")
+        commit = target["sha"]
+    return {"upstream_tag_ref_sha": oid, "upstream_source_sha": commit}
+
+
+def bind_upstream_source(candidate, identity):
+    if (not isinstance(identity, dict) or set(identity) != {"upstream_tag_ref_sha", "upstream_source_sha"}
+            or any(not isinstance(value, str) or not GIT_SHA.fullmatch(value)
+                   for value in identity.values())):
+        raise ValueError("invalid upstream source identity")
+    bound = dict(candidate)
+    bound["schema_version"] = 3
+    bound.update(identity)
+    return bound
+
+
 def fetch_releases(open_url=None, stop_tag=None):
     """Audit a bounded window or stop at the previously recorded stable tag."""
     if stop_tag is not None:
@@ -201,7 +259,7 @@ def fetch_releases(open_url=None, stop_tag=None):
     raise ValueError("release API pagination limit reached; refusing a truncated candidate window")
 
 
-def verified_release_backlog(previous, candidate, recent):
+def verified_release_backlog(previous, candidate, recent, current_source):
     """Verify the baseline and return every newer stable candidate, oldest first."""
     old_version = previous["codex_version"]
     version_key(old_version)
@@ -215,20 +273,12 @@ def verified_release_backlog(previous, candidate, recent):
     if len(old) != 1 or (prior_id is not None and old[0].get("id") != prior_id):
         raise ValueError("previous release identity changed or became ambiguous")
     recorded_old = candidate_from_releases(old)
-    if type(previous.get("schema_version")) is not int:
-        raise ValueError("unsupported previous candidate schema")
-    if previous["schema_version"] == 2:
-        if not exact_json_equal(
-                {key: value for key, value in previous.items() if key != "npm_packages"}, recorded_old):
-            raise ValueError("previous release asset or candidate metadata changed")
-    elif previous["schema_version"] == 1:
-        legacy = {key: value for key, value in recorded_old.items() if key != "assets"}
-        legacy["schema_version"] = 1
-        legacy["upstream_release_id"] = previous.get("upstream_release_id")
-        if not exact_json_equal(previous, legacy):
-            raise ValueError("previous legacy candidate metadata changed")
-    else:
-        raise ValueError("unsupported previous candidate schema")
+    if type(previous.get("schema_version")) is not int or previous["schema_version"] != 3:
+        raise ValueError("previous candidate lacks a pinned upstream source; manual recovery required")
+    if not exact_json_equal(
+            {key: value for key, value in previous.items() if key != "npm_packages"},
+            bind_upstream_source(recorded_old, current_source)):
+        raise ValueError("previous release asset, source or candidate metadata changed")
     # The /latest pointer is based on commit creation time, so it need not be
     # the greatest numeric version. Require its exact identity in the listing.
     stable = {}
@@ -302,7 +352,7 @@ def verify_open_candidate_pr(candidate, pr_sha):
     tagged = candidate_from_releases([fetch_tagged_release(version)])
     if not exact_json_equal(tagged, candidate):
         raise ValueError("open candidate PR release listing and tag disagree")
-    expected = dict(candidate)
+    expected = bind_upstream_source(candidate, fetch_upstream_source(version))
     expected["npm_packages"] = fetch_npm_records(version)
     branch = f"refs/heads/automation/codex-{version}"
     subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", branch], check=True)
@@ -440,6 +490,7 @@ def main():
 
     candidate = None
     prior_npm = None
+    prior_source = None
     if args.fixture:
         candidate = candidate_from_releases(
             json.loads(args.fixture.read_text(), object_pairs_hook=strict_json_object))
@@ -450,11 +501,11 @@ def main():
                               object_pairs_hook=strict_json_object)
         latest = candidate_from_releases([fetch_latest_release()])
         recent = fetch_releases(stop_tag=previous.get("upstream_tag"))
-        backlog = verified_release_backlog(previous, latest, recent)
-        if previous.get("schema_version") == 2:
-            prior_npm = fetch_npm_records(previous["codex_version"])
-            if not exact_json_equal(previous.get("npm_packages"), prior_npm):
-                raise ValueError("previous npm package identity changed; manual investigation required")
+        prior_source = fetch_upstream_source(previous["codex_version"])
+        backlog = verified_release_backlog(previous, latest, recent, prior_source)
+        prior_npm = fetch_npm_records(previous["codex_version"])
+        if not exact_json_equal(previous.get("npm_packages"), prior_npm):
+            raise ValueError("previous npm package identity changed; manual investigation required")
         if args.create_pr:
             for entry in backlog:
                 exists = candidate_pr_exists(entry["codex_version"], expected=entry)
@@ -466,6 +517,12 @@ def main():
                  and item.get("tag_name") == previous["upstream_tag"]])
     else:
         candidate = candidate_from_releases([fetch_latest_release()])
+
+    if candidate is not None and not args.fixture:
+        source = (prior_source if prior_source is not None
+                  and candidate["codex_version"] == previous["codex_version"]
+                  else fetch_upstream_source(candidate["codex_version"]))
+        candidate = bind_upstream_source(candidate, source)
 
     if candidate is None:
         # Every newer version already has a candidate PR or a recorded decision.

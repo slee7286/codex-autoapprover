@@ -28,6 +28,8 @@ class RepairBoundaryTests(unittest.TestCase):
         git(self.repo, "init", "-q")
         (self.repo / "src").mkdir()
         (self.repo / "tests").mkdir()
+        (self.repo / "compatibility").mkdir()
+        (self.repo / "compatibility/candidate.json").write_text(json.dumps(asset_candidate()))
         (self.repo / "src/main.rs").write_text("fn main() {}\n")
         git(self.repo, "add", ".")
         subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
@@ -75,7 +77,7 @@ class RepairBoundaryTests(unittest.TestCase):
         destination = self.root / "apply"
         subprocess.run(["git", "clone", "-q", str(self.repo), str(destination)], check=True)
         report = {"schema_version": 1, "codex_version": "0.156.0", "base_sha": self.base,
-                  "upstream_source_sha": "a" * 40,
+                  "upstream_source_sha": "b" * 40,
                   "changed_paths": paths, "patch_sha256": hashlib.sha256(patch).hexdigest(),
                   "checks": ["format", "rust-tests", "clippy"],
                   "status": "proposed-unverified", "certified": False}
@@ -87,10 +89,12 @@ class RepairBoundaryTests(unittest.TestCase):
         subprocess.run(["git", "clone", "-q", str(self.repo), str(another)], check=True)
         with self.assertRaisesRegex(ValueError, "integrity failed"):
             apply_repair.apply(another, patch_path, {**report, "patch_sha256": "f" * 64}, "0.156.0")
+        with self.assertRaisesRegex(ValueError, "source differs from the pinned candidate"):
+            apply_repair.apply(another, patch_path, {**report, "upstream_source_sha": "f" * 40}, "0.156.0")
 
     def test_trusted_apply_rejects_forbidden_patch_path(self):
         destination = self.repo / "compatibility/manifest.json"
-        destination.parent.mkdir()
+        destination.parent.mkdir(exist_ok=True)
         destination.write_text("{}\n")
         git(self.repo, "add", "-N", "--", "compatibility/manifest.json")
         patch_path = self.root / "forbidden.patch"
@@ -170,7 +174,16 @@ class RepairWorkflowFixtureTests(unittest.TestCase):
             git(upstream, "add", ".")
             subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
                             "commit", "-qm", "upstream"], cwd=upstream, check=True)
-            git(upstream, "tag", "rust-v0.156.0")
+            git(upstream, "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                "tag", "-a", "rust-v0.156.0", "-m", "synthetic annotated release")
+            pinned = asset_candidate()
+            pinned["upstream_tag_ref_sha"] = git(
+                upstream, "rev-parse", "refs/tags/rust-v0.156.0").decode().strip()
+            pinned["upstream_source_sha"] = git(upstream, "rev-parse", "HEAD").decode().strip()
+            (candidate_repo / "compatibility/candidate.json").write_text(json.dumps(pinned))
+            git(candidate_repo, "add", "compatibility/candidate.json")
+            subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                            "commit", "-qm", "pin synthetic upstream source"], cwd=candidate_repo, check=True)
             fake_bin = root / "bin"
             fake_bin.mkdir()
             worker = fake_bin / "codex"
@@ -187,6 +200,17 @@ else:
             argv = ["repair_candidate.py", "--repo", str(candidate_repo), "--candidate",
                     str(candidate_repo / "compatibility/candidate.json"),
                     "--upstream-source", str(upstream), "--output", str(output)]
+            for field, message in [("upstream_tag_ref_sha", "tag object differs"),
+                                   ("upstream_source_sha", "commit differs")]:
+                changed = {**pinned, field: "f" * 40}
+                (candidate_repo / "compatibility/candidate.json").write_text(json.dumps(changed))
+                with patch.object(sys, "argv", argv), patch.dict(os.environ, {
+                        "CODEX_REPAIR_API_KEY": "fixture-key"}), \
+                     patch.object(repair, "run_agent") as agent:
+                    with self.assertRaisesRegex(ValueError, message):
+                        repair.main()
+                    agent.assert_not_called()
+            (candidate_repo / "compatibility/candidate.json").write_text(json.dumps(pinned))
             with patch.object(sys, "argv", argv), patch.dict(os.environ, {
                     "CODEX_REPAIR_API_KEY": "fixture-key",
                     "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]}):

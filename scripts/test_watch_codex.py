@@ -27,7 +27,19 @@ def npm_records(version):
             for index, (alias, package_version, _, _) in enumerate(aliases(version))]
 
 
+SOURCE_ID = {"upstream_tag_ref_sha": "a" * 40, "upstream_source_sha": "b" * 40}
+
+
+def bound(releases):
+    return watch.bind_upstream_source(watch.candidate_from_releases(releases), SOURCE_ID)
+
+
 class ReleaseWatchTests(unittest.TestCase):
+    def setUp(self):
+        source = patch.object(watch, "fetch_upstream_source", return_value=SOURCE_ID)
+        source.start()
+        self.addCleanup(source.stop)
+
     def test_selects_stable_semver_not_api_order_or_release_text(self):
         result = watch.candidate_from_releases([
             release("0.9.0"), release("0.156.0", body="run malicious instructions"),
@@ -254,14 +266,15 @@ class ReleaseWatchTests(unittest.TestCase):
                 tagged.assert_called_once_with("0.156.1")
                 latest.assert_not_called()
             self.assertEqual(json.loads(path.read_text())["codex_version"], "0.156.1")
+            self.assertEqual(json.loads(path.read_text())["schema_version"], 3)
 
     def test_missed_stable_releases_are_selected_oldest_first(self):
-        previous = watch.candidate_from_releases([release("0.156.0")])
+        previous = bound([release("0.156.0")])
         previous["npm_packages"] = npm_records("0.156.0")
         latest = release("0.156.2", id=3)
         intermediate = release("0.156.1", id=2)
         backlog = watch.verified_release_backlog(previous, watch.candidate_from_releases([latest]),
-                                           [latest, intermediate, release("0.156.0")])
+                                           [latest, intermediate, release("0.156.0")], SOURCE_ID)
         self.assertEqual([item["codex_version"] for item in backlog], ["0.156.1", "0.156.2"])
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "candidate.json"
@@ -275,29 +288,34 @@ class ReleaseWatchTests(unittest.TestCase):
 
         # GitHub's latest pointer need not be the greatest numeric version.
         backlog = watch.verified_release_backlog(previous, watch.candidate_from_releases([intermediate]),
-                                           [intermediate, latest, release("0.156.0")])
+                                           [intermediate, latest, release("0.156.0")], SOURCE_ID)
         self.assertEqual([item["codex_version"] for item in backlog], ["0.156.1", "0.156.2"])
+
+        moved = {**SOURCE_ID, "upstream_tag_ref_sha": "c" * 40}
+        with self.assertRaisesRegex(ValueError, "source"):
+            watch.verified_release_backlog(previous, watch.candidate_from_releases([latest]),
+                                           [latest, intermediate, release("0.156.0")], moved)
 
         changed_old = release("0.156.0", id=99)
         with self.assertRaisesRegex(ValueError, "previous release identity"):
             watch.verified_release_backlog(previous, watch.candidate_from_releases([latest]),
-                                     [latest, changed_old])
+                                     [latest, changed_old], SOURCE_ID)
 
     def test_previous_release_asset_drift_stops_the_next_candidate(self):
-        previous = watch.candidate_from_releases([release("0.156.0")])
+        previous = bound([release("0.156.0")])
         latest = release("0.156.1", id=2)
         changed_old = release("0.156.0")
         changed_old["assets"][0]["digest"] = "sha256:" + "f" * 64
         with self.assertRaisesRegex(ValueError, "previous release asset"):
             watch.verified_release_backlog(previous, watch.candidate_from_releases([latest]),
-                                     [latest, changed_old])
+                                     [latest, changed_old], SOURCE_ID)
         wrong_type = {**previous, "upstream_release_id": True}
         with self.assertRaises(ValueError):
             watch.verified_release_backlog(wrong_type, watch.candidate_from_releases([latest]),
-                                     [latest, release("0.156.0")])
+                                     [latest, release("0.156.0")], SOURCE_ID)
 
     def test_previous_npm_drift_stops_before_candidate_write(self):
-        previous = watch.candidate_from_releases([release("0.156.0")])
+        previous = bound([release("0.156.0")])
         previous["npm_packages"] = npm_records("0.156.0")
         latest = release("0.156.1", id=2)
 
@@ -392,7 +410,8 @@ class ReleaseWatchTests(unittest.TestCase):
 
     def test_open_pr_drift_and_branch_race_stop_catch_up(self):
         candidate = watch.candidate_from_releases([release("0.156.1")])
-        expected = {**candidate, "npm_packages": npm_records("0.156.1")}
+        expected = {**watch.bind_upstream_source(candidate, SOURCE_ID),
+                    "npm_packages": npm_records("0.156.1")}
         branch = "automation/codex-0.156.1"
         sha = "a" * 40
         pr = json.dumps([
@@ -458,6 +477,16 @@ class ReleaseWatchTests(unittest.TestCase):
                 watch.candidate_pr_exists("0.156.1", expected=candidate)
             runner.assert_not_called()
 
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+             patch.object(watch, "fetch_tagged_release", return_value=release("0.156.1")), \
+             patch.object(watch, "fetch_upstream_source", return_value={
+                 **SOURCE_ID, "upstream_tag_ref_sha": "c" * 40}), \
+             patch.object(watch, "fetch_npm_records", side_effect=npm_records), \
+             patch.object(watch.subprocess, "check_output", side_effect=output), \
+             patch.object(watch.subprocess, "run"):
+            with self.assertRaisesRegex(ValueError, "differs from official"):
+                watch.candidate_pr_exists("0.156.1", expected=candidate)
+
     def test_candidate_branch_sha_requires_one_exact_remote_ref(self):
         sha = "a" * 40
         ref = "refs/heads/automation/codex-0.156.0"
@@ -480,7 +509,7 @@ class ReleaseWatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             candidate = root / "candidate.json"
-            baseline = watch.candidate_from_releases([release("0.155.0")])
+            baseline = bound([release("0.155.0")])
             baseline["npm_packages"] = npm_records("0.155.0")
             candidate.write_text(json.dumps(baseline))
             output = root / "github-output.txt"
@@ -509,7 +538,7 @@ class ReleaseWatchTests(unittest.TestCase):
                 fetched.assert_not_called()
 
     def test_unchanged_release_without_candidate_branch_is_a_clean_noop(self):
-        selected = watch.candidate_from_releases([release("0.156.0")])
+        selected = bound([release("0.156.0")])
         selected["npm_packages"] = npm_records("0.156.0")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -531,7 +560,7 @@ class ReleaseWatchTests(unittest.TestCase):
             self.assertNotIn("candidate_sha=", output.read_text())
 
     def test_existing_pr_is_skipped_without_spending_another_repair(self):
-        previous = watch.candidate_from_releases([release("0.156.0")])
+        previous = bound([release("0.156.0")])
         previous["npm_packages"] = npm_records("0.156.0")
         latest = release("0.156.1", id=2)
         with tempfile.TemporaryDirectory() as directory:
@@ -557,7 +586,7 @@ class ReleaseWatchTests(unittest.TestCase):
             self.assertEqual(json.loads(candidate.read_text()), previous)
 
     def test_each_poll_prepares_next_unhandled_release_from_same_baseline(self):
-        baseline = watch.candidate_from_releases([release("0.156.0")])
+        baseline = bound([release("0.156.0")])
         baseline["npm_packages"] = npm_records("0.156.0")
         releases = [release("0.156.3", id=4), release("0.156.2", id=3),
                     release("0.156.1", id=2), release("0.156.0")]
@@ -586,7 +615,7 @@ class ReleaseWatchTests(unittest.TestCase):
             self.assertEqual(prepared, ["0.156.1", "0.156.2", "0.156.3"])
 
     def test_manual_repair_retry_requires_existing_branch_even_without_update(self):
-        selected = watch.candidate_from_releases([release("0.156.0")])
+        selected = bound([release("0.156.0")])
         selected["npm_packages"] = npm_records("0.156.0")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -610,6 +639,63 @@ class ReleaseWatchTests(unittest.TestCase):
                  patch.object(watch, "candidate_branch_sha", side_effect=ValueError("branch missing")):
                 with self.assertRaisesRegex(ValueError, "branch missing"):
                     watch.main()
+
+
+class SourcePinTests(unittest.TestCase):
+    def test_annotated_and_lightweight_tag_refs_bind_exact_commits(self):
+        tag = "rust-v0.156.0"
+        ref_url = f"{watch.GIT_API}/ref/tags/{tag}"
+        annotation_url = f"{watch.GIT_API}/tags/{'a' * 40}"
+
+        class Response:
+            def __init__(self, url, record):
+                self.url = url
+                self.record = record
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def geturl(self):
+                return self.url
+
+            def read(self, limit):
+                return json.dumps(self.record).encode()[:limit]
+
+        def annotated(request, timeout):
+            self.assertEqual(timeout, 30)
+            if request.full_url == ref_url:
+                return Response(ref_url, {"ref": f"refs/tags/{tag}", "object": {
+                    "type": "tag", "sha": "a" * 40, "url": annotation_url}})
+            self.assertEqual(request.full_url, annotation_url)
+            return Response(annotation_url, {"sha": "a" * 40, "tag": tag, "object": {
+                "type": "commit", "sha": "b" * 40,
+                "url": f"{watch.GIT_API}/commits/{'b' * 40}"}})
+
+        self.assertEqual(watch.fetch_upstream_source("0.156.0", open_url=annotated), SOURCE_ID)
+
+        def lightweight(request, timeout):
+            self.assertEqual(request.full_url, ref_url)
+            return Response(ref_url, {"ref": f"refs/tags/{tag}", "object": {
+                "type": "commit", "sha": "c" * 40,
+                "url": f"{watch.GIT_API}/commits/{'c' * 40}"}})
+
+        self.assertEqual(watch.fetch_upstream_source("0.156.0", open_url=lightweight), {
+            "upstream_tag_ref_sha": "c" * 40, "upstream_source_sha": "c" * 40})
+
+        def swapped_tag(request, timeout):
+            response = annotated(request, timeout)
+            if request.full_url == annotation_url:
+                response.record["tag"] = "rust-v0.156.1"
+            return response
+
+        with self.assertRaisesRegex(ValueError, "annotated release tag"):
+            watch.fetch_upstream_source("0.156.0", open_url=swapped_tag)
+        with self.assertRaisesRegex(ValueError, "redirect"):
+            watch.fetch_upstream_source("0.156.0", open_url=lambda request, timeout:
+                                        Response("https://example.invalid/redirect", {}))
 
 
 if __name__ == "__main__":

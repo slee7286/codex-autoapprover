@@ -10,7 +10,7 @@ import signal
 import subprocess
 import tempfile
 
-from verify_candidate_asset import selected_asset
+from verify_candidate_asset import load_candidate, selected_asset
 from watch_codex import version_key
 
 
@@ -49,8 +49,8 @@ def clean_base(repo):
 def validate_candidate(candidate):
     version = candidate.get("codex_version") if isinstance(candidate, dict) else None
     version_key(version)
-    if candidate.get("status") != "unverified" or candidate.get("schema_version") != 2:
-        raise ValueError("repair target must be an unverified schema-2 candidate")
+    if candidate.get("status") != "unverified" or candidate.get("schema_version") != 3:
+        raise ValueError("repair target must be an unverified pinned schema-3 candidate")
     selected_asset(candidate, "Linux", version)
     selected_asset(candidate, "Windows", version)
     return version
@@ -173,15 +173,17 @@ def main():
     output = args.output.resolve()
     if output.is_relative_to(repo):
         parser.error("repair output must be outside the candidate worktree")
-    candidate = json.loads(args.candidate.read_text(encoding="utf-8"))
+    candidate = load_candidate(args.candidate)
     version = validate_candidate(candidate)
     upstream_source = args.upstream_source.resolve()
     if upstream_source.is_relative_to(repo):
         parser.error("untrusted upstream source must be outside the candidate worktree")
-    source_tag = git(upstream_source, "describe", "--tags", "--exact-match").decode("utf-8").strip()
-    if source_tag != f"rust-v{version}":
-        raise ValueError("upstream source checkout does not match the candidate tag")
+    source_tag = git(upstream_source, "rev-parse", f"refs/tags/rust-v{version}").decode("ascii").strip()
+    if source_tag != candidate["upstream_tag_ref_sha"]:
+        raise ValueError("upstream source tag object differs from candidate pin")
     upstream_source_sha = git(upstream_source, "rev-parse", "HEAD").decode("ascii").strip()
+    if upstream_source_sha != candidate["upstream_source_sha"]:
+        raise ValueError("upstream source commit differs from candidate pin")
     base = clean_base(repo)
     run_agent(repo, version, repair_key, upstream_source=upstream_source)
     paths, patch = collect_patch(repo, base)

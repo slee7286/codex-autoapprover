@@ -8,7 +8,8 @@ import re
 import subprocess
 
 from repair_candidate import (MAX_CHANGED_FILES, MAX_PATCH_BYTES, allowed_repair_path,
-                              clean_base, collect_patch)
+                              clean_base, collect_patch, validate_candidate)
+from verify_candidate_asset import load_candidate
 from watch_codex import version_key
 
 
@@ -51,6 +52,9 @@ def apply(repo, patch_path, report, version):
     base = clean_base(repo)
     if base != report["base_sha"]:
         raise ValueError("candidate branch changed after the repair attempt")
+    candidate = load_candidate(repo / "compatibility" / "candidate.json")
+    if validate_candidate(candidate) != version or candidate["upstream_source_sha"] != report["upstream_source_sha"]:
+        raise ValueError("repair report source differs from the pinned candidate")
     patch = patch_path.read_bytes()
     if not patch or len(patch) > MAX_PATCH_BYTES or hashlib.sha256(patch).hexdigest() != report["patch_sha256"]:
         raise ValueError("repair patch integrity failed")

@@ -11,7 +11,7 @@ import stat
 import urllib.parse
 import urllib.request
 
-from watch_codex import REQUIRED_ASSETS, version_key
+from watch_codex import GIT_SHA, REQUIRED_ASSETS, version_key
 
 
 ASSET_BY_OS = {"Linux": REQUIRED_ASSETS[0], "Windows": REQUIRED_ASSETS[1]}
@@ -75,8 +75,12 @@ def selected_asset(candidate, system, version):
         raise ValueError("candidate asset verification requires native Linux or Windows")
     tag = f"rust-v{version}"
     if (not isinstance(candidate, dict) or type(candidate.get("schema_version")) is not int
-            or candidate["schema_version"] != 2 or candidate.get("codex_version") != version
+            or candidate["schema_version"] != 3 or candidate.get("codex_version") != version
             or candidate.get("upstream_tag") != tag
+            or not isinstance(candidate.get("upstream_tag_ref_sha"), str)
+            or GIT_SHA.fullmatch(candidate["upstream_tag_ref_sha"]) is None
+            or not isinstance(candidate.get("upstream_source_sha"), str)
+            or GIT_SHA.fullmatch(candidate["upstream_source_sha"]) is None
             or candidate.get("required_platforms") != ["linux-x86_64", "windows-x86_64"]
             or candidate.get("status") != "unverified"):
         raise ValueError("candidate metadata does not match the selected version")
