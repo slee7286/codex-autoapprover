@@ -6,9 +6,9 @@ This document describes the authoritative implementation direction. The former P
 
 The launcher should preserve ordinary Codex by executing the user's existing official CLI as a normal child process. Codex remains responsible for its TUI, authentication, configuration, sessions, model selection, sandbox, plugins, and exit behavior. Automatic approval is a narrow, explicit `PermissionRequest` hook response, not terminal input automation.
 
-The authoritative MVP path is hook-based. The old PTY/screen-scraping experiment is not a fallback or planned primary implementation. `run` uses a typed review registry plus a platform adapter baseline and a non-live child-local capability probe. Automatic attempts are the default for newer stable native Linux/Windows local-CLI versions at or above that baseline; `--compatibility strict` restores exact reviewed-tuple-only arming. `verify-local-hook` remains an experimental, one-session-only mechanism whose resolved target supplies its exact command and version binding; its evidence is recorded in the registry only after manual review and the mechanism never promotes entries automatically.
+The authoritative path uses structured hooks. General arming requires an exact reviewed registry entry plus a non-live capability check and a version recheck. Strict is the only production policy; legacy automatic options are strict aliases. Adapter baselines are used only by the exact-command experimental verifier, which never promotes entries.
 
-The current repository is pre-alpha. The verified production tuple is Linux, local CLI launcher, Codex CLI 0.151.0, `PermissionRequest`, `permission-request-v1`, observed `Bash`, and one-request structured allow. Linux 0.153.0 was inspected but has no independently identifiable reviewed live evidence in this checkout and remains experimental/unverified. Linux 0.153.4 and native Windows 0.154.0 are requested experimental/unverified targets. No live hook configuration is installed. The adapter baseline is a policy for attempting newer stable releases; it is not the verified-version registry.
+The repository is pre-alpha. Linux/local CLI/Codex 0.151.0 has historical positive evidence; no current public release is qualified. Windows 0.156.0 remains unverified. The production plan defines the additional machine/binary identity, native evidence and packaging requirements. No persistent approval hook is installed.
 
 ## Components
 
@@ -25,7 +25,7 @@ The current repository is pre-alpha. The verified production tuple is Linux, loc
 - **Compatibility detector:** identifies the installed Codex version, classifies eligibility, runs a bounded non-live configuration/feature probe, and keeps capability separate from review status.
 - **Audit recorder:** emits redacted metadata/hashes without complete commands, tool input, credentials, or tokens.
 - **Verification audit recorder:** records whether a single allow response was produced using only short hashes and temporary state; it does not claim that a hook event proves command success.
-- **Configuration installer (later milestone):** may install or remove a reviewed hook while preserving unrelated Codex configuration; it is not implemented here.
+- **Configuration repair:** explicit Windows-only TOML edits with backup and atomic replacement; the installer preserves settings by default and does not install a persistent hook.
 - **Shutdown and exit propagation:** waits for the child, handles ordinary interruption, and maps the child's exit status to the launcher.
 
 The broker uses Linux `SO_PEERCRED` through `rustix`. It records the child identity as `(PID, /proc/<pid>/stat start time, effective UID)`. A connection is eligible only when its kernel peer UID matches the launcher's effective UID and two stable, bounded `/proc` ancestry walks from the kernel peer PID contain that exact tuple. The hook never supplies or authenticates its own PID.
@@ -156,7 +156,7 @@ The listed modules are implementation seams, not evidence that every future prop
 
 Linux remains the first verified target because the evidence is Ubuntu-based and ordinary inherited terminal I/O is straightforward to validate there. Native Windows has an implemented adapter and response-delivery regression coverage, but its requested Codex 0.154.0 tuple remains experimental/unverified. The verified Linux path covers process resolution, `-c` hook registration, child environment behavior, request parsing, response handling, interruption, exit status, argument forwarding, and temporary test configuration without writing the user's live Codex home.
 
-Future registry entries must first demonstrate one harmless, authenticated `PermissionRequest` invocation using a temporary or otherwise isolated configuration. Until independently reviewed, each new tuple remains experimental/unverified: automatic mode may attempt it only after the eligibility and capability gates, while strict mode leaves it unarmed.
+Future registry entries require fresh native positive and negative evidence and independent review. Every unreviewed tuple remains unarmed in normal run. The experimental verifier is limited to its exact command and tool.
 
 ## Unsupported platforms and future IDE integration
 
@@ -200,3 +200,8 @@ A future direct Codex App Server backend may provide an even more structured app
 - What is the exact `-c` merge behavior when user, project, plugin, managed, and child-only hook sources coexist?
 - How should `print-hook-config` and a future installer preserve unrelated hooks and trust-review state?
 - What platform-specific process and signal behavior must be documented before macOS or Windows support?
+
+
+## Update and release pipeline
+
+The [production plan](production-plan.md) governs the scheduled release watcher, candidate PRs, non-live probes, repair-worker requirements and evidence gate. Historical compatibility and current artifact qualification are separate. No public release is authorized by a successful help probe or cross-compile.

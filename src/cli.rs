@@ -19,6 +19,15 @@ pub struct Cli {
 pub enum Command {
     /// Run the existing official Codex executable.
     Run(RunArgs),
+    /// Print historical reviewed tuples as JSON (not a production certification).
+    SupportMatrix,
+    /// Explicitly change Windows sandbox configuration with a backup.
+    ConfigureWindowsSandbox {
+        #[arg(long)]
+        codex_home: std::path::PathBuf,
+        #[arg(long, value_parser = ["elevated", "unelevated"])]
+        mode: String,
+    },
     /// Handle one Codex PermissionRequest hook invocation on stdin.
     Hook,
     /// Print non-sensitive local installation and compatibility facts.
@@ -32,7 +41,7 @@ pub enum Command {
 #[derive(Debug, Args)]
 #[command(trailing_var_arg = true)]
 pub struct RunArgs {
-    /// Select automatic compatibility attempts (the default) or exact reviewed tuples only.
+    /// Only reviewed exact tuples may arm. The legacy automatic value is an alias for strict.
     #[arg(long, value_enum)]
     pub compatibility: Option<CompatibilityMode>,
     /// Arguments after `--` are forwarded to Codex in their original order.
@@ -42,7 +51,7 @@ pub struct RunArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum CompatibilityMode {
-    /// Try stable versions at or above the inspected platform adapter baseline.
+    /// Deprecated alias for strict; never enables an unverified release.
     Automatic,
     /// Arm automatic approval only for reviewed exact compatibility entries.
     Strict,

@@ -11,7 +11,7 @@ pub const WINDOWS_ADAPTER_BASELINE: &str = "0.152.1";
 pub const LINUX_REQUESTED_EXPERIMENTAL_TARGET: &str = "0.153.4";
 pub const WINDOWS_REQUESTED_EXPERIMENTAL_TARGET: &str = "0.154.0";
 pub const SUPPORTED_HOOK_PROTOCOL: &str = "permission-request-v1";
-pub const AUTOAPPROVER_RELEASE: &str = "0.1.0";
+pub const AUTOAPPROVER_RELEASE: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(windows)]
 pub(crate) const fn verification_probe_command() -> &'static str {
@@ -325,7 +325,7 @@ impl RuntimeSchemaStatus {
             Self::UnsupportedPlatform => "unsupported platform or hosted runtime",
             Self::UnsupportedSurface => "unsupported Codex surface",
             Self::UnsupportedProtocol => "unsupported hook protocol adapter",
-            Self::UnsupportedVersion => "version is outside the runtime adapter baseline",
+            Self::UnsupportedVersion => "version is not supported in this runtime context",
             Self::UnsupportedTool => "tool schema is not the reviewed Bash shape",
         }
     }
@@ -386,7 +386,12 @@ fn known_incompatible(request: CompatibilityRequest<'_>) -> Option<&'static str>
         .map(|exclusion| exclusion.reason)
 }
 
-pub fn version_eligibility(request: CompatibilityRequest<'_>, strict: bool) -> VersionEligibility {
+// Production policy is exact-match only, including legacy callers passing false.
+pub fn version_eligibility(request: CompatibilityRequest<'_>, _strict: bool) -> VersionEligibility {
+    eligibility_for(request, true)
+}
+
+fn eligibility_for(request: CompatibilityRequest<'_>, strict: bool) -> VersionEligibility {
     if request.surface != Surface::LocalCliLauncher {
         return VersionEligibility::Unarmed(EligibilityReason::UnsupportedSurface);
     }
@@ -424,6 +429,43 @@ pub fn runtime_request_schema(
     hook_protocol: &str,
     tool_name: &str,
 ) -> RuntimeSchemaStatus {
+    request_schema(
+        version,
+        operating_system,
+        surface,
+        hook_protocol,
+        tool_name,
+        false,
+    )
+}
+
+// Only the isolated verifier may use the adapter baseline. Its broker must also
+// enforce the exact fixed probe command and tool; this never promotes a release.
+pub fn verification_request_schema(
+    version: &str,
+    operating_system: OperatingSystem,
+    surface: Surface,
+    hook_protocol: &str,
+    tool_name: &str,
+) -> RuntimeSchemaStatus {
+    request_schema(
+        version,
+        operating_system,
+        surface,
+        hook_protocol,
+        tool_name,
+        true,
+    )
+}
+
+fn request_schema(
+    version: &str,
+    operating_system: OperatingSystem,
+    surface: Surface,
+    hook_protocol: &str,
+    tool_name: &str,
+    verification: bool,
+) -> RuntimeSchemaStatus {
     if adapter_baseline(operating_system).is_none() {
         return RuntimeSchemaStatus::UnsupportedPlatform;
     }
@@ -446,8 +488,9 @@ pub fn runtime_request_schema(
         return RuntimeSchemaStatus::UnsupportedVersion;
     }
     let version_supported = verified_entry(request).is_some()
-        || adapter_baseline(operating_system)
-            .is_some_and(|baseline| version_at_least(version, baseline));
+        || (verification
+            && adapter_baseline(operating_system)
+                .is_some_and(|baseline| version_at_least(version, baseline)));
     if version_supported {
         RuntimeSchemaStatus::Supported
     } else {
@@ -534,7 +577,7 @@ pub fn resolved_verification_target(version: &str) -> Option<VerificationTarget>
         surface: Surface::LocalCliLauncher,
         hook_protocol: SUPPORTED_HOOK_PROTOCOL,
     };
-    if !version_eligibility(request, false).is_eligible() {
+    if !eligibility_for(request, false).is_eligible() {
         return None;
     }
     match operating_system {
@@ -576,6 +619,27 @@ pub fn is_wsl_runtime() -> bool {
     }
 }
 
+/// Used by the release gate to compare declared support with the executable.
+pub fn print_support_matrix() {
+    let entries: Vec<_> = COMPATIBILITY_REGISTRY
+        .iter()
+        .filter(|entry| entry.verification_status == VerificationStatus::Verified)
+        .map(|entry| {
+            serde_json::json!({
+                "codex_version": entry.codex_version,
+                "os": entry.operating_system.as_str().to_lowercase(),
+                "surface": "local-cli",
+                "protocol": entry.hook_protocol,
+                "tool": "Bash",
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({"schema_version": 1, "autoapprover_version": AUTOAPPROVER_RELEASE, "entries": entries})
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,9 +670,7 @@ mod tests {
         ));
         assert_eq!(
             version_eligibility(request("0.153.0", OperatingSystem::Linux), false),
-            VersionEligibility::Experimental {
-                baseline: LINUX_ADAPTER_BASELINE
-            }
+            VersionEligibility::Unarmed(EligibilityReason::StrictRequiresVerifiedTuple)
         );
         assert_eq!(
             COMPATIBILITY_REGISTRY
@@ -629,23 +691,29 @@ mod tests {
     }
 
     #[test]
-    fn automatic_policy_attempts_newer_stable_versions_but_strict_does_not() {
-        assert!(matches!(
-            version_eligibility(request("0.153.4", OperatingSystem::Linux), false),
-            VersionEligibility::Experimental { .. }
-        ));
-        assert!(matches!(
-            version_eligibility(request("0.999.0", OperatingSystem::Linux), false),
-            VersionEligibility::Experimental { .. }
-        ));
-        assert!(matches!(
-            version_eligibility(request("0.154.0", OperatingSystem::Windows), false),
-            VersionEligibility::Experimental { .. }
-        ));
-        assert!(matches!(
-            version_eligibility(request("0.153.4", OperatingSystem::Linux), true),
-            VersionEligibility::Unarmed(EligibilityReason::StrictRequiresVerifiedTuple)
-        ));
+    fn production_never_admits_newer_versions_even_with_legacy_automatic_flag() {
+        for os in [OperatingSystem::Linux, OperatingSystem::Windows] {
+            for version in [
+                "0.153.0", "0.153.4", "0.154.0", "0.156.0", "0.999.0", "1.0.0",
+            ] {
+                for strict in [false, true] {
+                    assert!(matches!(
+                        version_eligibility(request(version, os), strict),
+                        VersionEligibility::Unarmed(_)
+                    ));
+                    assert_eq!(
+                        runtime_request_schema(
+                            version,
+                            os,
+                            Surface::LocalCliLauncher,
+                            SUPPORTED_HOOK_PROTOCOL,
+                            "Bash"
+                        ),
+                        RuntimeSchemaStatus::UnsupportedVersion
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -663,10 +731,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_schema_is_separate_from_version_review_status() {
+    fn verification_schema_is_separate_from_production_eligibility() {
         if cfg!(unix) {
             assert_eq!(
-                runtime_request_schema(
+                verification_request_schema(
                     "0.153.4",
                     OperatingSystem::Linux,
                     Surface::LocalCliLauncher,
@@ -676,7 +744,7 @@ mod tests {
                 RuntimeSchemaStatus::Supported
             );
             assert_eq!(
-                runtime_request_schema(
+                verification_request_schema(
                     "0.153.4",
                     OperatingSystem::Linux,
                     Surface::LocalCliLauncher,
@@ -686,7 +754,7 @@ mod tests {
                 RuntimeSchemaStatus::UnsupportedTool
             );
             assert_eq!(
-                runtime_request_schema(
+                verification_request_schema(
                     "0.153.4-rc.1",
                     OperatingSystem::Linux,
                     Surface::LocalCliLauncher,

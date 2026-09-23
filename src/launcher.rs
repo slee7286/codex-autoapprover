@@ -40,10 +40,6 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         request,
         compatibility_mode == CompatibilityMode::Strict,
     );
-    let is_experimental = matches!(
-        eligibility,
-        compatibility::VersionEligibility::Experimental { .. }
-    );
     if !eligibility.is_eligible() {
         return launch_unarmed(
             &installation,
@@ -93,17 +89,6 @@ pub fn run(args: &RunArgs) -> Result<i32> {
                 "Codex version changed between capability check and launch (detected {}, found {})",
                 installation.version, launch_version
             ),
-        );
-    }
-
-    if is_experimental {
-        eprintln!(
-            "Experimental automatic approvals: Codex {} on {} has not been live-verified. Eligible permission requests will be approved automatically; incompatible requests fall back to normal approval.",
-            installation.version,
-            compatibility::OperatingSystem::current().as_str()
-        );
-        eprintln!(
-            "codex-autoapprover: enabling automatic approval on an unverified Codex version carries compatibility and command-execution risk; runtime validation remains fail-closed."
         );
     }
 
@@ -192,15 +177,21 @@ pub fn run(args: &RunArgs) -> Result<i32> {
 
 fn resolve_compatibility_mode(args: &RunArgs) -> Result<CompatibilityMode> {
     if let Some(mode) = args.compatibility {
-        return Ok(mode);
+        if mode == CompatibilityMode::Automatic {
+            eprintln!("codex-autoapprover: legacy automatic policy now uses verified tuples only");
+        }
+        return Ok(CompatibilityMode::Strict);
     }
     match env::var(COMPATIBILITY_ENV) {
-        Ok(value) if value.eq_ignore_ascii_case("automatic") => Ok(CompatibilityMode::Automatic),
+        Ok(value) if value.eq_ignore_ascii_case("automatic") => {
+            eprintln!("codex-autoapprover: legacy automatic policy now uses verified tuples only");
+            Ok(CompatibilityMode::Strict)
+        }
         Ok(value) if value.eq_ignore_ascii_case("strict") => Ok(CompatibilityMode::Strict),
         Ok(value) => {
             bail!("invalid {COMPATIBILITY_ENV} value `{value}`; expected `automatic` or `strict`")
         }
-        Err(env::VarError::NotPresent) => Ok(CompatibilityMode::Automatic),
+        Err(env::VarError::NotPresent) => Ok(CompatibilityMode::Strict),
         Err(env::VarError::NotUnicode(_)) => {
             bail!("{COMPATIBILITY_ENV} is not valid Unicode; refusing to arm")
         }
@@ -217,6 +208,7 @@ fn launch_unarmed(installation: &codex::Installation, args: &RunArgs, reason: &s
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .args(&args.codex_args);
+    arming::disarm_child(&mut command);
     let status = command
         .status()
         .with_context(|| format!("launch official Codex at {}", installation.path.display()))?;
@@ -248,7 +240,7 @@ pub fn diagnose() -> Result<i32> {
         Err(error) => println!("compatibility policy: invalid ({error})"),
     }
     println!(
-        "hook configuration installed: not checked; this milestone never installs live configuration"
+        "persistent approval hook installation: not checked; this launcher does not install hooks"
     );
 
     match codex::inspect() {

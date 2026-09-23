@@ -27,6 +27,17 @@ pub fn arm_child(command: &mut Command, socket: &Path, secret: &str) -> Result<(
     Ok(())
 }
 
+pub fn disarm_child(command: &mut Command) {
+    for key in [
+        SESSION_TOKEN_ENV,
+        SESSION_SOCKET_ENV,
+        PROTOCOL_ENV,
+        AUDIT_PATH_ENV,
+    ] {
+        command.env_remove(key);
+    }
+}
+
 pub fn is_armed() -> bool {
     valid_token(env::var(SESSION_TOKEN_ENV).ok().as_deref())
         && env::var(PROTOCOL_ENV).ok().as_deref() == Some(PROTOCOL_VERSION)

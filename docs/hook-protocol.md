@@ -1,6 +1,6 @@
 # Hook protocol
 
-This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI tuple Codex 0.151.0. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets are attempted only under the automatic compatibility policy and a passing non-live capability probe.
+This document separates verified official documentation, local observations, and project behavior. Official hook behavior can change; the current official page is the release reference. Production compatibility is limited to the verified Linux/local-CLI tuple Codex 0.151.0. Linux 0.153.0 was inspected but remains experimental/unverified because no independently identifiable reviewed live evidence is retained in this checkout. Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets; newer stable targets remain unarmed until independently verified and admitted.
 
 ## Officially documented facts
 
@@ -44,7 +44,7 @@ The current local observation is Linux with the locally resolved official comman
 hooks  stable  true
 ```
 
-The generated child-only inline `-c` hook override was accepted by the inspected local 0.153.0 target, and its `features list` reported stable, enabled hooks. This is now also the shape checked by the bounded non-live capability probe (`--help -c <child-local hook override>` followed by `features list`); it establishes only that an automatic attempt is possible, not that a live PermissionRequest exchange works. No independently identifiable reviewed live 0.153.0 evidence is retained in this checkout, so this observation does not support verified status, promotion, or a claim that a real PermissionRequest occurred. No live hook configuration was changed.
+The generated child-only inline `-c` hook override was accepted by the inspected local 0.153.0 target, and its `features list` reported stable, enabled hooks. This is now also the shape checked by the bounded non-live capability probe (`--help -c <child-local hook override>` followed by `features list`); it establishes only configuration capability, not live PermissionRequest behavior or eligibility for general automatic approval. No independently identifiable reviewed live 0.153.0 evidence is retained in this checkout, so this observation does not support verified status, promotion, or a claim that a real PermissionRequest occurred. No live hook configuration was changed.
 
 ## Project handler contract
 
@@ -82,13 +82,13 @@ The launcher creates a private broker and listener, launches the exact Codex chi
 
 ## Compatibility and no-decision policy
 
-The launcher distinguishes version/platform eligibility, detected hook/configuration capability, runtime request-schema support, reviewed live-verification status, and active session arming. Automatic mode permits stable native Linux/Windows local-CLI versions at or above the inspected baselines (Linux 0.153.0; Windows 0.152.1) only after the non-live capability probe. The requested Linux 0.153.4 and Windows 0.154.0 entries remain experimental/unverified. `--compatibility strict`, or `CODEX_AUTOAPPROVER_COMPATIBILITY=strict` when the flag is absent, arms only exact reviewed tuples. Ineligible targets, inconclusive capability checks, unsupported surfaces, and runtime-invalid requests produce no decision, preserving normal Codex approval behavior.
+The launcher distinguishes exact version/OS eligibility, non-live capability, runtime schema, historical review status and session arming. Only reviewed tuples may arm during normal run; legacy automatic options are strict aliases. The experimental verifier has a separate candidate-schema path and additionally requires the exact fixed probe command and expected tool in its broker configuration. Unsupported requests receive no decision.
 
 The exact verification probes are `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. The verifier resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. A successful network command with zero observed PermissionRequest invocations is inconclusive. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
 
 ## Schema versions and open questions
 
-The official page refers to generated schemas but warns that a main-branch schema may include fields absent from the current release. The documented PermissionRequest input has no project-consumable schema-version field. This repository therefore treats the installed Codex version plus the project protocol marker as separate compatibility gates. An unknown version string never arms. A recognized newer stable version can be attempted only when the platform baseline and non-live capability check permit it; it remains experimental until manually live-verified and reviewed.
+The official page refers to generated schemas but warns that a main-branch schema may include fields absent from the current release. The documented PermissionRequest input has no project-consumable schema-version field. This repository therefore treats the installed Codex version plus the project protocol marker as separate compatibility gates. An unknown version string never arms. A recognized newer stable version remains unarmed until reviewed evidence adds the exact tuple. Only the constrained experimental verifier uses the candidate adapter baseline.
 
 Still open:
 

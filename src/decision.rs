@@ -44,7 +44,15 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         return Decision::Decline(DeclineReason::UnsupportedToolType);
     }
 
-    match crate::compatibility::runtime_request_schema(
+    let schema = if context.expected_command
+        == Some(crate::compatibility::verification_probe_command())
+        && context.expected_tool_name == Some("Bash")
+    {
+        crate::compatibility::verification_request_schema
+    } else {
+        crate::compatibility::runtime_request_schema
+    };
+    match schema(
         context.codex_version,
         crate::compatibility::OperatingSystem::current(),
         crate::compatibility::Surface::LocalCliLauncher,
@@ -75,7 +83,8 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
         .and_then(serde_json::Value::as_str)
         .is_some();
     let nested_fields_are_supported = tool_input.iter().all(|(key, value)| {
-        (key == "command" && value.is_string()) || (key == "description" && value.is_string())
+        (key == "command" && value.is_string())
+            || (key == "description" && (value.is_string() || value.is_null()))
     });
     if !command_is_string || !nested_fields_are_supported {
         return Decision::Decline(DeclineReason::UnsupportedToolType);
@@ -104,6 +113,10 @@ mod tests {
         protocol::parse(
             br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"true"}}"#,
         )
+        .map(|mut value| {
+            if cfg!(windows) { value.tool_input = Some(serde_json::json!({"command": crate::compatibility::verification_probe_command()})); }
+            value
+        })
         .expect("valid fixture")
     }
 
@@ -111,8 +124,12 @@ mod tests {
         DecisionContext {
             codex_version: if cfg!(windows) { "0.152.1" } else { "0.151.0" },
             expected_cwd: "/tmp/work",
-            expected_command: None,
-            expected_tool_name: None,
+            expected_command: if cfg!(windows) {
+                Some(crate::compatibility::verification_probe_command())
+            } else {
+                None
+            },
+            expected_tool_name: if cfg!(windows) { Some("Bash") } else { None },
         }
     }
 
@@ -124,14 +141,17 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn runtime_decision_accepts_a_candidate_only_after_the_launcher_arms_it() {
+    fn runtime_decision_rejects_a_candidate_even_with_a_bound_session() {
         let context = DecisionContext {
             codex_version: "0.152.1",
             expected_cwd: "/tmp/work",
             expected_command: None,
             expected_tool_name: None,
         };
-        assert_eq!(decide(&input(), context), Decision::Allow);
+        assert_eq!(
+            decide(&input(), context),
+            Decision::Decline(DeclineReason::UnsupportedCodexCompatibility)
+        );
     }
 
     #[cfg(windows)]
@@ -163,7 +183,14 @@ mod tests {
             "command": "true",
             "description": "harmless fixture",
         }));
-        assert_eq!(decide(&optional, context()), Decision::Allow);
+        assert_eq!(
+            decide(&optional, context()),
+            if cfg!(windows) {
+                Decision::Decline(DeclineReason::UnexpectedVerificationAction)
+            } else {
+                Decision::Allow
+            }
+        );
 
         let mut unknown = input();
         unknown.tool_input = Some(serde_json::json!({
@@ -181,11 +208,11 @@ mod tests {
         let expected_command = crate::compatibility::verification_probe_command();
         let verification_context = DecisionContext {
             expected_command: Some(expected_command),
-            expected_tool_name: None,
+            expected_tool_name: Some("Bash"),
             ..context()
         };
         assert_eq!(
-            decide(&input(), verification_context),
+            decide(&input_with_command("true"), verification_context),
             Decision::Decline(DeclineReason::UnexpectedVerificationAction)
         );
 

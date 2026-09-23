@@ -252,7 +252,7 @@ fn production_run_arms_only_after_exact_compatibility_succeeds() {
 
 #[cfg(unix)]
 #[test]
-fn newer_stable_version_is_attempted_by_default_but_remains_experimental() {
+fn newer_stable_version_stays_unarmed_by_default() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temporary directory");
@@ -270,16 +270,16 @@ fn newer_stable_version_is_attempted_by_default_but_remains_experimental() {
         .args(["run", "--", "--model", "synthetic"])
         .assert()
         .code(19)
-        .stdout(predicate::str::contains("armed=yes\n"))
-        .stdout(predicate::str::contains("arg0=-c\n"))
+        .stdout(predicate::str::contains("armed=\n"))
+        .stdout(predicate::str::contains("arg0=--model\n"))
         .stderr(predicate::str::contains(
-            "Experimental automatic approvals: Codex 0.153.4 on Linux has not been live-verified",
+            "strict compatibility policy requires a reviewed exact tuple",
         ));
 }
 
 #[cfg(unix)]
 #[test]
-fn inspected_linux_target_is_attempted_by_default_but_not_verified() {
+fn inspected_linux_target_stays_unarmed_without_live_evidence() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temporary directory");
@@ -297,15 +297,15 @@ fn inspected_linux_target_is_attempted_by_default_but_not_verified() {
         .args(["run", "--", "--model", "synthetic"])
         .assert()
         .code(24)
-        .stdout(predicate::str::contains("armed=yes\n"))
+        .stdout(predicate::str::contains("armed=\n"))
         .stderr(predicate::str::contains(
-            "Experimental automatic approvals: Codex 0.153.0 on Linux has not been live-verified",
+            "strict compatibility policy requires a reviewed exact tuple",
         ));
 }
 
 #[cfg(unix)]
 #[test]
-fn configuration_probe_must_accept_the_hook_override_before_arming() {
+fn failing_capability_probe_cannot_make_an_unverified_version_eligible() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temporary directory");
@@ -325,7 +325,7 @@ fn configuration_probe_must_accept_the_hook_override_before_arming() {
         .code(25)
         .stdout(predicate::str::contains("armed=\n"))
         .stderr(predicate::str::contains(
-            "hook/configuration capability is capability probe inconclusive",
+            "strict compatibility policy requires a reviewed exact tuple",
         ));
 }
 
@@ -686,4 +686,31 @@ fn stale_session_secret_and_socket_cannot_authorize_after_shutdown() {
     assert!(result.status.success());
     assert!(result.stdout.is_empty());
     assert!(!Path::new(socket).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_automatic_options_cannot_enable_new_versions_or_inherit_broker_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let fake = temp.path().join("codex");
+    fs::write(&fake, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then if [ -n \"$CODEX_AUTOAPPROVER_SESSION_TOKEN\" ]; then exit 99; fi; printf 'codex-cli 0.156.0\\n'; exit 0; fi\nprintf 'token=%s socket=%s protocol=%s\\n' \"$CODEX_AUTOAPPROVER_SESSION_TOKEN\" \"$CODEX_AUTOAPPROVER_SESSION_SOCKET\" \"$CODEX_AUTOAPPROVER_HOOK_PROTOCOL\"\n").unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    for args in [vec!["run"], vec!["run", "--compatibility", "automatic"]] {
+        Command::cargo_bin("codex-autoapprover")
+            .unwrap()
+            .env("PATH", temp.path())
+            .env("CODEX_AUTOAPPROVER_COMPATIBILITY", "automatic")
+            .env(SESSION_TOKEN_ENV, "a".repeat(64))
+            .env(SESSION_SOCKET_ENV, "/tmp/not-a-real-broker")
+            .env(PROTOCOL_ENV, PROTOCOL_VERSION)
+            .args(args)
+            .assert()
+            .success()
+            .stdout("token= socket= protocol=\n")
+            .stderr(predicate::str::contains("automatic approval is DISABLED"))
+            .stderr(predicate::str::contains(
+                "strict compatibility policy requires a reviewed exact tuple",
+            ));
+    }
 }

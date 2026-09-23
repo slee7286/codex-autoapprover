@@ -4,7 +4,7 @@
 
 `codex-autoapprover` can cause the official Codex CLI to receive an `allow` decision for a permission request. That may grant an individual command additional filesystem, network, Git, shell, or other authority. The hook does not make unconditional approval safe and does not strengthen Codex's sandbox.
 
-The project is pre-alpha. The narrowly verified production compatibility is Linux, the local CLI launcher, and Codex CLI 0.151.0. Linux 0.153.0 has no independently identifiable reviewed live evidence in this checkout and remains experimental/unverified; native Windows 0.152.1 is candidate/unverified; Linux 0.153.4 and native Windows 0.154.0 are experimental/unverified requested targets. Automatic attempts on newer stable versions are compatibility experiments, not verification or a safety guarantee.
+The project is pre-alpha. Only Linux/local CLI/Codex 0.151.0 has a historical reviewed hook entry. The current implementation is not production-qualified. Windows 0.156.0 and all other unreviewed targets remain unarmed. The release policy blocks production qualification until the complete native matrix, binary identity binding, independent review and distribution requirements are met. See [production plan](docs/production-plan.md).
 
 ## Hook-specific attack surface
 
@@ -29,13 +29,11 @@ The launcher keeps five security-relevant facts distinct: version/platform eligi
 
 ## Required security properties
 
-The implementation must fail closed on unknown events, malformed input, unknown or prerelease version strings, unsupported versions or schemas, missing arming, binding mismatch, capability-probe failure, and internal errors. Automatic mode may attempt eligible newer stable versions, but strict mode (`--compatibility strict` or `CODEX_AUTOAPPROVER_COMPATIBILITY=strict`) may arm only reviewed exact tuples. Before arming an experimental target it must print:
+General arming and broker decisions require exact reviewed version/OS compatibility. The old automatic option is a strict alias; no configuration probe or unknown stable release may broaden support. Unsupported runtime requests produce no decision. The isolated verifier may use candidate schemas only when the broker also fixes the exact harmless probe and tool. It cannot authorize general commands.
 
-> Experimental automatic approvals: Codex VERSION on PLATFORM has not been live-verified. Eligible permission requests will be approved automatically; incompatible requests fall back to normal approval.
+The implementation must return only a one-request decision, never persistent or session-wide authority. Malformed/duplicate/oversized input, missing arming, wrong identity, mismatched cwd, unsupported schemas and internal errors must decline. Manual launch clears inherited broker credentials. Normal run never changes persistent Codex configuration. Windows sandbox repair is an explicit installer option with a backup; it does not certify compatibility.
 
-The warning must be accompanied by a clear compatibility and command-execution risk warning. It must emit no unrelated stdout because stdout is protocol-sensitive, and it must return only the exact documented one-request `allow` object when all checks succeed. An ineligible, incompatible, malformed, or rejected request receives no decision and therefore follows Codex's normal approval behavior.
-
-The implementation must never return a permanent or session-wide approval. It must use an explicit platform/adapter baseline, a maintained known-incompatible exclusion list, and strict exact-tuple review metadata; require explicit per-session arming; avoid a constant boolean arming flag; avoid full command logging by default; and provide an emergency disable path. It must not silently fall back to permissive behavior.
+Update detection only creates unverified candidate metadata and draft PRs. A future repair worker must not have signing or publication credentials, promote its own evidence or merge its own allowlist changes. Production readiness requires fresh code-bound native evidence and independent review; the local JSON gate checks integrity, not the truth of test claims. Repository protections must be activated separately.
 
 The Linux v1 path creates a unique 0700 private runtime directory and 0600 Unix socket for each launch. The listener starts before Codex; after spawn the launcher records the exact child PID, `/proc/<pid>/stat` start time, and effective UID. For every connection, the broker obtains peer PID/UID/GID through Linux `SO_PEERCRED`, requires the peer UID to equal the launcher's effective UID, and traverses bounded `/proc` ancestry. The exact PID and start time must appear in two stable ancestry reads; loops, missing processes, malformed data, PID reuse, races, and depth exhaustion decline.
 

@@ -174,9 +174,9 @@ pub fn version(path: &Path) -> Result<String> {
 }
 
 pub fn parse_version(output: &str) -> Result<String> {
-    for token in output.split_whitespace() {
-        let candidate = token.strip_prefix("codex-cli").unwrap_or(token);
-        let candidate = candidate.strip_prefix('v').unwrap_or(candidate);
+    let fields: Vec<_> = output.split_whitespace().collect();
+    if let ["codex-cli", token] = fields.as_slice() {
+        let candidate = token.strip_prefix('v').unwrap_or(token);
         let parts: Vec<&str> = candidate.split('.').collect();
         if parts.len() == 3
             && parts.iter().all(|part| {
@@ -277,6 +277,8 @@ pub fn detect_hook_capability(installation: &Installation, launcher: &Path) -> H
 }
 
 fn bounded_output(mut command: Command) -> Result<Output> {
+    // Discovery/probes must not inherit another launcher's live authority.
+    crate::arming::disarm_child(&mut command);
     let mut child = command.spawn().context("spawn Codex capability probe")?;
     let stdout = child
         .stdout
@@ -471,6 +473,9 @@ mod tests {
         assert!(parse_version("codex-cli 0.153.4-rc.1").is_err());
         assert!(parse_version("codex-cli 0.153").is_err());
         assert!(parse_version("not a version").is_err());
+        assert!(parse_version("warning 0.151.0 codex-cli 0.156.0").is_err());
+        assert!(parse_version("codex-cli 0.151.0\ncodex-cli 0.156.0").is_err());
+        assert!(parse_version("some-other-program 0.151.0").is_err());
     }
 
     #[test]

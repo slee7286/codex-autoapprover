@@ -1,0 +1,9 @@
+# Enforce required code-owner review in repository rules before publication.
+/src/compatibility.rs @slee7286
+/src/decision.rs @slee7286
+/src/broker/ @slee7286
+/src/arming.rs @slee7286
+/src/configure.rs @slee7286
+/compatibility/ @slee7286
+/scripts/ @slee7286
+/.github/ @slee7286

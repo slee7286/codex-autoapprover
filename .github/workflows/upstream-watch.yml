@@ -1,0 +1,74 @@
+name: Watch Codex releases
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-release-watch
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.watch.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s scripts -p 'test_*.py'
+      - id: watch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/watch_codex.py --create-pr
+
+  candidate-checks:
+    needs: detect
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install exact candidate on disposable runner
+        shell: pwsh
+        run: |
+          if ($env:CANDIDATE_VERSION -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Invalid candidate version' }
+          npm install --global --ignore-scripts "@openai/codex@$env:CANDIDATE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate installation failed' }
+      - name: Inspect without credentials or a live approval session
+        shell: pwsh
+        run: python scripts/probe_candidate.py "$env:CANDIDATE_VERSION"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.98.0"
+      - run: cargo test --locked --all-targets
+      - name: Summarize candidate evidence
+        shell: pwsh
+        run: |
+          Get-Content candidate-probe.json | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          'Synthetic tests and CLI probes do not verify live approvals or Windows sandbox execution.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

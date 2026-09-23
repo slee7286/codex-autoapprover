@@ -4,6 +4,7 @@ mod broker;
 mod cli;
 mod codex;
 mod compatibility;
+mod configure;
 mod decision;
 mod error;
 mod hook;
@@ -21,6 +22,13 @@ fn main() {
         codex_args: Vec::new(),
     })) {
         cli::Command::Run(args) => launcher::run(&args),
+        cli::Command::ConfigureWindowsSandbox { codex_home, mode } => {
+            configure::run(&codex_home, &mode)
+        }
+        cli::Command::SupportMatrix => {
+            compatibility::print_support_matrix();
+            Ok(0)
+        }
         cli::Command::Hook => hook::run(),
         cli::Command::Diagnose => launcher::diagnose(),
         cli::Command::PrintHookConfig => launcher::print_hook_config(),
