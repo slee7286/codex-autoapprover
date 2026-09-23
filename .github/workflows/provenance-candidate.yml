@@ -70,12 +70,22 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: python -m unittest discover -s scripts -p 'test_*.py'
       - run: cargo build --release --locked --bin codex-autoapprover
+      - run: cargo build --locked --bin codex-autoapprover
       - name: Test Windows source configuration in PowerShell 5.1
         shell: powershell
         run: ./scripts/test-install-windows.ps1
       - name: Test Windows source configuration in PowerShell 7
         shell: pwsh
         run: ./scripts/test-install-windows.ps1
+      - name: Test Windows artifact lifecycle in PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-install-windows-artifact.ps1
+      - name: Test Windows artifact lifecycle in PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install-windows-artifact.ps1
+      - name: Test Windows development archive and exact extracted bytes
+        shell: pwsh
+        run: ./scripts/test-package-windows.ps1
       - name: Stage exact checked Windows binary, build-input SBOM and checksums
         shell: pwsh
         run: |

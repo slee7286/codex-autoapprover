@@ -38,6 +38,21 @@ There is **no authenticated public consumer artifact yet**. Local lifecycle test
 
 `scripts/package_linux.py` creates a deterministic, explicitly unqualified development archive with the executable, installer, manifest, licence, README and a per-file digest record. `scripts/test-package-linux.sh` compares two independently built archives and installs the exact extracted bytes into a disposable directory. The adjacent checksum is unsigned and must not be treated as release authentication.
 
+## Windows artifact installer rehearsal
+
+The separate `scripts/install-windows-artifact.ps1` accepts an extracted Windows x86_64 executable, its manifest and a lowercase SHA-256 obtained from an independently authenticated record:
+
+```powershell
+.\scripts\install-windows-artifact.ps1 install -Binary .\bin\codex-autoapprover.exe -Manifest .\compatibility\manifest.json -Sha256 '<authenticated-sha256>'
+.\scripts\install-windows-artifact.ps1 status
+.\scripts\install-windows-artifact.ps1 rollback
+.\scripts\install-windows-artifact.ps1 uninstall
+```
+
+It manages a private install directory under `LOCALAPPDATA` (default `%LOCALAPPDATA%\codex-autoapprover\bin`), leaving `CODEX_HOME`, `PATH` and the Windows sandbox setting alone. Invoke the managed executable by its full path until a consumer launcher is qualified. The intended replacement is a same-volume `File.Replace`; a lock and journal reconcile a process interruption, and a locked live executable causes the update to fail. Uninstall leaves the lock file to serialize later installs. An existing Cargo installation is not adopted or overwritten. The installer refuses redirected or broadly writable install directories, unmanaged entries and changed release bytes. Native Windows ACL, locked-file, long-path, interruption and disk-full behavior still needs actual PowerShell 5.1/7 execution and review.
+
+`scripts/package_windows.py` prepares a deterministic, **unqualified** development ZIP on native Windows; `scripts/test-package-windows.ps1` is prepared to compare two ZIPs and install the exact extracted bytes. Its adjacent checksum and internal `artifact.json` are unsigned and do not authenticate a download. There is no authenticated public consumer artifact yet.
+
 `scripts/locked_sbom.py` creates a preliminary SPDX 2.3 inventory from every package in `Cargo.lock`. It verifies each registry source archive against the locked SHA-256 before reading its declared license. The inventory covers optional, target, build and development dependencies; it is not a binary-specific SBOM or a completed license/vulnerability review. See [dependency review](docs/dependencies.md).
 
 `scripts/binary_sbom.py` creates a native Linux or Windows x86_64 SPDX document for one exact executable SHA-256 and its Cargo normal/build dependency graph. It verifies the embedded support manifest, uses checksum-verified crate sources, excludes dev-only and other-platform crates, and refuses an existing output that differs from the executable or source. It records build inputs, including proc macros; exact linked code, the Rust toolchain, OS components and independent dependency review still need separate assessment. The prepared candidate workflow stages and rechecks this document for each native binary, then requests a binary-subject SBOM attestation under the protected candidate environment. No workflow run has validated the Windows path or produced a signed consumer artifact.
@@ -67,7 +82,7 @@ The broker validates kernel peer credentials, process identity and ancestry, a p
 
 [Watch Codex releases](.github/workflows/upstream-watch.yml) polls GitHub every six hours, scans a bounded release history back to the checked-in baseline, and queues newer stable versions oldest first. It prepares one previously unhandled, unverified candidate PR per poll; a closed PR remains a maintainer decision. Schema-3 candidate metadata pins the release, native asset and npm identities plus the Git tag object and its source commit. The watcher rechecks the baseline and open PRs against current official identities; candidate runners refresh their exact version by tag before checking native asset digests, an exact npm lock, a script-free installation and registry signatures. A moved or deleted source tag, missing history or changed artifact stops for manual recovery. The repair worker also checks that its upstream checkout matches the pinned tag object and commit before using it as untrusted context. Automatic repair is eligible only when a draft PR is newly opened; a manual dispatch can retry an exact existing version. This does not certify support or change a user's installed Codex. The workflow still needs activation and exercise on the default branch with suitable repository permissions. Scheduled execution is best effort.
 
-A bounded repair workflow is prepared locally but has not run on the default branch or produced native approval evidence. A [manual candidate provenance workflow](docs/release-provenance.md) is also prepared; it retains exact native build bytes, can attest their build origin under a protected environment, and separately gates both downloaded binaries on reviewed native evidence. Candidate provenance alone does not certify compatibility. Neither workflow has run. A Linux artifact lifecycle rehearsal is implemented; Windows consumer update/rollback, native certification and a protected final release remain required. The [production plan](docs/production-plan.md) records implementation, research, acceptance criteria and remaining work. Use the [ready-to-paste /goal](docs/production-goal.md) to continue through release preparation.
+A bounded repair workflow is prepared locally but has not run on the default branch or produced native approval evidence. A [manual candidate provenance workflow](docs/release-provenance.md) is also prepared; it retains exact native build bytes, can attest their build origin under a protected environment, and separately gates both downloaded binaries on reviewed native evidence. Candidate provenance alone does not certify compatibility. Neither workflow has run. Linux artifact lifecycle testing has passed locally; a Windows artifact lifecycle and development archive are prepared for native testing. Native certification, authenticated consumer distribution and a protected final release remain required. The [production plan](docs/production-plan.md) records implementation, research, acceptance criteria and remaining work. Use the [ready-to-paste /goal](docs/production-goal.md) to continue through release preparation.
 
 ## Development
 
@@ -85,7 +100,7 @@ python scripts/locked_sbom.py --output /tmp/codex-autoapprover-locked-dependenci
 python scripts/binary_sbom.py --offline --binary target/release/codex-autoapprover --output /tmp/codex-autoapprover-linux-x86_64.spdx.json
 ```
 
-Native Windows CI also runs installer tests in Windows PowerShell 5.1 and PowerShell 7. Cross-compilation is not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.
+The prepared native Windows candidate workflow runs source and artifact installer tests in Windows PowerShell 5.1 and PowerShell 7, plus an exact-byte development ZIP rehearsal. It has not run. Cross-compilation and Linux PowerShell syntax checks are not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.
 
 ## Documentation and licence
 

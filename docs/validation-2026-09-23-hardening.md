@@ -136,6 +136,16 @@ made additional code, gate, test and documentation changes.
   builds compared byte-for-byte, and the extracted executable installed and
   uninstalled from a disposable directory. Its checksum is unsigned and its
   metadata explicitly says unqualified.
+- A separate Windows artifact installer now stages a supplied native executable
+  against an externally authenticated SHA-256 and the source manifest, keeps
+  digest-addressed releases under `LOCALAPPDATA`, and journals same-volume
+  replacement, rollback and uninstall. It refuses unmanaged files, directory
+  reparse points and broad-write ACLs. A deterministic, explicitly unqualified
+  Windows development ZIP and exact-byte extracted-install rehearsal are
+  prepared. The PowerShell files passed a Linux-host syntax parse, and ZIP
+  serialization has local Python coverage; **none of this has run on native
+  Windows**. Native ACL behavior, locked-file replacement and recovery must be
+  verified and corrected before this path can support a consumer release.
 - The preliminary SPDX 2.3 locked-dependency inventory lists 89 exact packages
   and 137 relationships. All 88 third-party archive checksums matched
   `Cargo.lock`; declared licenses were read from those archives. It passed the
@@ -170,13 +180,15 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 70 tests passed, including native build-input graph filtering and binary/SBOM binding, cross-platform source-path ordering, deterministic license material and unsafe archive-member rejection, prior-release asset/npm/tag drift and duplicate-key rejection, annotated/lightweight tag pinning, exact npm registry/lock/installed-package checks, separate stdout/stderr CLI probing, no-update polling after branch deletion, existing-PR repair suppression and metadata-drift refusal, exact-version retry and runner refresh, pinned candidate-commit output, candidate-branch metadata mismatch, synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and oldest-first multi-release catch-up; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 72 tests passed, adding deterministic Windows ZIP extraction and x86_64 PE guard coverage to the earlier 70 local tests; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
 | `verify-manifest --manifest compatibility/manifest.json` | Installed/source manifest comparison passes for the local binary |
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall, journal recovery at each install-pointer boundary and interrupted first install passed; malformed/conflicting journals were rejected and Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
+| Linux-host PowerShell 7.6.6 parser | Parsed the new Windows installer and two native test scripts without syntax errors. This did not execute the installer or exercise Windows PowerShell 5.1. |
+| Prepared Windows candidate workflow | YAML parsed, with lifecycle tests configured for Windows PowerShell 5.1 and 7 and extracted ZIP rehearsal configured for PowerShell 7; no workflow run occurred. |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
 | `python3 scripts/binary_sbom.py --offline --binary ... --output /tmp/...` | Generated a 58-package Linux x86_64 native binary build-input SPDX 2.3 document, rechecked staged bytes and document idempotently, rejected a modified executable, and passed the locally retained official SPDX schema; no Windows execution or signed attestation |
 | `python3 scripts/locked_licenses.py --output /tmp/...` | Reproduced a deterministic 171-file local bundle with an exact inventory; top-level license/notice text was absent for two of 88 registry crates. This is review material, not a legal conclusion. |
@@ -200,29 +212,29 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v30/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `809f9132c026452ec054e0fbde7a66f7da9b32c3fc2bdcc4a66566bf49ff0afd`.
+`/tmp/autoapprover-dev-package-20260923-v32/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `a9d5c5da91777a4bf65fe7d8e9cd6be4658a40e9e91804eb65b764342dbaa475`.
 Its recorded source digest is
-`c8f4b6e375ddcc9c9adb0b921763a49d852294621ab155233d84244970e70ae0`.
+`fbc8c5b22d8d9b8f0553155e458bb7b42d435ada128789906a6251b09777b8d3`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v28.spdx.json`, SHA-256
-`89138cdda737daa5c7f0824b30de2ab8bc69f75a50c02d35356e6226db101acb`.
+`/tmp/autoapprover-locked-dependencies-v30.spdx.json`, SHA-256
+`8db6dd826fcad3de6bfaf1fe4462f1285e43a4491e96790fb0ff88d812d7ed50`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v6.spdx.json`, SHA-256
-`b43c586deccf2201d033dafc17f947cd66569072689e89294e73cb0aaab651f8`.
+`/tmp/autoapprover-binary-linux-v8.spdx.json`, SHA-256
+`d06dc8a9f51646ea5c390cad690be6224950ef7df936df2293b58cdd29e0f676`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the development executable digest above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v10.tar.gz`, SHA-256
-`d2680f0283dcfd03e868631d0637a604afbe5641746aa7fef02545f3960d885f`.
+`/tmp/autoapprover-locked-licenses-v12.tar.gz`, SHA-256
+`3f9620a002914855950198cf7072e0e615deff80ada630bd7a36cbce91f32e7b`.
 Its indexed source digest matches the archive above. An automatic approval
 review rejected a proposed live OSV batch query because it would transmit the
 potentially sensitive exact `Cargo.lock` inventory to a public API. A local
