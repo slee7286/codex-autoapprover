@@ -45,6 +45,13 @@ made additional code, gate, test and documentation changes.
   a denied or replayed request invalidates the verifier's one-invocation check.
   A malformed hook input that never reaches the broker is outside this count.
   Same-user malicious descendants remain an open review item.
+- A bounded, read-only `codex exec --json` trace inspector requires exactly one
+  started and successfully completed exact command in a single turn. It rejects
+  extra command and tool items, errors, duplicate JSON keys and truncated logs,
+  and emits a redacted, explicitly non-certifying digest report. Its format
+  follows the [official JSONL event documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
+  and the inspected upstream 0.156.0 event source. It has synthetic tests only;
+  no unattended native hook run or independently witnessed outcome exists yet.
 - Probe output uses private temporary files rather than unbounded thread joins
   on inherited pipes. Unix probe process groups are terminated on completion or
   timeout. The isolated interactive verifier now requests no shared daemon and
@@ -90,7 +97,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 33 tests passed, including synthetic repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 38 tests passed, including synthetic trace inspection, repair, checksum-verified dependency inventory, bounded latest-release discovery and missed-release rejection; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -115,15 +122,15 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v6/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `59a1614a5ef82e34d00138d3e78dba2ab6103a985ff5b2db99b0e6e5dfc3ab7c`.
+`/tmp/autoapprover-dev-package-20260923-v8/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `ab876bf45a43f030ce15a51c37a0be325135426f2a6b5bf1d727642d847f3306`.
 Its recorded source digest is
-`400c1f23c0fef1ab9a90273b2ca179e82ee5f72c30b8ac3e3411d54603cf969d`.
+`cc23252d1cddeb00ba4d15dba9c2a965925aec9ab3b3a2915c7d053d730a9788`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v6.spdx.json`, SHA-256
-`a3207de4d1352494bb7d742701d2ab738464a0a8c6d2e9e6146872549ee38799`.
+`/tmp/autoapprover-locked-dependencies-v8.spdx.json`, SHA-256
+`9a67f42e9365c7c34a8baec14243e5e0c0a58fed653293f73e3549dfbb96db59`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
