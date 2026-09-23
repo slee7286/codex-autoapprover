@@ -241,40 +241,40 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`9aa2ac6be14f4f0acf6a04e0efb72898c8289bfdc3fbc918f678d54051e11f1f`.
+`dde1b33dcee9f8776d031d4ce9911fe99df19e7bd7c423d7e0fbf1f733897ab1`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v37/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `5c475a273497eac560d28c593cae489f978315260b82a413ba4a488bc5348d2b`.
+`/tmp/autoapprover-dev-package-20260923-v38/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `a5c3c049fd4fff7a820e291825b622e6698903bde7b2258d9a12a81477de9094`.
 Its recorded source digest is
-`a4061392e39bee93a1638f3f6d1a01d726517f2178f4634a4476ccfb10f501e0`.
+`26f79eae5ad88542cf72d00feb96bad5389c0d345e290a3763454217a18d9f80`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v35.spdx.json`, SHA-256
-`f4b0bac3e31ac57b6d46a8a19911780ccc47589f918fcf1fe61dc36f8db5c345`.
+`/tmp/autoapprover-locked-dependencies-v36.spdx.json`, SHA-256
+`b1fd1cd663faa2fb9a8756035afcfb6c59a4d41aec69dc88c1e9d990734240c0`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v13.spdx.json`, SHA-256
-`967701222f360fa8bb5e6b4c81a2406f3e0e66c3eeab71a74f7fadb95a26eb57`.
+`/tmp/autoapprover-binary-linux-v14.spdx.json`, SHA-256
+`c1e69f80f14999b92302def0f06906057d91d7ebf91933ce1ead4885c1899e94`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the development executable digest above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v17.tar.gz`, SHA-256
-`1b279ede29685c0a62960d3cf80f670135e8c7b72e44bdea400492c823df3194`.
+`/tmp/autoapprover-locked-licenses-v18.tar.gz`, SHA-256
+`f2b76eb9d216c425504fbbe95c8c85eb8d512fbe4e85d01c1dff7ca0757f6234`.
 Its indexed source digest matches the archive above.
 
 The Linux candidate build observation is
-`/tmp/autoapprover-candidate-record-v3/candidate-linux/build-record.json`,
-SHA-256 `4105f96ec8abeafd41db7505f0cc4c288be3cf6552c8c4bb90d34a7fcc139cb3`.
-It records clean commit `92c0df7cf3b1482f52f30515c1d7a0c1edf7e0a2`,
+`/tmp/autoapprover-candidate-record-v4/candidate-linux/build-record.json`,
+SHA-256 `3bdedd5eb08872d5a74f20cf88daf386308e4902861144677573046a1251b805`.
+It records clean commit `35f15c9d6a4a7ee85da46bd863c32b8c299e15c6`,
 the same source and binary digests as the archive, Rust/Cargo 1.98.0 and
 the local Ubuntu 26.04 host. It is a self-reported local observation, not
 verified build provenance or native Codex evidence.
