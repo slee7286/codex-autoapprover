@@ -43,8 +43,9 @@ def patch_paths(repo, path):
         if not row:
             continue
         fields = row.split(b"\t", 2)
-        if len(fields) != 3 or not fields[2]:
-            raise ValueError("repair patch uses an unsupported rename or path")
+        if (len(fields) != 3 or not fields[2]
+                or not fields[0].isdigit() or not fields[1].isdigit()):
+            raise ValueError("repair patch must contain only text changes to supported paths")
         name = fields[2].decode("utf-8")
         if not allowed_repair_path(name):
             raise ValueError("repair patch changes a forbidden path")
@@ -77,6 +78,12 @@ def apply(repo, patch_path, report, version):
     patch = read_artifact(patch_path, MAX_PATCH_BYTES, "repair patch")
     if not patch or hashlib.sha256(patch).hexdigest() != report["patch_sha256"]:
         raise ValueError("repair patch integrity failed")
+    if b"\0" in patch or re.search(rb"(?m)^GIT binary patch\r?$", patch):
+        raise ValueError("repair patch must contain only text changes")
+    try:
+        patch.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("repair patch must be UTF-8 text") from error
     with tempfile.TemporaryDirectory(prefix="codex-verified-repair-") as directory:
         verified_patch = Path(directory) / "repair.patch"
         verified_patch.write_bytes(patch)

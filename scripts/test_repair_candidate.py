@@ -102,6 +102,35 @@ class RepairBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden path"):
             apply_repair.patch_paths(self.repo, patch_path)
 
+    def test_binary_repair_artifacts_fail_before_git_applies_them(self):
+        (self.repo / "src/main.rs").write_bytes(b"fn main() {}\0" + b"A" * 10000)
+        binary_patch = git(self.repo, "diff", "--binary", "HEAD")
+        self.assertIn(b"GIT binary patch", binary_patch)
+        patch_path = self.root / "repair.patch"
+        patch_path.write_bytes(binary_patch)
+        with self.assertRaisesRegex(ValueError, "only text changes"):
+            apply_repair.patch_paths(self.repo, patch_path)
+
+        for label, body, message in (
+            ("git-binary", binary_patch, "only text changes"),
+            ("nul", b"not a patch\0", "only text changes"),
+            ("invalid-utf8", b"not a patch\xff", "UTF-8 text"),
+        ):
+            with self.subTest(label=label):
+                patch_path.write_bytes(body)
+                destination = self.root / f"apply-{label}"
+                subprocess.run(["git", "clone", "-q", str(self.repo), str(destination)], check=True)
+                report = {"schema_version": 1, "codex_version": "0.156.0", "base_sha": self.base,
+                          "upstream_source_sha": "b" * 40,
+                          "changed_paths": ["src/main.rs"],
+                          "patch_sha256": hashlib.sha256(body).hexdigest(),
+                          "checks": ["format", "rust-tests", "clippy"],
+                          "status": "proposed-unverified", "certified": False}
+                with patch.object(apply_repair, "patch_paths") as parse:
+                    with self.assertRaisesRegex(ValueError, message):
+                        apply_repair.apply(destination, patch_path, report, "0.156.0")
+                    parse.assert_not_called()
+
     def test_write_token_job_rejects_ambiguous_or_unbounded_repair_artifacts(self):
         report_path = self.root / "repair-report.json"
         report_path.write_text('{"status":"proposed-unverified","status":"certified"}')
