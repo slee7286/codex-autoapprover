@@ -365,7 +365,8 @@ class ReleaseWatchTests(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
              patch.object(watch.subprocess, "check_output", return_value=json.dumps([
                  {"number": 12, "headRefName": "automation/codex-0.156.0",
-                  "headRepositoryOwner": {"login": "owner"}, "isCrossRepository": False}])), \
+                  "headRepositoryOwner": {"login": "owner"}, "isCrossRepository": False,
+                  "state": "CLOSED"}])), \
              patch.object(watch.subprocess, "run") as runner:
             self.assertFalse(watch.prepare_pr(selected, Path("compatibility/candidate.json")))
             runner.assert_not_called()
@@ -376,18 +377,86 @@ class ReleaseWatchTests(unittest.TestCase):
              patch.object(watch.subprocess, "check_output", return_value=json.dumps([
                  {"number": 12, "headRefName": branch,
                   "headRepositoryOwner": {"login": "someone-else"},
-                  "isCrossRepository": True}])):
+                  "isCrossRepository": True, "state": "OPEN"}])):
             self.assertFalse(watch.candidate_pr_exists("0.156.1"))
         with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
              patch.object(watch.subprocess, "check_output", return_value=json.dumps([
                  {"number": 12, "headRefName": branch,
                   "headRepositoryOwner": {"login": "owner"},
-                  "isCrossRepository": True}])):
+                  "isCrossRepository": True, "state": "OPEN"}])):
             self.assertFalse(watch.candidate_pr_exists("0.156.1"))
         with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
              patch.object(watch.subprocess, "check_output", return_value='[{"number":12}]'):
             with self.assertRaisesRegex(ValueError, "ambiguous"):
                 watch.candidate_pr_exists("0.156.1")
+
+    def test_open_pr_drift_and_branch_race_stop_catch_up(self):
+        candidate = watch.candidate_from_releases([release("0.156.1")])
+        expected = {**candidate, "npm_packages": npm_records("0.156.1")}
+        branch = "automation/codex-0.156.1"
+        sha = "a" * 40
+        pr = json.dumps([
+            {"number": 11, "headRefName": branch,
+             "headRepositoryOwner": {"login": "owner"},
+             "isCrossRepository": False, "state": "CLOSED"},
+            {"number": 12, "headRefName": branch,
+             "headRepositoryOwner": {"login": "owner"},
+             "isCrossRepository": False, "state": "OPEN", "headRefOid": sha},
+        ])
+
+        def output(command, text):
+            if command[:3] == ["gh", "pr", "list"]:
+                return pr
+            if command[:3] == ["git", "rev-parse", "FETCH_HEAD"]:
+                return sha + "\n"
+            if command[:3] == ["git", "cat-file", "-s"]:
+                return "2000\n"
+            if command[:2] == ["git", "show"]:
+                return json.dumps(expected)
+            self.fail(f"unexpected command: {command}")
+
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+             patch.object(watch, "fetch_tagged_release", return_value=release("0.156.1")), \
+             patch.object(watch, "fetch_npm_records", side_effect=npm_records), \
+             patch.object(watch.subprocess, "check_output", side_effect=output), \
+             patch.object(watch.subprocess, "run") as runner:
+            self.assertTrue(watch.candidate_pr_exists("0.156.1", expected=candidate))
+            runner.assert_called_once()
+
+        changed = {**expected, "assets": [{**expected["assets"][0],
+                                            "digest": "sha256:" + "f" * 64},
+                                           expected["assets"][1]]}
+        def drifted_output(command, text):
+            result = output(command, text)
+            return json.dumps(changed) if command[:2] == ["git", "show"] else result
+
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+             patch.object(watch, "fetch_tagged_release", return_value=release("0.156.1")), \
+             patch.object(watch, "fetch_npm_records", side_effect=npm_records), \
+             patch.object(watch.subprocess, "check_output", side_effect=drifted_output), \
+             patch.object(watch.subprocess, "run"):
+            with self.assertRaisesRegex(ValueError, "differs from official"):
+                watch.candidate_pr_exists("0.156.1", expected=candidate)
+
+        def moved_output(command, text):
+            result = output(command, text)
+            return "b" * 40 + "\n" if command[:3] == ["git", "rev-parse", "FETCH_HEAD"] else result
+
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+             patch.object(watch, "fetch_tagged_release", return_value=release("0.156.1")), \
+             patch.object(watch, "fetch_npm_records", side_effect=npm_records), \
+             patch.object(watch.subprocess, "check_output", side_effect=moved_output), \
+             patch.object(watch.subprocess, "run"):
+            with self.assertRaisesRegex(ValueError, "moved during verification"):
+                watch.candidate_pr_exists("0.156.1", expected=candidate)
+
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}), \
+             patch.object(watch, "fetch_tagged_release", return_value=release("0.156.1", id=99)), \
+             patch.object(watch.subprocess, "check_output", side_effect=output), \
+             patch.object(watch.subprocess, "run") as runner:
+            with self.assertRaisesRegex(ValueError, "listing and tag disagree"):
+                watch.candidate_pr_exists("0.156.1", expected=candidate)
+            runner.assert_not_called()
 
     def test_candidate_branch_sha_requires_one_exact_remote_ref(self):
         sha = "a" * 40
@@ -479,7 +548,8 @@ class ReleaseWatchTests(unittest.TestCase):
                  patch.object(watch, "prepare_pr", return_value=False) as prepare, \
                  patch.object(watch, "candidate_branch_sha", return_value="c" * 40):
                 watch.main()
-                exists.assert_called_once_with("0.156.1")
+                self.assertEqual(exists.call_args.args, ("0.156.1",))
+                self.assertEqual(exists.call_args.kwargs["expected"]["codex_version"], "0.156.1")
                 prepare.assert_not_called()
             self.assertIn("changed=false\n", output.read_text())
             self.assertIn("repair_eligible=false\n", output.read_text())
@@ -496,7 +566,8 @@ class ReleaseWatchTests(unittest.TestCase):
             path = root / "candidate.json"
             output = root / "github-output.txt"
             prepared = []
-            for existing in [(False,), (True, False), (True, True, False)]:
+            for existing in [(False, False, False), (True, False, False),
+                             (True, True, False)]:
                 path.write_text(json.dumps(baseline))
                 output.write_text("")
                 with patch("sys.argv", ["watch_codex.py", "--output", str(path), "--create-pr"]), \
@@ -504,11 +575,12 @@ class ReleaseWatchTests(unittest.TestCase):
                      patch.object(watch, "fetch_latest_release", return_value=releases[0]), \
                      patch.object(watch, "fetch_releases", return_value=releases), \
                      patch.object(watch, "fetch_npm_records", side_effect=npm_records), \
-                     patch.object(watch, "candidate_pr_exists", side_effect=existing), \
+                     patch.object(watch, "candidate_pr_exists", side_effect=existing) as checked, \
                      patch.object(watch, "prepare_pr", return_value=True) as prepare, \
                      patch.object(watch, "candidate_branch_sha", return_value="f" * 40):
                     watch.main()
                     prepared.append(prepare.call_args.args[0]["codex_version"])
+                    self.assertEqual(checked.call_count, 3)
                 self.assertIn("changed=true\n", output.read_text())
                 self.assertIn("repair_eligible=true\n", output.read_text())
             self.assertEqual(prepared, ["0.156.1", "0.156.2", "0.156.3"])

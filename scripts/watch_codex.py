@@ -294,31 +294,63 @@ def repository_name():
     return repository
 
 
-def candidate_pr_exists(version):
+def verify_open_candidate_pr(candidate, pr_sha):
+    """An open PR must still pin the current official release and npm identities."""
+    version = candidate["codex_version"]
+    if not isinstance(pr_sha, str) or re.fullmatch(r"[0-9a-f]{40}", pr_sha) is None:
+        raise ValueError("open candidate PR has an invalid head commit")
+    tagged = candidate_from_releases([fetch_tagged_release(version)])
+    if not exact_json_equal(tagged, candidate):
+        raise ValueError("open candidate PR release listing and tag disagree")
+    expected = dict(candidate)
+    expected["npm_packages"] = fetch_npm_records(version)
+    branch = f"refs/heads/automation/codex-{version}"
+    subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", branch], check=True)
+    fetched = subprocess.check_output(["git", "rev-parse", "FETCH_HEAD"], text=True).strip()
+    if fetched != pr_sha:
+        raise ValueError("open candidate PR branch moved during verification")
+    size = subprocess.check_output(
+        ["git", "cat-file", "-s", "FETCH_HEAD:compatibility/candidate.json"], text=True).strip()
+    if not size.isdecimal() or int(size) > 128 * 1024:
+        raise ValueError("open candidate PR metadata exceeds limit")
+    recorded = json.loads(subprocess.check_output(
+        ["git", "show", "FETCH_HEAD:compatibility/candidate.json"], text=True),
+        object_pairs_hook=strict_json_object)
+    if not exact_json_equal(recorded, expected):
+        raise ValueError("open candidate PR metadata differs from official release; manual recovery required")
+
+
+def candidate_pr_exists(version, expected=None):
     """Treat an earlier same-repository PR, including a closed one, as a decision."""
     version_key(version)
+    if expected is not None and expected.get("codex_version") != version:
+        raise ValueError("candidate PR version mismatch")
     repository = repository_name()
     branch = f"automation/codex-{version}"
     existing = subprocess.check_output([
         "gh", "pr", "list", "--repo", repository, "--head", branch,
-        "--state", "all", "--json", "number,headRefName,headRepositoryOwner,isCrossRepository",
+        "--state", "all", "--json", "number,headRefName,headRepositoryOwner,isCrossRepository,state,headRefOid",
         "--limit", "100",
     ], text=True)
     records = json.loads(existing, object_pairs_hook=strict_json_object)
     if not isinstance(records, list) or len(records) == 100:
         raise ValueError("candidate PR history is ambiguous; manual recovery required")
+    found = False
     for record in records:
         if not isinstance(record, dict) or type(record.get("number")) is not int or record["number"] <= 0:
             raise ValueError("invalid candidate PR metadata")
         owner = record.get("headRepositoryOwner")
         if (record.get("headRefName") != branch or not isinstance(owner, dict)
                 or not isinstance(owner.get("login"), str)
-                or type(record.get("isCrossRepository")) is not bool):
+                or type(record.get("isCrossRepository")) is not bool
+                or record.get("state") not in {"OPEN", "CLOSED", "MERGED"}):
             raise ValueError("candidate PR head identity is ambiguous; manual recovery required")
         if (not record["isCrossRepository"]
                 and owner["login"].casefold() == repository.split("/", 1)[0].casefold()):
-            return True
-    return False
+            found = True
+            if expected is not None and record["state"] == "OPEN":
+                verify_open_candidate_pr(expected, record.get("headRefOid"))
+    return found
 
 
 def prepare_pr(candidate, path):
@@ -425,9 +457,9 @@ def main():
                 raise ValueError("previous npm package identity changed; manual investigation required")
         if args.create_pr:
             for entry in backlog:
-                if not candidate_pr_exists(entry["codex_version"]):
+                exists = candidate_pr_exists(entry["codex_version"], expected=entry)
+                if not exists and candidate is None:
                     candidate = entry
-                    break
         else:
             candidate = backlog[0] if backlog else candidate_from_releases(
                 [item for item in recent if isinstance(item, dict)
