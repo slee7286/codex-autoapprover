@@ -30,6 +30,12 @@ This explicitly sets `windows.sandbox = "unelevated"` in `$env:CODEX_HOME/config
 
 Configuration is parsed as TOML, unrelated values and comments are retained, and the original file is backed up before replacement. Invalid or unknown sandbox settings fail without a rewrite. Repeated application is idempotent. Close configuration editors during installation. Native ACL, interruption and installer testing is still required before release. Direct `cargo install` performs no configuration step.
 
+## Linux artifact installer rehearsal
+
+`scripts/install-linux.sh` accepts a prebuilt Linux executable, the matching manifest, and an expected lowercase SHA-256 from a separately authenticated release record. It stages and checks the executable before atomically selecting it under an owner-controlled install directory (`~/.local/bin` by default) with private release storage. `install`, `rollback`, `status`, and `uninstall` preserve `CODEX_HOME`; the installer refuses unmanaged files, unsafe directory chains, changed installed bytes, and unexpected release contents. A prior release is retained for rollback, and interrupted rollback/uninstall operations are recovered on the next invocation. The lock file remains after uninstall to serialize future installations.
+
+There is **no authenticated public consumer artifact yet**. Local lifecycle tests use a development executable and a synthetic changed copy; they do not qualify a production release or exercise native Codex approval. Existing Cargo-installed executables are intentionally not adopted automatically.
+
 ## Commands
 
 ```text
@@ -53,7 +59,7 @@ The broker validates kernel peer credentials, process identity and ancestry, a p
 
 [Watch Codex releases](.github/workflows/upstream-watch.yml) polls the official release API every six hours, prepares unverified candidate metadata and a draft PR, and runs disposable-runner CLI probes and synthetic tests. It neither certifies support nor modifies a user's installed Codex. Workflows need activation on the default branch and suitable repository permissions. Scheduled execution is best effort.
 
-A bounded repair workflow is prepared locally but has not run on the default branch or produced native approval evidence. Complete native certification, artifact signing and consumer update/rollback remain required. The [production plan](docs/production-plan.md) records implementation, research, acceptance criteria and remaining work. Use the [ready-to-paste /goal](docs/production-goal.md) to continue through release preparation.
+A bounded repair workflow is prepared locally but has not run on the default branch or produced native approval evidence. A Linux artifact lifecycle rehearsal is implemented; Windows consumer update/rollback, native certification and artifact signing remain required. The [production plan](docs/production-plan.md) records implementation, research, acceptance criteria and remaining work. Use the [ready-to-paste /goal](docs/production-goal.md) to continue through release preparation.
 
 ## Development
 
@@ -64,6 +70,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo check --locked --target x86_64-pc-windows-msvc --all-targets
 python -m unittest discover -s scripts -p 'test_*.py'
 python scripts/release_gate.py
+./scripts/test-install-linux.sh target/debug/codex-autoapprover
 ```
 
 Native Windows CI also runs installer tests in Windows PowerShell 5.1 and PowerShell 7. Cross-compilation is not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.
