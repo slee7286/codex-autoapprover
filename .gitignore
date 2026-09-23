@@ -2,3 +2,4 @@
 
 __pycache__/
 /candidate-probe.json
+/tools/repair-cli/node_modules/

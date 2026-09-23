@@ -218,8 +218,21 @@ jobs:
         run: |
           count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "automation/codex-$CANDIDATE_VERSION" --state open --json number --jq length)
           if [ "$count" != "1" ]; then echo 'No unique open candidate PR; repair stopped'; exit 1; fi
-      - name: Install pinned repair CLI without package scripts
-        run: npm install --global --ignore-scripts @openai/codex@0.156.0
+      - name: Verify and install locked repair CLI before supplying its key
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/repair-cli-npm-cache
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/repair-cli-empty.npmrc
+        run: |
+          set -euo pipefail
+          : > "$NPM_CONFIG_USERCONFIG"
+          python trusted/scripts/verify_repair_cli.py --root trusted/tools/repair-cli
+          npm ci --prefix trusted/tools/repair-cli --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+          npm audit signatures --prefix trusted/tools/repair-cli --registry=https://registry.npmjs.org
+          python trusted/scripts/verify_repair_cli.py --root trusted/tools/repair-cli --installed
+          if [ "$(trusted/tools/repair-cli/node_modules/.bin/codex --version)" != 'codex-cli 0.156.0' ]; then
+            echo 'Pinned repair CLI did not report the expected version' >&2
+            exit 1
+          fi
       - name: Fetch exact upstream source as untrusted read-only context
         env:
           CANDIDATE_VERSION: ${{ needs.detect.outputs.version }}
@@ -230,7 +243,7 @@ jobs:
       - name: Attempt one isolated source repair
         env:
           CODEX_REPAIR_API_KEY: ${{ secrets.CODEX_REPAIR_API_KEY }}
-        run: python trusted/scripts/repair_candidate.py --repo candidate --candidate candidate/compatibility/candidate.json --upstream-source upstream-source --output repair-output
+        run: python trusted/scripts/repair_candidate.py --repo candidate --candidate candidate/compatibility/candidate.json --upstream-source upstream-source --output repair-output --codex trusted/tools/repair-cli/node_modules/.bin/codex
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: codex-repair-${{ needs.detect.outputs.version }}

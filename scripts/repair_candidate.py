@@ -163,6 +163,8 @@ def main():
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--upstream-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--codex", type=Path, required=True,
+                        help="repair CLI executable verified before the key was supplied")
     args = parser.parse_args()
     repair_key = os.environ.pop("CODEX_REPAIR_API_KEY", None)
     for name in ["OPENAI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
@@ -185,7 +187,10 @@ def main():
     if upstream_source_sha != candidate["upstream_source_sha"]:
         raise ValueError("upstream source commit differs from candidate pin")
     base = clean_base(repo)
-    run_agent(repo, version, repair_key, upstream_source=upstream_source)
+    if not args.codex.is_file():
+        parser.error("verified repair CLI executable is missing")
+    run_agent(repo, version, repair_key, codex=str(args.codex.resolve()),
+              upstream_source=upstream_source)
     paths, patch = collect_patch(repo, base)
     run_checks(repo)
     if output.exists() and any(output.iterdir()):

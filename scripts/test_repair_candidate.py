@@ -199,7 +199,8 @@ else:
             output = root / "repair-output"
             argv = ["repair_candidate.py", "--repo", str(candidate_repo), "--candidate",
                     str(candidate_repo / "compatibility/candidate.json"),
-                    "--upstream-source", str(upstream), "--output", str(output)]
+                    "--upstream-source", str(upstream), "--output", str(output),
+                    "--codex", str(worker)]
             for field, message in [("upstream_tag_ref_sha", "tag object differs"),
                                    ("upstream_source_sha", "commit differs")]:
                 changed = {**pinned, field: "f" * 40}
@@ -212,8 +213,7 @@ else:
                     agent.assert_not_called()
             (candidate_repo / "compatibility/candidate.json").write_text(json.dumps(pinned))
             with patch.object(sys, "argv", argv), patch.dict(os.environ, {
-                    "CODEX_REPAIR_API_KEY": "fixture-key",
-                    "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]}):
+                    "CODEX_REPAIR_API_KEY": "fixture-key"}):
                 repair.main()
             report = json.loads((output / "repair-report.json").read_text())
             self.assertFalse(report["certified"])
