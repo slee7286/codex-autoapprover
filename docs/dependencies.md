@@ -21,6 +21,20 @@ particular Linux or Windows binary, conclude license compliance, ship notices,
 or establish that dependencies have no known vulnerabilities. The CI job
 retains it as review material, not a production attestation.
 
+On 2026-09-23, a local `cargo-audit 0.22.2` scan compared all 89 locked
+packages with 1,264 advisories from public [RustSec advisory-db](https://github.com/RustSec/advisory-db)
+commit `f7dc4b2860b29978f400fda0aab31cc4dbd21134`. It reported zero
+vulnerabilities and zero informational warnings. The database was cloned
+without sending this repository's dependency names; the audit then ran with
+`--no-fetch --no-yanked` against the local `Cargo.lock`. Its JSON report is
+retained only at `/tmp/autoapprover-rustsec-audit-20260923.json` (SHA-256
+`11c18bf84c806cea56e975d8f0befed13a2b10fb51a48f085c9bded88699caf1`).
+This is a point-in-time [RustSec `cargo-audit`](https://github.com/rustsec/rustsec/tree/main/cargo-audit)
+result, not a check for yanked crates, advisories absent from RustSec, exact
+linked-code reachability, or an independent vulnerability review. The earlier
+proposed OSV batch query was not sent because it would disclose the exact
+lockfile inventory to a public API.
+
 `scripts/binary_sbom.py` additionally selects the normal and build dependency
 closure from Cargo's native target-filtered resolved graph. Its SPDX 2.3 file
 names one candidate executable and binds its exact SHA-256 and source digest.

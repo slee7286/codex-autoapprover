@@ -165,6 +165,12 @@ made additional code, gate, test and documentation changes.
   top-level text in their published archives and remain manual review items.
   The bundle is preliminary, covers the full lockfile and is not a final
   consumer notice set or independent legal review.
+- An offline `cargo-audit 0.22.2` scan of the complete 89-package lockfile
+  against pinned public RustSec advisory-db commit
+  `f7dc4b2860b29978f400fda0aab31cc4dbd21134` reported zero vulnerabilities
+  and zero informational warnings. The database contains 1,264 advisories;
+  yanked status was not queried. This point-in-time RustSec result does not
+  establish a complete vulnerability review or exact binary reachability.
 - A manual main-branch workflow now prepares native Linux and Windows
   candidate binaries and checksums. Separate jobs gate the exact downloaded
   bytes; a protected-environment job can attest candidate build provenance
@@ -192,6 +198,7 @@ made additional code, gate, test and documentation changes.
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
 | `python3 scripts/binary_sbom.py --offline --binary ... --output /tmp/...` | Generated a 58-package Linux x86_64 native binary build-input SPDX 2.3 document, rechecked staged bytes and document idempotently, rejected a modified executable, and passed the locally retained official SPDX schema; no Windows execution or signed attestation |
 | `python3 scripts/locked_licenses.py --output /tmp/...` | Reproduced a deterministic 171-file local bundle with an exact inventory; top-level license/notice text was absent for two of 88 registry crates. This is review material, not a legal conclusion. |
+| Local `cargo-audit 0.22.2 audit --no-fetch --no-yanked --format json` | Scanned all 89 locked packages against 1,264 advisories at pinned RustSec database commit `f7dc4b2860b29978f400fda0aab31cc4dbd21134`; reported zero vulnerabilities and zero warnings. The JSON report remains in `/tmp`, and no lockfile inventory was sent in the audit request. |
 | Disposable npm Codex 0.156.1 candidate | Fetched seven official registry package identities; exact-version lock and installed Linux parent/native package matched the recorded SHA-512 integrities. Script-free `npm ci` and `npm audit signatures` passed; npm reported two verified registry signatures and attestations. Version/help/features probes passed against the installed shim. This is non-live Linux-only evidence, not approval qualification. |
 | Candidate provenance and watcher workflow static review | YAML structure, main-only provenance dispatch, token permissions, job order, Bash and inline Python syntax passed locally. The watcher repair-signal guard rejected missing/invalid fixtures and accepted an exact fixture; no GitHub run, environment approval, provenance signature or Windows PowerShell execution occurred |
 | Read-only GitHub CLI PR field check | The candidate `gh pr list --head ... --state all --json ...` query was accepted and returned no existing 0.156.0 candidate PR. A separate existing public PR showed the expected owner, same-repository flag, `OPEN` state and 40-character head commit fields. This verified JSON shape only; no PR was created or changed. |
@@ -241,6 +248,13 @@ potentially sensitive exact `Cargo.lock` inventory to a public API. A local
 comparison found 19 exact registry package identities on this branch absent
 from public `origin/main`; the query was not retried. No vulnerability query
 was sent and no vulnerability conclusion is claimed.
+The subsequent offline RustSec report is
+`/tmp/autoapprover-rustsec-audit-20260923.json`, SHA-256
+`11c18bf84c806cea56e975d8f0befed13a2b10fb51a48f085c9bded88699caf1`,
+against unchanged `Cargo.lock` SHA-256
+`51dc827a01e052cbc598847e4b504445bbe290df64d53b4b02f799f4a3295ace`.
+It returned zero findings in that database snapshot, not a general vulnerability
+clearance.
 
 ## Fresh upstream research and available access
 
