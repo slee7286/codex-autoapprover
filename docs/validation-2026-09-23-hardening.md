@@ -81,8 +81,9 @@ made additional code, gate, test and documentation changes.
   recorded candidate metadata to equal a freshly fetched official record
   before downloading either native asset. On an update the watcher also
   rechecks the previously recorded release assets and, for full records, all
-  seven npm package identities before preparing the new candidate. The legacy
-  0.156.0 record lacks those digests, so it cannot be retroactively compared.
+  seven npm package identities before preparing the new candidate. The checked-in
+  0.156.0 record now pins those identities from the official 2026-09-23 snapshot;
+  it does not establish any earlier digest history or native qualification.
   Asset/CLI preflight is now a separate
   job; its failures cannot reach the repair worker. The official record now
   includes exact SHA-512 registry integrity for the npm parent and six native
@@ -206,6 +207,9 @@ watcher re-fetched and matched that prior record's two native asset identities
 and seven npm identities before writing the new temporary candidate. Synthetic
 asset and npm mutations were rejected before a candidate write. No live
 default-branch workflow or PR exercised this transition.
+The checked-in 0.156.0 candidate was then upgraded from legacy schema 1 to
+this full, still-unverified schema-2 metadata baseline. Its selected GitHub
+asset digests and sizes match the separate official observation record.
 
 Primary references: [official release](https://github.com/openai/codex/releases/tag/rust-v0.156.0),
 [hook semantics](https://learn.chatgpt.com/docs/hooks),
