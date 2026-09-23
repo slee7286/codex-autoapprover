@@ -167,8 +167,11 @@ made additional code, gate, test and documentation changes.
   source digests, passes the official SPDX schema, and rejects a changed binary
   when compared with the staged document. The candidate workflow prepares the
   same path for native Windows and binary-subject SBOM attestations, but has not
-  run. Exact linked-code composition, toolchain/OS inventory and independent
-  dependency review are still missing.
+  run. A separate bounded native build observation now records a clean Git
+  revision, toolchain versions, selected host facts and matching source/binary
+  digests; its workflow path has been rehearsed locally on Linux only. It is
+  self-reported, not reproducibility proof or a linked compiler/OS inventory.
+  Exact linked-code composition and independent dependency review are missing.
 - An offline, deterministic license-text bundle now indexes top-level license
   and notice files from the same 88 checksum-verified crate archives and the
   project's own MIT license. `difflib 0.4.0` and `r-efi 6.0.0` lack matching
@@ -196,7 +199,7 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed with the prepared directory ACL module and native-only ACL regression test; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 72 tests passed, adding deterministic Windows ZIP extraction and x86_64 PE guard coverage to the earlier 70 local tests; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 74 tests passed; the two new build-record tests reject changed binary/source/toolchain observations and a dirty workflow tree. Synthetic fixtures are not production evidence. |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
@@ -204,7 +207,8 @@ made additional code, gate, test and documentation changes.
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall, journal recovery at each install-pointer boundary and interrupted first install passed. A file-size-limited upgrade failed during its staged copy; the prior executable remained selected and the next status call cleared partial stages. This is not a physical disk-full or power-loss test. Malformed/conflicting journals were rejected and Codex home content stayed unchanged. |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | Linux-host PowerShell 7.6.6 parser | Parsed the new Windows installer and two native test scripts without syntax errors. This did not execute the installer or exercise Windows PowerShell 5.1. |
-| Prepared Windows candidate workflow | YAML parsed, with lifecycle tests configured for Windows PowerShell 5.1 and 7 and extracted ZIP rehearsal configured for PowerShell 7; no workflow run occurred. |
+| Prepared Windows candidate workflow | YAML parsed; the changed Windows build and qualification steps passed a Linux-host PowerShell 7.6.6 syntax parse. Lifecycle tests remain configured for Windows PowerShell 5.1 and 7 and extracted ZIP rehearsal for PowerShell 7; no native workflow run occurred. |
+| `scripts/build_record.py` and Linux candidate staging/qualification scripts | From clean commit `820d5b4`, staged the exact Linux binary, SPDX file and 1,112-byte build observation with three verified SHA-256 entries. The separate qualification script rechecked all three, regenerated the SBOM identically, then correctly failed the still-pending production gate. This was a local rehearsal, not a GitHub provenance run or native approval test. |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
 | `python3 scripts/binary_sbom.py --offline --binary ... --output /tmp/...` | Generated a 58-package Linux x86_64 native binary build-input SPDX 2.3 document, rechecked staged bytes and document idempotently, rejected a modified executable, and passed the locally retained official SPDX schema; no Windows execution or signed attestation |
 | `python3 scripts/locked_licenses.py --output /tmp/...` | Reproduced a deterministic 171-file local bundle with an exact inventory; top-level license/notice text was absent for two of 88 registry crates. This is review material, not a legal conclusion. |
@@ -229,32 +233,41 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v34/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `892ac1d2d87c77c53220edf95c5a0c44419d8383e1a9bee0fbeb637d4df01b66`.
+`/tmp/autoapprover-dev-package-20260923-v35/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `2cbaac248bb2d4fe082bb774dc565c95cf841c2053cb53da8ed8626972e71812`.
 Its recorded source digest is
-`63b6db3fbabef769fdc9956c3b48bff383253d55d71510da6c83ea0f3c362798`.
+`fdd35bd3e8c3f456fec782aafd2cf4c1f380365e9f73b3f87d34796cb67b0f3d`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v32.spdx.json`, SHA-256
-`f097c29f3d0dde273556047403b432d7803781cd57883348c50a2028010f1bf9`.
+`/tmp/autoapprover-locked-dependencies-v33.spdx.json`, SHA-256
+`7d50f04aef1f1af04a6fcdd4972823353ae6d2de71ff0f58be5b3b1de82af732`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The local Linux binary build-input document is
-`/tmp/autoapprover-binary-linux-v10.spdx.json`, SHA-256
-`e6d6130f53a61fdb3a3addbe8b591eead74e20f1ca45c482da25d216d61f2595`.
+`/tmp/autoapprover-binary-linux-v11.spdx.json`, SHA-256
+`0321c0b5a758c9bdef53d9b81633fc2b530ac6060704586fc8176565a2b1c5b6`.
 It records 58 packages and 84 relationships, passed the same SPDX schema,
 and binds the development executable digest above. Both SPDX files used
 `SOURCE_DATE_EPOCH=1790143138` for reproducible local output. This is neither
 a signed SBOM attestation nor a conclusion about exact linked components.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v14.tar.gz`, SHA-256
-`0166aed45ceefe12415b7773e7079331c806c90e6dd63c37321a2ffcff29933d`.
-Its indexed source digest matches the archive above. An automatic approval
-review rejected a proposed live OSV batch query because it would transmit the
-potentially sensitive exact `Cargo.lock` inventory to a public API. A local
+`/tmp/autoapprover-locked-licenses-v15.tar.gz`, SHA-256
+`9261dd8fe54000aa2ee4122210e3bd220304169fff85ab0947e1315e6443826e`.
+Its indexed source digest matches the archive above.
+
+The Linux candidate build observation is
+`/tmp/autoapprover-candidate-record-v1/candidate-linux/build-record.json`,
+SHA-256 `be943c05d4e154e06a149aefe946df704c157d572b16e658f2591884b9711d27`.
+It records clean commit `820d5b4ecc904988a0ec1ab31c557b55d68ce99b`,
+the same source and binary digests as the archive, Rust/Cargo 1.98.0 and
+the local Ubuntu 26.04 host. It is a self-reported local observation, not
+verified build provenance or native Codex evidence.
+
+An automatic approval review rejected a proposed live OSV batch query because
+it would transmit the potentially sensitive exact `Cargo.lock` inventory to a public API. A local
 comparison found 19 exact registry package identities on this branch absent
 from public `origin/main`; the query was not retried. No vulnerability query
 was sent and no vulnerability conclusion is claimed.
@@ -372,7 +385,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; hardlinked/reparse config files, redirected directory chains and oversized input now fail closed; Linux artifact lifecycle passes disposable local tests with crash-journal simulations and a bounded staged-copy write failure; Windows artifact installer and exact-byte ZIP rehearsal are prepared but unrun | Authenticated final Linux consumer package and exact-byte rehearsal; native Windows artifact lifecycle and PS 5.1/7 execution of prepared hardlink/junction cases; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/lock/actual disk-full/power-loss/interruption matrix |
 | 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan read-only verified against 0.156.1; schema-3 records bind the Git tag object and source commit; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; source repair rejects a moved tag object or commit before running the agent; local multi-release fixtures queue one previously unhandled PR per poll and fail closed on missing baseline/history or changed open-PR metadata; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; exercise oldest-first missed-release catch-up and moved/deleted tag refusal on the default branch, then measure backlog latency; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
-| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory and offline notice bundle with two missing top-level texts; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM, final notices and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
+| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory and offline notice bundle with two missing top-level texts; exact-digest native build observation and manual protected-environment candidate-provenance workflow prepared, with the Linux staging script rehearsed locally | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs and linked component inventory; final per-artifact SBOM/notices and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release; automatic approval review rejected the attempted public branch push | Continue independent local work; obtain explicit publication approval before pushing the branch or preparing a public draft PR; final publication remains with the user |
 
 **Completion is unproven and contradicted by the open items above.** The goal
