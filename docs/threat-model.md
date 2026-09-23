@@ -8,7 +8,7 @@ This threat model covers the hook-based architecture. Hooks provide a structured
 
 The hook input may include `session_id`, `cwd`, `hook_event_name`, `permission_mode`, `turn_id`, `tool_name`, and `tool_input`. Only the broker socket location, internal protocol marker, and secret are inherited for the hook. Hook invocations for matching hooks may be concurrent; each connection is independently bounded and authenticated.
 
-The experimental `verify-local-hook` path adds an exact local-version check, interactive confirmation, a temporary Git repository, `workspace-write` and `on-request` settings, a child-local hook override, and a redacted temporary audit sink. It does not isolate or replace the user's Codex authentication context, and the hook-trust bypass can allow other configured hooks to participate under Codex's documented composition rules.
+The experimental `verify-local-hook` path adds an exact local-version check, interactive confirmation, a temporary Git repository, `workspace-write` and `on-request` settings, a child-local hook override, a redacted temporary audit sink, and an exact loopback request witness. It does not isolate or replace the user's Codex authentication context. Codex must review and trust the exact temporary hook definition; other configured hooks can still participate under Codex's documented composition rules. A complete native qualification harness must isolate that composition and retain durable evidence.
 
 ## Assets
 
@@ -43,7 +43,7 @@ Threats may originate from malicious repository content, prompt injection, model
 | Threat | Impact | Likelihood | Mitigation | Residual risk |
 | --- | --- | --- | --- | --- |
 | Forged `PermissionRequest` JSON from an unrelated or stale process | Unauthorized allow | Medium | Private unique socket, `SO_PEERCRED`, peer UID check, exact PID/start-time ancestry, random secret, strict protocol, fail-closed response | Same-user malicious code in the exact descendant tree remains in the threat boundary |
-| Verification child receives a different or repeated action | Unauthorized live side effect or invalid evidence | Medium | Exact target-version gate, exact `tool_input.command` guard, one recorded allow required, non-promotion on count mismatch | A malicious descendant can inherit the guard and invoke the hook with the same harmless string |
+| Verification child receives a different or repeated action | Unauthorized live side effect or invalid evidence | Medium | Exact target-version gate, nonce-bound local HEAD command, exact `tool_input.command` guard, one recorded allow and one independently witnessed request required, non-promotion on count mismatch | A malicious descendant can inherit the guard and invoke the hook with the same harmless string; no live native outcome has been observed |
 | Malicious repository content or prompt injection influences a real request | Dangerous command authorized | Medium | Treat tool input as untrusted; authorize only the current Codex event; warn that allow is consequential | Hook cannot determine semantic intent or model honesty |
 | Malformed or oversized JSON | Parser crash, confused decision | Medium | Bounded read, strict JSON object parsing, no panics, empty decision on failure | Codex's handling of hook failures is release-dependent and must be tested |
 | Unsupported schema or wrong hook event | Wrong event authorized | High | Exact `PermissionRequest` check, explicit schema/version policy, fail closed | Official schemas may evolve without a stable version field |

@@ -17,6 +17,7 @@ use crate::{
     child_tree::ChildTree,
     cli::{COMPATIBILITY_ENV, CompatibilityMode, RunArgs},
     codex, compatibility, interrupt, process,
+    verification_probe::VerificationProbe,
 };
 
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -325,22 +326,19 @@ pub fn verify_local_hook() -> Result<i32> {
         )
     }
     let expected_version = verification_target.version.clone();
+    let probe = VerificationProbe::start()?;
+    let probe_command = probe.command().to_owned();
 
     eprintln!();
     eprintln!("!!! ISOLATED LOCAL HOOK VERIFICATION !!!");
     eprintln!("This starts the official Codex executable with a child-local hook override.");
     eprintln!("Automatic approval is armed only for this verification child.");
     eprintln!("No persistent Codex configuration will be written.");
-    eprintln!(
-        "The only authorized action is: {}",
-        verification_target.command
-    );
+    eprintln!("The only authorized action is: {}", probe_command);
     eprintln!(
         "The test prompt forbids all other commands, file changes, Git changes, installs, and full access."
     );
-    eprintln!(
-        "The Codex hook-trust bypass is used only to run this process-local hook; it is not sandbox or approval bypass."
-    );
+    eprintln!("Codex must review and trust the exact temporary hook definition before it can run.");
     eprintln!();
     eprint!(
         "Type exactly `{} ` followed by Enter to continue: ",
@@ -379,7 +377,7 @@ pub fn verify_local_hook() -> Result<i32> {
             admission: None,
             codex_version: expected_version.clone(),
             expected_cwd: repo_path.clone(),
-            expected_command: Some(verification_target.command.into()),
+            expected_command: Some(probe_command.clone()),
             expected_tool_name: Some(verification_target.observed_tool_type.into()),
             audit_path: Some(audit_path.clone()),
         },
@@ -399,10 +397,9 @@ pub fn verify_local_hook() -> Result<i32> {
         .args(["-s", "workspace-write", "-a", "on-request"])
         .arg("--no-daemon")
         .arg("--no-alt-screen")
-        .arg("--dangerously-bypass-hook-trust")
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
-        .arg(verification_prompt(&verification_target))
+        .arg(verification_prompt(&probe_command))
         .current_dir(&repo_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -500,6 +497,13 @@ pub fn verify_local_hook() -> Result<i32> {
         let cleanup = cleanup_bound_verification(state, broker, session);
         return Err(with_cleanup_error(error, cleanup));
     }
+    let observation = match probe.finish() {
+        Ok(observation) => observation,
+        Err(error) => {
+            let cleanup = cleanup_bound_verification(state, broker, session);
+            return Err(with_cleanup_error(error, cleanup));
+        }
+    };
 
     let attempt_count = match audit::broker_attempt_count(&audit_path)
         .context("read temporary broker connection audit")
@@ -528,7 +532,7 @@ pub fn verify_local_hook() -> Result<i32> {
             return Err(with_cleanup_error(error, cleanup));
         }
     };
-    let expected_input = serde_json::json!({"command": verification_target.command});
+    let expected_input = serde_json::json!({"command": probe_command});
     let exact_request_count = match audit::exact_request_count(
         &audit_path,
         verification_target.observed_tool_type,
@@ -575,6 +579,14 @@ pub fn verify_local_hook() -> Result<i32> {
     eprintln!("verification evidence: allowed PermissionRequest count: {allow_count}");
     eprintln!("verification evidence: structured allow emission count: {emitted_allow_count}");
     eprintln!(
+        "verification evidence: exact loopback HEAD requests observed: {}",
+        observation.exact_head_requests
+    );
+    eprintln!(
+        "verification evidence: unexpected loopback requests observed: {}",
+        observation.unexpected_requests
+    );
+    eprintln!(
         "verification evidence: exact command result via Codex child exit status: {}",
         codex::status_code(status)
     );
@@ -611,9 +623,13 @@ pub fn verify_local_hook() -> Result<i32> {
         || exact_request_count != 1
         || allow_count != 1
         || emitted_allow_count != 1
+        || observation.exact_head_requests != 1
+        || observation.unexpected_requests != 0
     {
         bail!(
-            "expected exactly one broker connection, parsed hook request, exact hook request, allow record, and structured allow emission; recorded {attempt_count} connection(s), {invocation_count} parsed request(s), {exact_request_count} exact request(s), {allow_count} allow record(s), and {emitted_allow_count} emission(s); compatibility was not promoted"
+            "expected exactly one broker connection, parsed hook request, exact hook request, allow record, structured allow emission, and witnessed HEAD request, with no unexpected loopback request; recorded {attempt_count} connection(s), {invocation_count} parsed request(s), {exact_request_count} exact request(s), {allow_count} allow record(s), {emitted_allow_count} emission(s), {} witnessed request(s), and {} unexpected request(s); compatibility was not promoted",
+            observation.exact_head_requests,
+            observation.unexpected_requests,
         )
     }
     if !repository_clean {
@@ -993,10 +1009,9 @@ fn format_repository_diagnostics(label: &str, status: &RepositoryStatus) -> Stri
     output
 }
 
-fn verification_prompt(target: &compatibility::VerificationTarget) -> String {
+fn verification_prompt(command: &str) -> String {
     format!(
-        "Run exactly `{}` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion.",
-        target.command
+        "Run exactly `{command}` and do nothing else. If sandboxed network access is blocked, request approval for that exact command. Do not substitute another command. Do not create or modify files, install software, alter Git state, use full access, or perform any other action. Report completion."
     )
 }
 
@@ -1206,10 +1221,7 @@ mod tests {
 
     #[test]
     fn verification_prompt_cannot_request_full_access() {
-        let version = if cfg!(windows) { "0.152.1" } else { "0.151.0" };
-        let target =
-            compatibility::resolved_verification_target(version).expect("verification target");
-        let prompt = verification_prompt(&target);
+        let prompt = verification_prompt(compatibility::verification_probe_command_fixture());
         assert!(!prompt.contains("--yolo"));
         assert!(prompt.contains("use full access"));
     }

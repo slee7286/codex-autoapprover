@@ -4,12 +4,46 @@ use crate::arming;
 pub const SUPPORTED_HOOK_PROTOCOL: &str = arming::PROTOCOL_VERSION;
 
 #[cfg(windows)]
-pub(crate) const fn verification_probe_command() -> &'static str {
-    "curl.exe -I https://example.com"
-}
+const VERIFICATION_CURL: &str = "curl.exe";
 #[cfg(not(windows))]
-pub(crate) const fn verification_probe_command() -> &'static str {
-    "curl -I https://example.com"
+const VERIFICATION_CURL: &str = "curl";
+
+pub(crate) fn verification_probe_command(port: u16, nonce: &str) -> Option<String> {
+    if port == 0
+        || nonce.len() != 32
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return None;
+    }
+    Some(format!(
+        "{VERIFICATION_CURL} -fsSI --max-time 10 --noproxy 127.0.0.1 http://127.0.0.1:{port}/{nonce}"
+    ))
+}
+
+pub(crate) fn is_verification_probe_command(command: &str) -> bool {
+    let Some(endpoint) = command.strip_prefix(&format!(
+        "{VERIFICATION_CURL} -fsSI --max-time 10 --noproxy 127.0.0.1 http://127.0.0.1:"
+    )) else {
+        return false;
+    };
+    let Some((port, nonce)) = endpoint.split_once('/') else {
+        return false;
+    };
+    let Ok(port) = port.parse::<u16>() else {
+        return false;
+    };
+    verification_probe_command(port, nonce).as_deref() == Some(command)
+}
+
+#[cfg(test)]
+pub(crate) fn verification_probe_command_fixture() -> &'static str {
+    if cfg!(windows) {
+        "curl.exe -fsSI --max-time 10 --noproxy 127.0.0.1 http://127.0.0.1:47123/0123456789abcdef0123456789abcdef"
+    } else {
+        "curl -fsSI --max-time 10 --noproxy 127.0.0.1 http://127.0.0.1:47123/0123456789abcdef0123456789abcdef"
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,7 +93,6 @@ pub struct VerificationTarget {
     pub surface: Surface,
     pub hook_protocol: &'static str,
     pub observed_tool_type: &'static str,
-    pub command: &'static str,
 }
 
 pub fn verification_schema(version: &str, tool: &str) -> bool {
@@ -91,7 +124,6 @@ pub fn resolved_verification_target(version: &str) -> Option<VerificationTarget>
         surface: Surface::LocalCliLauncher,
         hook_protocol: SUPPORTED_HOOK_PROTOCOL,
         observed_tool_type: "Bash",
-        command: verification_probe_command(),
     })
 }
 
@@ -115,6 +147,21 @@ mod tests {
         assert!(!verification_schema("0.156.0-rc.1", "Bash"));
         let target = resolved_verification_target("0.156.0").unwrap();
         assert!(!verification_version_matches("0.157.0", &target));
+        assert!(is_verification_probe_command(
+            verification_probe_command_fixture()
+        ));
+        assert!(!is_verification_probe_command(
+            "curl -I https://example.com"
+        ));
+        assert!(!is_verification_probe_command(&format!(
+            "{} && echo extra",
+            verification_probe_command_fixture()
+        )));
+        assert!(!is_verification_probe_command(
+            &verification_probe_command(47123, "0123456789abcdef0123456789abcdef")
+                .unwrap()
+                .replace("127.0.0.1", "example.com")
+        ));
         assert!(
             !crate::certification::Manifest::embedded()
                 .unwrap()

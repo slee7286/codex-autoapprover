@@ -228,7 +228,7 @@ mod tests {
                 "turn_id": "turn_test",
                 "permission_mode": "default"
             }}"#,
-            crate::compatibility::verification_probe_command()
+            crate::compatibility::verification_probe_command_fixture()
         )
     }
 

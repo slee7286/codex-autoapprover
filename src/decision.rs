@@ -49,8 +49,10 @@ pub fn decide(input: &HookInput, context: DecisionContext<'_>) -> Decision {
     if tool != "Bash" {
         return Decision::Decline(DeclineReason::UnsupportedToolType);
     }
-    let verification = context.expected_command
-        == Some(crate::compatibility::verification_probe_command())
+    let verification = context.certified_target.is_none()
+        && context
+            .expected_command
+            .is_some_and(crate::compatibility::is_verification_probe_command)
         && context.expected_tool_name == Some("Bash");
     let admitted = if verification {
         crate::compatibility::verification_schema(context.codex_version, tool)
@@ -109,7 +111,7 @@ mod tests {
             br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"true"}}"#,
         )
         .map(|mut value| {
-            { value.tool_input = Some(serde_json::json!({"command": crate::compatibility::verification_probe_command()})); }
+            { value.tool_input = Some(serde_json::json!({"command": crate::compatibility::verification_probe_command_fixture()})); }
             value
         })
         .expect("valid fixture")
@@ -120,7 +122,7 @@ mod tests {
             certified_target: None,
             codex_version: if cfg!(windows) { "0.152.1" } else { "0.151.0" },
             expected_cwd: "/tmp/work",
-            expected_command: Some(crate::compatibility::verification_probe_command()),
+            expected_command: Some(crate::compatibility::verification_probe_command_fixture()),
             expected_tool_name: Some("Bash"),
         }
     }
@@ -193,7 +195,7 @@ mod tests {
 
     #[test]
     fn verification_allows_only_the_exact_authorized_command() {
-        let expected_command = crate::compatibility::verification_probe_command();
+        let expected_command = crate::compatibility::verification_probe_command_fixture();
         let verification_context = DecisionContext {
             expected_command: Some(expected_command),
             expected_tool_name: Some("Bash"),

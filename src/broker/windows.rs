@@ -414,8 +414,11 @@ fn verify_request(
         if admission.verify_process(expected.pid).is_err() {
             return false;
         }
-    } else if shared.config.expected_command.as_deref()
-        != Some(crate::compatibility::verification_probe_command())
+    } else if !shared
+        .config
+        .expected_command
+        .as_deref()
+        .is_some_and(crate::compatibility::is_verification_probe_command)
         || shared.config.expected_tool_name.as_deref() != Some("Bash")
     {
         return false;

@@ -38,7 +38,7 @@ The documentation also states that matching hooks from multiple files run and mu
 
 ## Local Codex observations
 
-The current local observation is Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposes `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposes stable hooks in `codex features list`. The reviewed Linux 0.151.0 live evidence is the repository-recorded evidence from commit `4206097`; it is retained as the only verified compatibility entry.
+An earlier local observation found Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposed `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposed stable hooks in `codex features list`. The Linux 0.151.0 live evidence recorded at commit `4206097` is historical only; it does not certify the current artifact and the production manifest has no entries.
 
 ```text
 hooks  stable  true
@@ -82,9 +82,9 @@ The launcher creates a private broker and listener, launches the exact Codex chi
 
 ## Compatibility and no-decision policy
 
-The launcher distinguishes exact version/OS eligibility, non-live capability, runtime schema, historical review status and session arming. Only reviewed tuples may arm during normal run; legacy automatic options are strict aliases. The experimental verifier has a separate candidate-schema path and additionally requires the exact fixed probe command and expected tool in its broker configuration. Unsupported requests receive no decision.
+The launcher distinguishes exact version/OS eligibility, non-live capability, runtime schema, historical review status and session arming. Only reviewed tuples may arm during normal run; legacy automatic options are strict aliases. The experimental verifier has a separate candidate-schema path and additionally requires its generated exact probe command and expected tool in its broker configuration. Unsupported requests receive no decision.
 
-The exact verification probes are `curl -I https://example.com` on Linux and `curl.exe -I https://example.com` on native Windows. The verifier resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. A successful network command with zero observed PermissionRequest invocations is inconclusive. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
+The verifier binds a random nonce to a temporary `127.0.0.1` listener and generates a bounded, no-proxy `curl` HEAD command (`curl.exe` on Windows) for that one endpoint. It requires exactly one broker request and allow plus exactly one matching request received by the listener. It resolves the installed target once and derives its displayed version, confirmation phrase, child binding, prompt, and exact broker authorization from it. A successful local request with zero observed PermissionRequest invocations is inconclusive. Codex must review and trust the temporary hook normally; the verifier no longer bypasses trust for other configured hooks. Protocol validation is fail-closed compatibility plumbing, not a safety claim about arbitrary commands.
 
 ## Schema versions and open questions
 

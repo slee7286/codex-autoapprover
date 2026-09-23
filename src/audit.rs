@@ -220,7 +220,7 @@ mod tests {
         hook_allow(
             "Bash",
             Some(&serde_json::json!({
-                "command": crate::compatibility::verification_probe_command(),
+                "command": crate::compatibility::verification_probe_command_fixture(),
                 "secret": "do-not-log",
             })),
         )
@@ -232,7 +232,7 @@ mod tests {
         hook_allow(
             "Bash",
             Some(&serde_json::json!({
-                "command": crate::compatibility::verification_probe_command(),
+                "command": crate::compatibility::verification_probe_command_fixture(),
                 "secret": "do-not-log",
             })),
         )
@@ -243,7 +243,7 @@ mod tests {
             allow_record_count(&directory.path().join("audit-with-env.log")).unwrap(),
             1
         );
-        assert!(!contents.contains(crate::compatibility::verification_probe_command()));
+        assert!(!contents.contains(crate::compatibility::verification_probe_command_fixture()));
         assert!(!contents.contains("do-not-log"));
         assert!(!contents.contains("CODEX_AUTOAPPROVER"));
     }

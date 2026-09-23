@@ -411,8 +411,11 @@ fn verify_request(
         if admission.verify_process(expected.pid).is_err() {
             return false;
         }
-    } else if shared.config.expected_command.as_deref()
-        != Some(crate::compatibility::verification_probe_command())
+    } else if !shared
+        .config
+        .expected_command
+        .as_deref()
+        .is_some_and(crate::compatibility::is_verification_probe_command)
         || shared.config.expected_tool_name.as_deref() != Some("Bash")
     {
         return false;
@@ -748,7 +751,7 @@ mod tests {
                     "cwd":"/tmp/work",
                     "hook_event_name":"PermissionRequest",
                     "tool_name":"Bash",
-                    "tool_input":{"command":"curl -I https://example.com"}
+                    "tool_input":{"command":crate::compatibility::verification_probe_command_fixture()}
                 }
             }))
             .unwrap(),
@@ -766,7 +769,9 @@ mod tests {
                 admission: None,
                 codex_version: "0.151.0".into(),
                 expected_cwd: "/tmp/work".into(),
-                expected_command: Some(crate::compatibility::verification_probe_command().into()),
+                expected_command: Some(
+                    crate::compatibility::verification_probe_command_fixture().into(),
+                ),
                 expected_tool_name: Some("Bash".into()),
                 audit_path: None,
             },
@@ -975,7 +980,9 @@ mod tests {
                 admission: None,
                 codex_version: "0.151.0".into(),
                 expected_cwd: cwd.clone(),
-                expected_command: Some(crate::compatibility::verification_probe_command().into()),
+                expected_command: Some(
+                    crate::compatibility::verification_probe_command_fixture().into(),
+                ),
                 expected_tool_name: Some("Bash".into()),
                 audit_path: Some(audit_path.clone()),
             },
@@ -993,25 +1000,19 @@ mod tests {
             env::set_var(arming::SESSION_TOKEN_ENV, session.secret());
             env::set_var(arming::PROTOCOL_ENV, arming::PROTOCOL_VERSION);
         }
-        let input = protocol::parse(
-            format!(
-                r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"curl -I https://example.com"}}}}"#,
-                cwd.display()
-            )
-            .as_bytes(),
-        )
+        let input_bytes = serde_json::to_vec(&serde_json::json!({
+            "session_id":"s",
+            "cwd":cwd.to_string_lossy(),
+            "hook_event_name":"PermissionRequest",
+            "tool_name":"Bash",
+            "tool_input":{"command":crate::compatibility::verification_probe_command_fixture()},
+        }))
         .unwrap();
+        let input = protocol::parse(&input_bytes).unwrap();
         assert!(request(&input).unwrap());
         let threads: Vec<_> = (0..4)
             .map(|_| {
-                let input = protocol::parse(
-                    format!(
-                        r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"curl -I https://example.com"}}}}"#,
-                        cwd.display()
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
+                let input = protocol::parse(&input_bytes).unwrap();
                 thread::spawn(move || request(&input).unwrap())
             })
             .collect();
@@ -1043,8 +1044,7 @@ mod tests {
         assert_eq!(audit::broker_attempt_count(&audit_path).unwrap(), 7);
         assert_eq!(audit::invocation_count(&audit_path).unwrap(), 6);
         assert_eq!(audit::allow_record_count(&audit_path).unwrap(), 1);
-        let expected_input =
-            serde_json::json!({"command": crate::compatibility::verification_probe_command()});
+        let expected_input = serde_json::json!({"command": crate::compatibility::verification_probe_command_fixture()});
         assert_eq!(
             audit::exact_request_count(&audit_path, "Bash", &expected_input).unwrap(),
             1
