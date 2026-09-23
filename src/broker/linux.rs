@@ -748,8 +748,12 @@ mod tests {
                 "session_secret": secret,
                 "hook_input": {
                     "session_id":"s",
+                    "transcript_path":null,
                     "cwd":"/tmp/work",
                     "hook_event_name":"PermissionRequest",
+                    "model":"gpt-test",
+                    "turn_id":"turn",
+                    "permission_mode":"default",
                     "tool_name":"Bash",
                     "tool_input":{"command":crate::compatibility::verification_probe_command_fixture()}
                 }
@@ -792,9 +796,20 @@ mod tests {
             "protocol_version": BROKER_PROTOCOL_VERSION,
             "message_type": "permission_request",
             "session_secret": "a".repeat(64),
-            "hook_input": {"hook_event_name":"PermissionRequest"}
+            "hook_input": {
+                "session_id":"s", "transcript_path":null, "cwd":"/tmp/work",
+                "hook_event_name":"PermissionRequest", "model":"gpt-test",
+                "turn_id":"turn", "permission_mode":"default", "tool_name":"Bash",
+                "tool_input":{"command":"true"}
+            }
         });
         assert!(parse_request(serde_json::to_vec(&base).unwrap().as_slice()).is_ok());
+        let mut missing = base.clone();
+        missing["hook_input"]
+            .as_object_mut()
+            .unwrap()
+            .remove("transcript_path");
+        assert!(parse_request(serde_json::to_vec(&missing).unwrap().as_slice()).is_err());
         let mut wrong = base.clone();
         wrong["protocol_version"] = serde_json::json!("permission-binding-v0");
         assert!(parse_request(serde_json::to_vec(&wrong).unwrap().as_slice()).is_err());
@@ -1002,8 +1017,12 @@ mod tests {
         }
         let input_bytes = serde_json::to_vec(&serde_json::json!({
             "session_id":"s",
+            "transcript_path":null,
             "cwd":cwd.to_string_lossy(),
             "hook_event_name":"PermissionRequest",
+            "model":"gpt-test",
+            "turn_id":"turn",
+            "permission_mode":"default",
             "tool_name":"Bash",
             "tool_input":{"command":crate::compatibility::verification_probe_command_fixture()},
         }))

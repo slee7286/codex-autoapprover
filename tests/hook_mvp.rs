@@ -26,7 +26,7 @@ fn hook_command() -> Command {
 
 fn permission_request(cwd: &str) -> String {
     format!(
-        r#"{{"session_id":"sess_test","cwd":"{cwd}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"printf synthetic"}},"turn_id":"turn_test","permission_mode":"default"}}"#
+        r#"{{"session_id":"sess_test","transcript_path":null,"cwd":"{cwd}","hook_event_name":"PermissionRequest","model":"gpt-test","tool_name":"Bash","tool_input":{{"command":"printf synthetic"}},"turn_id":"turn_test","permission_mode":"default"}}"#
     )
 }
 
@@ -63,11 +63,11 @@ fn inherited_environment_metadata_alone_cannot_authorize() {
 }
 
 #[test]
-fn expanded_hook_fields_are_ignored_without_broadening_the_decision() {
+fn unknown_hook_fields_receive_no_decision() {
     let cwd = env::current_dir().expect("current directory");
     let token = "a".repeat(64);
     let input = format!(
-        r#"{{"session_id":"sess_test","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{{"command":"printf synthetic"}},"future_field":{{"unexpected":"value"}}}}"#,
+        r#"{{"session_id":"sess_test","transcript_path":null,"cwd":"{}","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn_test","permission_mode":"default","tool_name":"Bash","tool_input":{{"command":"printf synthetic"}},"future_field":{{"unexpected":"value"}}}}"#,
         cwd.display()
     );
     hook_command()
@@ -83,7 +83,8 @@ fn expanded_hook_fields_are_ignored_without_broadening_the_decision() {
         .write_stdin(input)
         .assert()
         .success()
-        .stdout(predicate::str::is_empty());
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no decision"));
 }
 
 #[test]
@@ -103,7 +104,7 @@ fn unsupported_tool_type_version_surface_and_protocol_receive_no_decision() {
         ("0.151.0", LOCAL_CLI_SURFACE, PROTOCOL_VERSION, "Mcp"),
     ] {
         let input = format!(
-            r#"{{"session_id":"sess_test","cwd":"{}","hook_event_name":"PermissionRequest","tool_name":"{}","tool_input":{{"command":"printf synthetic"}}}}"#,
+            r#"{{"session_id":"sess_test","transcript_path":null,"cwd":"{}","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn_test","permission_mode":"default","tool_name":"{}","tool_input":{{"command":"printf synthetic"}}}}"#,
             cwd.display(),
             tool
         );

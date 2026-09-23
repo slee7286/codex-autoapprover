@@ -75,6 +75,7 @@ mod ledger_tests {
         crate::protocol::parse(
             serde_json::to_vec(&serde_json::json!({
                 "session_id": session, "turn_id": turn, "hook_event_name": "PermissionRequest",
+                "transcript_path": null, "model": "gpt-test", "permission_mode": "default",
                 "cwd": "/synthetic", "tool_name": "Bash", "tool_input": {"command": "true"}
             }))
             .unwrap()

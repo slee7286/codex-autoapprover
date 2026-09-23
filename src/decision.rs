@@ -108,7 +108,7 @@ mod tests {
 
     fn input() -> HookInput {
         protocol::parse(
-            br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"true"}}"#,
+            br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"}}"#,
         )
         .map(|mut value| {
             { value.tool_input = Some(serde_json::json!({"command": crate::compatibility::verification_probe_command_fixture()})); }
@@ -234,8 +234,12 @@ mod tests {
         protocol::parse(
             serde_json::to_vec(&serde_json::json!({
                 "session_id": "sess",
+                "transcript_path": null,
                 "cwd": "/tmp/work",
                 "hook_event_name": "PermissionRequest",
+                "model": "gpt-test",
+                "turn_id": "turn",
+                "permission_mode": "default",
                 "tool_name": "Bash",
                 "tool_input": {"command": command},
             }))

@@ -13,16 +13,99 @@ pub const PERMISSION_REQUEST_EVENT: &str = "PermissionRequest";
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(try_from = "WireHookInput")]
 pub struct HookInput {
     pub hook_event_name: Option<String>,
     pub session_id: Option<String>,
+    #[serde(rename = "transcript_path")]
+    pub _transcript_path: Option<String>,
     pub cwd: Option<String>,
+    #[serde(rename = "model")]
+    pub _model: Option<String>,
     pub tool_name: Option<String>,
     pub tool_input: Option<Value>,
     #[serde(rename = "turn_id")]
     pub _turn_id: Option<String>,
     #[serde(rename = "permission_mode")]
     pub _permission_mode: Option<String>,
+}
+
+// Keep the public/broker shape stable while requiring every field in the
+// versioned PermissionRequest wire schema. Subagent fields are deliberately
+// absent: that surface has not been qualified for automatic decisions.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireHookInput {
+    hook_event_name: String,
+    session_id: String,
+    #[serde(default)]
+    transcript_path: NullableString,
+    cwd: String,
+    model: String,
+    tool_name: String,
+    tool_input: Value,
+    turn_id: String,
+    permission_mode: PermissionMode,
+}
+
+#[derive(Default)]
+enum NullableString {
+    #[default]
+    Missing,
+    Null,
+    Value(String),
+}
+
+impl<'de> Deserialize<'de> for NullableString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer).map(|value| match value {
+            Some(value) => Self::Value(value),
+            None => Self::Null,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum PermissionMode {
+    Default,
+    AcceptEdits,
+    Plan,
+    DontAsk,
+    BypassPermissions,
+}
+
+impl TryFrom<WireHookInput> for HookInput {
+    type Error = &'static str;
+
+    fn try_from(input: WireHookInput) -> Result<Self, Self::Error> {
+        let transcript_path = match input.transcript_path {
+            NullableString::Missing => return Err("missing transcript_path"),
+            NullableString::Null => None,
+            NullableString::Value(path) => Some(path),
+        };
+        let permission_mode = match input.permission_mode {
+            PermissionMode::Default => "default",
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Plan => "plan",
+            PermissionMode::DontAsk => "dontAsk",
+            PermissionMode::BypassPermissions => "bypassPermissions",
+        };
+        Ok(Self {
+            hook_event_name: Some(input.hook_event_name),
+            session_id: Some(input.session_id),
+            _transcript_path: transcript_path,
+            cwd: Some(input.cwd),
+            _model: Some(input.model),
+            tool_name: Some(input.tool_name),
+            tool_input: Some(input.tool_input),
+            _turn_id: Some(input.turn_id),
+            _permission_mode: Some(permission_mode.to_owned()),
+        })
+    }
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -221,8 +304,10 @@ mod tests {
         format!(
             r#"{{
                 "session_id": "sess_test",
+                "transcript_path": null,
                 "cwd": "/tmp/example-workspace",
                 "hook_event_name": "PermissionRequest",
+                "model": "gpt-test",
                 "tool_name": "Bash",
                 "tool_input": {{"command": "{}"}},
                 "turn_id": "turn_test",
@@ -261,6 +346,27 @@ mod tests {
         );
         assert!(parse(br#"{"hook_event_name":"PermissionRequest"} trailing"#).is_err());
         assert!(parse(br#"{"tool_input":{"command":"one","command":"two"}}"#).is_err());
+    }
+
+    #[test]
+    fn accepts_tagged_required_fields_but_rejects_unknown_or_malformed_fields() {
+        let documented = br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"}}"#;
+        assert!(parse(documented).is_ok());
+        for body in [
+            br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"},"future_approval_scope":"all"}"#.as_slice(),
+            br#"{"session_id":"sess","cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"}}"#.as_slice(),
+            br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash"}"#.as_slice(),
+            br#"{"session_id":"sess","transcript_path":123,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"}}"#.as_slice(),
+            br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":false,"turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"}}"#.as_slice(),
+            br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"future","tool_name":"Bash","tool_input":{"command":"true"}}"#.as_slice(),
+            br#"{"session_id":"sess","transcript_path":null,"cwd":"/tmp/work","hook_event_name":"PermissionRequest","model":"gpt-test","turn_id":"turn","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"true"},"agent_id":"child"}"#.as_slice(),
+        ] {
+            assert!(
+                parse(body).is_err(),
+                "unsupported hook input was parsed: {}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 
     #[test]

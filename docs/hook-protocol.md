@@ -36,6 +36,8 @@ The [official OpenAI Codex hooks documentation](https://developers.openai.com/co
 
 The documentation also states that matching hooks from multiple files run and multiple matching command hooks for one event launch concurrently. Hook commands run with the session cwd. Non-managed hooks require trust review, and `--dangerously-bypass-hook-trust` can bypass persisted trust for a deliberately vetted one-off invocation.
 
+The [tagged 0.156.1 PermissionRequest input schema](https://github.com/openai/codex/blob/rust-v0.156.1/codex-rs/hooks/schema/generated/permission-request.command.input.schema.json) requires all nine common and event fields shown below, rejects additional properties, restricts `permission_mode` to five named values, and permits optional `agent_id` and `agent_type` for subagent context. The inspected 0.151.0, 0.152.1, and 0.156.0 tagged schemas have the same field shape. This project declines requests carrying subagent context until that surface is separately qualified.
+
 ## Local Codex observations
 
 An earlier local observation found Linux with the locally resolved official command reporting `codex-cli 0.153.0`. Its help exposed `-c/--config`, `--dangerously-bypass-hook-trust`, and ordinary Codex process options. Codex 0.153.0 also exposed stable hooks in `codex features list`. The Linux 0.151.0 live evidence recorded at commit `4206097` is historical only; it does not certify the current artifact and the production manifest has no entries.
@@ -53,16 +55,16 @@ The Rust handler currently:
 1. reads at most 1 MiB plus one byte from stdin;
 2. requires a JSON object;
 3. requires `hook_event_name` exactly equal to `PermissionRequest`;
-4. requires non-empty `session_id`, `cwd`, `tool_name`, and `tool_input`;
+4. requires the tagged schema's `session_id`, `transcript_path` (string or null), `cwd`, `hook_event_name`, `model`, `turn_id`, `permission_mode`, `tool_name`, and `tool_input`; it additionally requires non-empty `session_id`, `cwd`, and `tool_name` before allowing;
 5. requires the inherited socket location, the exact marker `CODEX_AUTOAPPROVER_HOOK_PROTOCOL=permission-request-v1`, and a valid random session secret only to connect to the broker;
 6. sends an internal `permission-binding-v1` framed request to the broker; the broker alone checks the version bound to the launched child, cwd, `Bash`, secret, `SO_PEERCRED`, and `/proc` ancestry;
 7. in the isolated verification path, the broker additionally requires `tool_input.command` to equal the exact platform-resolved probe;
 8. serializes only the documented allow response after broker allow; and
 9. returns exit 0 with empty stdout for every decline, parse failure, broker failure, or disconnected session.
 
-Unknown JSON fields are ignored by the parser but never broaden a decision. The project does not use numeric options, terminal text, ANSI sequences, or a PTY to make a hook decision.
+The project does not use numeric options, terminal text, ANSI sequences, or a PTY to make a hook decision.
 
-The marker, version/platform eligibility, local-surface, and cwd checks are project policy, not official Codex fields. Unknown hook fields are ignored for forward compatibility, but they cannot satisfy or broaden a decision. Optional documented fields may be absent; unknown schema variants and malformed required fields receive no decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
+The marker, version/platform eligibility, local-surface, and cwd checks are project policy, not official Codex fields. Missing, malformed, or unknown top-level fields, subagent fields, and unknown Bash input fields receive no decision. The internal broker rejects duplicate top-level or nested fields, unexpected envelope fields, unsupported versions/types, malformed framing, trailing data, and oversized messages. The secret is intentionally not printed. Descendants may inherit it, but it cannot authorize without kernel peer credentials and exact ancestry.
 
 The verifier gives the broker an audit path in its own temporary state. The broker records only an allow marker and short hashes of tool name and tool input; the hook does not own the allow decision or audit sink. If the audit sink cannot be written, the broker declines rather than allowing. The verifier establishes a local committed Git baseline and checks status immediately before launch and after child exit, including ignored entries; status diagnostics contain only porcelain status codes and paths.
 
@@ -108,8 +110,10 @@ Input:
 ```json
 {
   "session_id": "sess_synthetic_001",
+  "transcript_path": null,
   "cwd": "/tmp/codex-hook-fixture",
   "hook_event_name": "PermissionRequest",
+  "model": "gpt-test",
   "permission_mode": "default",
   "turn_id": "turn_synthetic_001",
   "tool_name": "Bash",
