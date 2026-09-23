@@ -28,6 +28,9 @@ CHECKS = {
     "no_interactive_prompt", "independent_command_outcome", "hook_composition",
     "replay_rejection", "descendant_forgery_rejection", "executable_replacement",
     "cancellation_cleanup", "concurrent_sessions", "clean_disposable_environment",
+    "locked_dependency_inventory", "license_notice_review", "vulnerability_review",
+    "consumer_binary_sbom", "signed_provenance", "protected_release_checks",
+    "exact_consumer_artifact_rollback",
 }
 MAX_EVIDENCE_AGE = timedelta(days=30)
 

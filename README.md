@@ -38,6 +38,8 @@ There is **no authenticated public consumer artifact yet**. Local lifecycle test
 
 `scripts/package_linux.py` creates a deterministic, explicitly unqualified development archive with the executable, installer, manifest, licence, README and a per-file digest record. `scripts/test-package-linux.sh` compares two independently built archives and installs the exact extracted bytes into a disposable directory. The adjacent checksum is unsigned and must not be treated as release authentication.
 
+`scripts/locked_sbom.py` creates a preliminary SPDX 2.3 inventory from every package in `Cargo.lock`. It verifies each registry source archive against the locked SHA-256 before reading its declared license. The inventory covers optional, target, build and development dependencies; it is not a binary-specific SBOM or a completed license/vulnerability review. See [dependency review](docs/dependencies.md).
+
 ## Commands
 
 ```text
@@ -74,6 +76,7 @@ python -m unittest discover -s scripts -p 'test_*.py'
 python scripts/release_gate.py
 ./scripts/test-install-linux.sh target/debug/codex-autoapprover
 ./scripts/test-package-linux.sh target/debug/codex-autoapprover
+python scripts/locked_sbom.py --output /tmp/codex-autoapprover-locked-dependencies.spdx.json
 ```
 
 Native Windows CI also runs installer tests in Windows PowerShell 5.1 and PowerShell 7. Cross-compilation is not native execution evidence. The release-readiness workflow requires fresh reviewed evidence and intentionally fails until production qualification is complete.

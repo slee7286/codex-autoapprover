@@ -152,7 +152,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     eprintln!(
         "codex-autoapprover: automatic one-request approvals ARMED for this certified Codex child; press Ctrl-C to stop"
     );
-    let status = wait_for_bound_child(&mut child, &broker, &interrupted.flag)
+    let status = wait_for_bound_child(&mut child, &broker, &interrupted.flag, None)
         .with_context(|| format!("wait for official Codex at {}", installation.path.display()));
     let broker_result = broker.shutdown();
     let cleanup = session.cleanup();
@@ -396,6 +396,8 @@ pub fn verify_local_hook() -> Result<i32> {
     let mut command = codex::build_codex_command(&installation);
     command
         .args(["-s", "workspace-write", "-a", "on-request"])
+        .arg("--no-daemon")
+        .arg("--no-alt-screen")
         .arg("--dangerously-bypass-hook-trust")
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
@@ -459,8 +461,7 @@ pub fn verify_local_hook() -> Result<i32> {
     let identity = match process::current_process_identity(child.id()) {
         Ok(identity) => identity,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_verification_child(&mut child);
             let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(
                 anyhow::anyhow!("record exact Codex child process identity: {error}"),
@@ -469,21 +470,24 @@ pub fn verify_local_hook() -> Result<i32> {
         }
     };
     if let Err(error) = broker.set_codex_identity(identity) {
-        let _ = child.kill();
-        let _ = child.wait();
+        stop_verification_child(&mut child);
         let cleanup = cleanup_bound_verification(state, broker, session);
         return Err(with_cleanup_error(error, cleanup));
     }
     let interrupted = match interrupt::register_interrupt_flag() {
         Ok(value) => value,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_verification_child(&mut child);
             let cleanup = cleanup_bound_verification(state, broker, session);
             return Err(with_cleanup_error(error, cleanup));
         }
     };
-    let status = match wait_for_bound_child(&mut child, &broker, &interrupted.flag) {
+    let status = match wait_for_bound_child(
+        &mut child,
+        &broker,
+        &interrupted.flag,
+        Some(VERIFICATION_TIMEOUT),
+    ) {
         Ok(status) => status,
         Err(error) => {
             let cleanup = cleanup_bound_verification(state, broker, session);
@@ -665,16 +669,32 @@ fn wait_for_bound_child(
     child: &mut Child,
     broker: &broker::Broker,
     interrupted: &AtomicBool,
+    verification_limit: Option<Duration>,
 ) -> Result<ExitStatus> {
+    let started = Instant::now();
     loop {
         if interrupted.load(Ordering::Relaxed) {
             broker.stop_accepting();
+            if verification_limit.is_some() {
+                stop_verification_child(child);
+                bail!("verification interrupted; child stopped before cleanup")
+            }
+        }
+        if verification_limit.is_some_and(|limit| started.elapsed() >= limit) {
+            broker.stop_accepting();
+            stop_verification_child(child);
+            bail!("verification timed out; child stopped before cleanup")
         }
         if let Some(status) = child.try_wait().context("wait for Codex child")? {
             return Ok(status);
         }
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn stop_verification_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -939,13 +959,11 @@ fn wait_for_verification_child(mut child: Child, interrupted: &AtomicBool) -> Re
     let started = Instant::now();
     loop {
         if interrupted.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_verification_child(&mut child);
             bail!("verification interrupted; child stopped and temporary state will be cleaned up")
         }
         if started.elapsed() >= VERIFICATION_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_verification_child(&mut child);
             bail!("verification timed out; child stopped and temporary state will be cleaned up")
         }
         if let Some(status) = child.try_wait().context("wait for verification child")? {

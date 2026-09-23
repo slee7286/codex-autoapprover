@@ -1,13 +1,11 @@
 # Enforce required code-owner review in repository rules before publication.
-/src/compatibility.rs @slee7286
-/src/certification.rs @slee7286
-/src/admission.rs @slee7286
-/src/environment.rs @slee7286
-/src/identity.rs @slee7286
-/src/decision.rs @slee7286
-/src/broker/ @slee7286
-/src/arming.rs @slee7286
-/src/configure.rs @slee7286
+# A distinct independent security/release reviewer is also required by the release gate.
+/src/ @slee7286
+/Cargo.toml @slee7286
+/Cargo.lock @slee7286
+/build.rs @slee7286
 /compatibility/ @slee7286
 /scripts/ @slee7286
 /.github/ @slee7286
+/SECURITY.md @slee7286
+/docs/ @slee7286

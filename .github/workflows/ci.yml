@@ -63,3 +63,10 @@ jobs:
           python-version: '3.12'
       - run: python -m unittest discover -s scripts -p 'test_*.py'
       - run: python scripts/release_gate.py
+      - name: Generate exact Cargo.lock dependency inventory
+        run: python scripts/locked_sbom.py --output "$RUNNER_TEMP/codex-autoapprover-locked-dependencies.spdx.json"
+      - name: Retain unreviewed dependency inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: locked-dependency-spdx
+          path: ${{ runner.temp }}/codex-autoapprover-locked-dependencies.spdx.json

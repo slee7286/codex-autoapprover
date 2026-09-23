@@ -28,7 +28,8 @@ made additional code, gate, test and documentation changes.
   holds a file handle without write/delete sharing. The brokers recheck the
   configured path, file identity and actual running process image.
 - Native observation rejects known SSH/remote, IDE, WSL, container and isolated
-  namespace environments. Missing host facts remain inconclusive. These checks
+  namespace environments, including runners whose filesystem root UID is
+  remapped away from host root. Missing host facts remain inconclusive. These checks
   are conservative detection, not hardware attestation or same-user isolation.
 - Foreground admission restricts forwarded options and explicitly pins the
   selected sandbox while preserving the active permission profile. A bounded disposable
@@ -43,7 +44,10 @@ made additional code, gate, test and documentation changes.
   normal approval. Same-user malicious descendants remain an open review item.
 - Probe output uses private temporary files rather than unbounded thread joins
   on inherited pipes. Unix probe process groups are terminated on completion or
-  timeout. Windows descendant termination still needs implementation/testing.
+  timeout. The isolated interactive verifier now requests no shared daemon and
+  bounds and stops its direct child on timeout or interruption. Descendant
+  termination for that interactive verifier still needs native testing on both
+  Linux and Windows.
 - The schema-2 release gate compares the entire compiled manifest and evidence
   targets, includes the manifest in source hashing, requires consumer/upstream
   digests, retained artifact hashes, independent review identities and all
@@ -60,6 +64,11 @@ made additional code, gate, test and documentation changes.
   builds compared byte-for-byte, and the extracted executable installed and
   uninstalled from a disposable directory. Its checksum is unsigned and its
   metadata explicitly says unqualified.
+- The preliminary SPDX 2.3 locked-dependency inventory lists 89 exact packages
+  and 137 relationships. All 88 third-party archive checksums matched
+  `Cargo.lock`; declared licenses were read from those archives. It passed the
+  official SPDX 2.3 JSON schema locally, but no independent license or
+  vulnerability conclusion has been made.
 
 ## Verification performed
 
@@ -69,13 +78,15 @@ made additional code, gate, test and documentation changes.
 | `cargo fmt --check` | Passed |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | Passed |
 | `cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings` | Passed; compile/lint only, no Windows execution |
-| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 28 tests passed, including a synthetic fake-agent repair through Rust checks and separate patch application; none entered production evidence |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | 30 tests passed, including a synthetic fake-agent repair through Rust checks, separate patch application and locked-SBOM checksum/graph checks; none entered production evidence |
 | `cargo build --release --locked --bin codex-autoapprover` | Local development executable built |
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
 | `verify-manifest --manifest compatibility/manifest.json` | Installed/source manifest comparison passes for the local binary |
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
+| `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
+| Disposable `verify-local-hook` attempt | No live Codex child started: host-access PTY was classified `isolated-namespace`; default PTY could not create the private broker socket. Both copied-auth temporary homes were removed. No PermissionRequest, allow or command outcome exists. |
 | `git diff --check` | Passed |
 
 The first sandboxed test run could not create private Unix sockets. Running the
@@ -86,9 +97,14 @@ hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
 Local development artifact: `target/release/codex-autoapprover`, SHA-256
-`a55c122001cab484e638229a1157258adffbb6fc1732f31329ffc07f08c66ddb`.
+`27b785639e499855386d57951d1c0e3704a23fb54d5ad9368ab66706922edc40`.
 This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
+
+Latest local development archive:
+`/tmp/autoapprover-dev-package-20260923-v3/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `cb6632f9c7200edf803b028674f9008ec0762860ecb1aba1f78b5931039bca64`.
+It is unsigned, unqualified and stored only in temporary local storage.
 
 ## Fresh upstream research and available access
 
@@ -118,7 +134,8 @@ or PR was completed. Do not retry through another tool or route without
 resolving that approval; continue independent local work. A reviewable PR body
 is prepared at `/tmp/autoapprover-release-foundation-pr.md`.
 
-Available native Linux is Ubuntu 26.04, kernel `7.0.0-31-generic`, x86_64;
+The underlying Linux host reports Ubuntu 26.04, kernel
+`7.0.0-31-generic`, x86_64; available tool execution remains isolated;
 installed CLI reports `0.156.0` via an npm shim. The bundle layout is
 recognized, but group-writable package files and directories prevent native
 artifact admission. No Windows native result has been obtained.
@@ -136,6 +153,14 @@ and npm parent package SHA-256
 `bd61fceec93b47cad25d48c7f20297d75f1289933fd1cf29ea8ce0aa02f2bc4f`.
 The temporary tree was removed. This was identity discovery only: no
 PermissionRequest, approval, consumer install or native qualification occurred.
+One later verifier attempt used an isolated temporary Codex home containing
+only a private copy of the configured authentication file. The host-access
+PTY was detected as an isolated namespace and refused before launching a
+child. The default PTY passed the earlier surface check but failed to create
+the private broker socket (`Operation not permitted`) before launching a
+child. Both temporary authentication copies were removed, and a subsequent
+root-owner check now classifies that default PTY as an isolated namespace too.
+Neither attempt generated native hook evidence or changed live Codex settings.
 Existing Windows 0.156.0 observations retain their original limits: elevated
 setup also failed without this wrapper, while unelevated `Get-Location` worked;
 neither proves hook compatibility, a long-path cause or a version regression.
@@ -145,12 +170,12 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | Original requirement | Evidence now | Required work still open |
 | --- | --- | --- |
 | 1. Exact certified compatibility only | Empty schema-2 manifest; whole-tuple equality; native bundle and npm launch-chain hashes; group/world-write rejection; artifact revocation; unsupported surfaces and legacy aliases fail closed | Certify final artifacts; finish/test exe/cmd/ps1 and other package layouts on native hosts; harden consumer install permissions; verify effective sandbox/managed-policy behavior and updates during sessions; implement revocation delivery |
-| 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately | Native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
+| 2. Fresh native Linux and Windows targets | Official stable metadata checked; historical Linux authority removed; Windows observations preserved accurately; available Linux PTYs refused before a live child | Obtain genuinely native positive/negative qualification of exact final Linux and Windows artifacts; retain every observed version/build; keep all other platforms/surfaces unarmed |
 | 3. Runtime and independent security review | Parser, process, image, replay, ledger, timeout and concurrency regressions pass | Real shell/file edits and one-request allow/fallback; hook composition/trust; every advertised schema; malicious descendants, PID/path races, abrupt termination and Windows hung descendants; independent security review and documented residual boundary |
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
 | 5. Default-branch detection/adaptation | Watcher retains exact official native asset IDs/sizes/digests; candidate runners stream and compare downloads; duplicate metadata and exhausted pagination fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
-| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; SBOM/license/dependency review; authenticated checksums/provenance/signing; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
+| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; authenticated checksums/provenance/signing; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
 
 **Completion is unproven and contradicted by the open items above.** The goal

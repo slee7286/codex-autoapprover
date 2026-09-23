@@ -54,6 +54,13 @@ pub fn surface() -> Result<&'static str> {
     }
     #[cfg(target_os = "linux")]
     {
+        use std::os::unix::fs::MetadataExt;
+        // Some isolated runners make /proc/self and PID 1 share namespaces,
+        // while remapping the filesystem root away from host root. They are
+        // not a native host even if /etc/os-release matches the host.
+        if fs::metadata("/")?.uid() != 0 {
+            return Ok("isolated-namespace");
+        }
         let kernel =
             fs::read_to_string("/proc/sys/kernel/osrelease").context("read kernel environment")?;
         if kernel.to_ascii_lowercase().contains("microsoft") {
