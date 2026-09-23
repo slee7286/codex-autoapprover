@@ -1,0 +1,248 @@
+name: Native candidate provenance and qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-build:
+    if: github.repository == 'slee7286/codex-autoapprover' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.98.0'
+          components: rustfmt, clippy
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: python -m unittest discover -s scripts -p 'test_*.py'
+      - run: cargo build --release --locked --bin codex-autoapprover
+      - run: ./scripts/test-install-linux.sh target/release/codex-autoapprover
+      - run: ./scripts/test-package-linux.sh target/release/codex-autoapprover
+      - name: Stage exact checked Linux binary and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate-linux"
+          cp target/release/codex-autoapprover "$RUNNER_TEMP/candidate-linux/codex-autoapprover-linux-x86_64"
+          cd "$RUNNER_TEMP/candidate-linux"
+          sha256sum codex-autoapprover-linux-x86_64 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-candidate
+          path: ${{ runner.temp }}/candidate-linux/*
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-build:
+    if: github.repository == 'slee7286/codex-autoapprover' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.98.0'
+          components: rustfmt, clippy
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: cargo fmt --check
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: python -m unittest discover -s scripts -p 'test_*.py'
+      - run: cargo build --release --locked --bin codex-autoapprover
+      - name: Test Windows source configuration in PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-install-windows.ps1
+      - name: Test Windows source configuration in PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install-windows.ps1
+      - name: Stage exact checked Windows binary and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'candidate-windows'
+          [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+          $name = 'codex-autoapprover-windows-x86_64.exe'
+          $destination = Join-Path $directory $name
+          [System.IO.File]::Copy((Join-Path $PWD.Path 'target/release/codex-autoapprover.exe'), $destination)
+          $digest = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText((Join-Path $directory 'SHA256SUMS'), "$digest  $name`n", [System.Text.Encoding]::ASCII)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-candidate
+          path: ${{ runner.temp }}/candidate-windows/*
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-qualify:
+    needs: linux-build
+    if: github.repository == 'slee7286/codex-autoapprover' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-candidate
+          path: ${{ runner.temp }}/candidate-linux
+      - name: Verify and qualify exact downloaded Linux binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate-linux"
+          sha256sum --check SHA256SUMS
+          chmod u+x codex-autoapprover-linux-x86_64
+          python3 "$GITHUB_WORKSPACE/scripts/release_gate.py" --require-ready --binary "$PWD/codex-autoapprover-linux-x86_64"
+
+  windows-qualify:
+    needs: windows-build
+    if: github.repository == 'slee7286/codex-autoapprover' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-candidate
+          path: ${{ runner.temp }}/candidate-windows
+      - name: Verify and qualify exact downloaded Windows binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'candidate-windows'
+          $name = 'codex-autoapprover-windows-x86_64.exe'
+          $lines = @(Get-Content -LiteralPath (Join-Path $directory 'SHA256SUMS'))
+          if ($lines.Count -ne 1) { throw 'Invalid candidate checksum record' }
+          $record = [regex]::Match($lines[0], '^([0-9a-f]{64})  codex-autoapprover-windows-x86_64\.exe$')
+          if (-not $record.Success) { throw 'Invalid candidate checksum record' }
+          $expected = $record.Groups[1].Value
+          $binary = Join-Path $directory $name
+          $actual = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -cne $expected) { throw 'Downloaded Windows candidate digest mismatch' }
+          python scripts/release_gate.py --require-ready --binary $binary
+
+  attest:
+    needs: [linux-build, windows-build]
+    if: github.repository == 'slee7286/codex-autoapprover' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-candidate
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Require protected release-candidate environment
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = "https://api.github.com/repos/slee7286/codex-autoapprover/environments/release-candidate"
+          request = urllib.request.Request(url, headers={
+              "Accept": "application/vnd.github+json",
+              "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          with urllib.request.urlopen(request, timeout=15) as response:
+              environment = json.load(response)
+          rules = environment.get("protection_rules", [])
+          reviewers = next((rule for rule in rules if rule.get("type") == "required_reviewers"), None)
+          branches = environment.get("deployment_branch_policy") or {}
+          if (environment.get("name") != "release-candidate"
+                  or not reviewers or not reviewers.get("reviewers")
+                  or reviewers.get("prevent_self_review") is not True
+                  or not any(rule.get("type") == "branch_policy" for rule in rules)
+                  or branches.get("protected_branches") is not True
+                  or branches.get("custom_branch_policies") is not False):
+              raise SystemExit("release-candidate requires independent reviewers and protected branches")
+          PY
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-candidate
+          path: ${{ runner.temp }}/candidate-linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-candidate
+          path: ${{ runner.temp }}/candidate-windows
+      - name: Verify downloaded candidate bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate-linux"
+          sha256sum --check SHA256SUMS
+          cd "$RUNNER_TEMP/candidate-windows"
+          sha256sum --check SHA256SUMS
+      - name: Attest Linux binary provenance
+        id: linux-provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/candidate-linux/codex-autoapprover-linux-x86_64
+      - name: Stage Linux verification bundle
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.linux-provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/provenance-bundles"
+          cp -- "$BUNDLE_PATH" "$RUNNER_TEMP/provenance-bundles/linux.json"
+      - name: Attest Windows binary provenance
+        id: windows-provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/candidate-windows/codex-autoapprover-windows-x86_64.exe
+      - name: Stage Windows verification bundle
+        shell: bash
+        env:
+          BUNDLE_PATH: ${{ steps.windows-provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp -- "$BUNDLE_PATH" "$RUNNER_TEMP/provenance-bundles/windows.json"
+          cd "$RUNNER_TEMP/provenance-bundles"
+          sha256sum linux.json windows.json > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Retain offline verification bundles
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: provenance-bundles
+          path: ${{ runner.temp }}/provenance-bundles/*
+          if-no-files-found: error
+          retention-days: 90

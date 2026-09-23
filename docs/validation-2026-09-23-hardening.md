@@ -69,6 +69,12 @@ made additional code, gate, test and documentation changes.
   `Cargo.lock`; declared licenses were read from those archives. It passed the
   official SPDX 2.3 JSON schema locally, but no independent license or
   vulnerability conclusion has been made.
+- A manual main-branch workflow now prepares native Linux and Windows
+  candidate binaries and checksums. Separate jobs gate the exact downloaded
+  bytes; a protected-environment job can attest candidate build provenance
+  without implying approval compatibility. It checks environment review and
+  branch rules before requesting attestations. The workflow has not run, and
+  its PowerShell staging and native release gates remain untested on Windows.
 
 ## Verification performed
 
@@ -86,6 +92,7 @@ made additional code, gate, test and documentation changes.
 | `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
+| Candidate provenance workflow static review | YAML structure, main-only dispatch, token permissions, job order, Bash and inline Python syntax passed locally; no GitHub run, environment approval, provenance signature or Windows PowerShell execution occurred |
 | Disposable `verify-local-hook` attempt | No live Codex child started: host-access PTY was classified `isolated-namespace`; default PTY could not create the private broker socket. Both copied-auth temporary homes were removed. No PermissionRequest, allow or command outcome exists. |
 | `git diff --check` | Passed |
 
@@ -126,6 +133,11 @@ fresh hook evidence.
 
 Read-only GitHub inspection confirmed admin access to
 `slee7286/codex-autoapprover`, which is public and uses default branch `main`.
+Another read-only API check found no `release-candidate` environment (404),
+reported `main` as **not protected** (404), and returned an empty repository
+ruleset list. The prepared provenance job will refuse to attest without the
+environment's reviewer and protected-branch rules; no external setting was
+changed by this check.
 The first checkpoint was committed locally as `7a33bd5`. A push of
 `feat/verified-release-foundation` to prepare a draft PR was rejected by
 automatic approval review: it classified transferring the full branch to the
@@ -175,7 +187,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 4. Install/reinstall/upgrade/rollback/uninstall | Existing TOML preservation plus embedded-manifest installer check; Linux artifact lifecycle passes disposable local tests with crash-journal simulations | Authenticated final Linux consumer package and exact-byte rehearsal; Windows artifact lifecycle; native PS 5.1/7; shims; homes/roots; Unicode/metacharacters/long paths; profiles/managed policy; ACL/reparse/hardlink/lock/disk-full/interruption matrix |
 | 5. Default-branch detection/adaptation | Watcher retains exact official native asset IDs/sizes/digests; candidate runners stream and compare downloads; duplicate metadata and exhausted pagination fail closed; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; verify installed npm bundle integrity and changed/revoked assets end to end; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain durable native records; independent release review |
-| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; authenticated checksums/provenance/signing; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
+| 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory; manual protected-environment candidate-provenance workflow prepared and statically checked | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs; binary-specific SBOM and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
 | 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release | Continue independent work and authorized draft PRs; identify specific unavoidable prerequisites only after independent work is exhausted; final publication remains with the user |
 
 **Completion is unproven and contradicted by the open items above.** The goal

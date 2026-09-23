@@ -27,5 +27,5 @@ jobs:
       - run: ./scripts/test-package-linux.sh target/release/codex-autoapprover
       - run: python scripts/locked_sbom.py --output "$RUNNER_TEMP/codex-autoapprover-locked-dependencies.spdx.json"
       - run: python scripts/release_gate.py --require-ready --binary target/release/codex-autoapprover
-      # This checks qualification only. Publication/signing must be added after
-      # the native matrix, independent review and recovery rehearsal are complete.
+      # This checks qualification only. The separate provenance-candidate
+      # workflow attests build origin and independently gates native binaries.
