@@ -36,7 +36,7 @@ Configuration is parsed as TOML, unrelated values and comments are retained, and
 
 There is **no authenticated public consumer artifact yet**. Local lifecycle tests use a development executable and a synthetic changed copy; they do not qualify a production release or exercise native Codex approval. Existing Cargo-installed executables are intentionally not adopted automatically.
 
-`scripts/package_linux.py` creates a deterministic, explicitly unqualified development archive with the executable, installer, manifest, licence, README and a per-file digest record. `scripts/test-package-linux.sh` compares two independently built archives and installs the exact extracted bytes into a disposable directory. The adjacent checksum is unsigned and must not be treated as release authentication.
+`scripts/package_linux.py` creates a deterministic, explicitly unqualified development archive with the executable, installer, manifest, licence, README and a per-file digest record. `scripts/test-package-linux.sh` compares two independently built archives, then installs, upgrades, rolls back and uninstalls exact extracted bytes from two byte-distinct development archives in a disposable directory. The adjacent checksum is unsigned and must not be treated as release authentication.
 
 ## Windows artifact installer rehearsal
 
