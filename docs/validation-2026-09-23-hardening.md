@@ -113,7 +113,10 @@ made additional code, gate, test and documentation changes.
 - A Linux prebuilt-artifact installer now checks an expected SHA-256, embedded
   manifest equality and executable health before selecting a release. It uses
   private directories, digest-addressed releases, a lock and atomic symlink
-  updates; rollback and uninstall journals permit recovery after interruption.
+  updates. Install, rollback and uninstall journals finish interrupted pointer
+  changes on the next invocation; recovery refuses malformed/conflicting
+  journals and unmanaged pointer files. Power-loss durability and disk-full
+  behavior still need separate testing.
   It has no authenticated public artifact to install yet.
 - A deterministic Linux development archive includes the exact installer,
   binary, manifest, licence, README and per-file digest metadata. Two local
@@ -151,7 +154,7 @@ made additional code, gate, test and documentation changes.
 | `release_gate.py --binary ...` | Exact compiled/source manifest equality passes; production remains blocked |
 | `release_gate.py --require-ready --binary ...` | Correctly rejects incomplete qualification |
 | `verify-manifest --manifest compatibility/manifest.json` | Installed/source manifest comparison passes for the local binary |
-| `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall and interrupted-operation recovery passed; Codex home content stayed unchanged |
+| `scripts/test-install-linux.sh target/release/codex-autoapprover` | Disposable Linux install, identical reinstall with renewed manifest/health checks, mismatched-manifest rejection without replacing the current release, synthetic changed-artifact upgrade, rollback, tamper/unmanaged-path rejection, uninstall, journal recovery at each install-pointer boundary and interrupted first install passed; malformed/conflicting journals were rejected and Codex home content stayed unchanged |
 | `scripts/test-package-linux.sh target/release/codex-autoapprover` | Two development archives were byte-identical; checksum and per-file digests matched; exact extracted bytes installed, executed and uninstalled in a disposable directory |
 | `python3 scripts/locked_sbom.py --offline --output /tmp/...` | Generated 89-package, 137-relationship SPDX 2.3 locked inventory from checksum-verified crate archives; local official-schema validation passed |
 | `python3 scripts/locked_licenses.py --output /tmp/...` | Reproduced a deterministic 171-file local bundle with an exact inventory; top-level license/notice text was absent for two of 88 registry crates. This is review material, not a legal conclusion. |
@@ -173,21 +176,21 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v20/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `28e71d9e9a84e75123a8a9dff7c1ad6a2d2fa0b937fcbcab1c28066d32c66646`.
+`/tmp/autoapprover-dev-package-20260923-v22/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `3cc18e4f109f713e33c4025546795c6c57c3af8ba3d46031638b20f0596f533e`.
 Its recorded source digest is
-`f989410233b342ee994e995c976e311f9904a0777afa9fe35de3bfee52f8977a`.
+`b4aff8146884df62581fbff80c93782360fdf41988f087daf4439b1a229bb629`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v20.spdx.json`, SHA-256
-`6135f62932086a4c61de68b55eb0e014b895408c12e6fb5154b0254e7fd4cb3f`.
+`/tmp/autoapprover-locked-dependencies-v22.spdx.json`, SHA-256
+`a747347416d613cb35ae819fc7730d0efb148cb4a7eeec3df64a9a0f6f95845b`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
 The separate preliminary license-material bundle is
-`/tmp/autoapprover-locked-licenses-v2.tar.gz`, SHA-256
-`a3fca58608d05ffb26069121b368c27ee554f5a57b8546a967c6db7c661fb1a9`.
+`/tmp/autoapprover-locked-licenses-v4.tar.gz`, SHA-256
+`d2f40a8699e5d7deff8836e7b2a115ab0ad0339f6188d8f77a30fdc6ec8fe02c`.
 Its indexed source digest matches the archive above. An automatic approval
 review rejected a proposed live OSV batch query because it would transmit the
 potentially sensitive exact `Cargo.lock` inventory to a public API. A local

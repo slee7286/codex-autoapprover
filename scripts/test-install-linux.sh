@@ -41,6 +41,45 @@ expect_fail "$installer" install --install-dir "$install_dir" --binary "$test_ro
 "$installer" install --install-dir "$install_dir" --binary "$test_root/v2" --sha256 "$sha2" --manifest "$manifest"
 status=$("$installer" status --install-dir "$install_dir")
 [[ $status == *"Current: $sha2"* && $status == *"Previous: $sha1"* ]]
+
+# An interrupted upgrade is completed from its journal at each pointer boundary.
+printf '%s\n%s\n' "$sha1" "$sha2" > "$install_dir/.codex-autoapprover-install-journal"
+status=$("$installer" status --install-dir "$install_dir")
+[[ $status == *"Current: $sha1"* && $status == *"Previous: $sha2"* ]]
+[[ ! -e $install_dir/.codex-autoapprover-install-journal ]]
+printf '%s\n%s\n' "$sha2" "$sha1" > "$install_dir/.codex-autoapprover-install-journal"
+rm -- "$install_dir/.codex-autoapprover-previous"
+ln -s ".codex-autoapprover-releases/$sha1/codex-autoapprover" "$install_dir/.codex-autoapprover-previous"
+status=$("$installer" status --install-dir "$install_dir")
+[[ $status == *"Current: $sha2"* && $status == *"Previous: $sha1"* ]]
+printf '%s\n%s\n' "$sha1" "$sha2" > "$install_dir/.codex-autoapprover-install-journal"
+rm -- "$install_dir/.codex-autoapprover-previous" "$install_dir/codex-autoapprover"
+ln -s ".codex-autoapprover-releases/$sha2/codex-autoapprover" "$install_dir/.codex-autoapprover-previous"
+ln -s ".codex-autoapprover-releases/$sha1/codex-autoapprover" "$install_dir/codex-autoapprover"
+status=$("$installer" status --install-dir "$install_dir")
+[[ $status == *"Current: $sha1"* && $status == *"Previous: $sha2"* ]]
+[[ ! -e $install_dir/.codex-autoapprover-install-journal ]]
+"$installer" rollback --install-dir "$install_dir" >/dev/null
+
+# Recovery must not overwrite an unrelated file placed at a managed pointer.
+printf '%s\n%s\n' "$sha1" "$sha2" > "$install_dir/.codex-autoapprover-install-journal"
+rm -- "$install_dir/codex-autoapprover"
+printf 'unrelated\n' > "$install_dir/codex-autoapprover"
+expect_fail "$installer" status --install-dir "$install_dir"
+[[ $(cat -- "$install_dir/codex-autoapprover") == unrelated ]]
+[[ -f $install_dir/.codex-autoapprover-install-journal ]]
+rm -- "$install_dir/codex-autoapprover"
+ln -s ".codex-autoapprover-releases/$sha2/codex-autoapprover" "$install_dir/codex-autoapprover"
+"$installer" status --install-dir "$install_dir" >/dev/null
+"$installer" rollback --install-dir "$install_dir" >/dev/null
+printf 'invalid\n' > "$install_dir/.codex-autoapprover-install-journal"
+expect_fail "$installer" status --install-dir "$install_dir"
+rm -- "$install_dir/.codex-autoapprover-install-journal"
+printf '%s\n%s\n' "$sha1" "$sha2" > "$install_dir/.codex-autoapprover-install-journal"
+printf '%s\n%s\n' "$sha1" "$sha2" > "$install_dir/.codex-autoapprover-rollback-journal"
+expect_fail "$installer" status --install-dir "$install_dir"
+rm -- "$install_dir/.codex-autoapprover-install-journal" "$install_dir/.codex-autoapprover-rollback-journal"
+
 current_target=$(readlink -- "$install_dir/codex-autoapprover")
 rm -- "$install_dir/codex-autoapprover"
 ln -s "$current_target"$'\n' "$install_dir/codex-autoapprover"
@@ -78,11 +117,29 @@ rm -- "$install_dir/codex-autoapprover" "$install_dir/.codex-autoapprover-releas
 [[ ! -e $install_dir/.codex-autoapprover-releases && ! -e $install_dir/.codex-autoapprover-uninstall-journal ]]
 [[ $(sha256sum < "$codex_home/session.txt" | awk '{print $1}') == "$original_config" ]]
 
+# An interrupted first install has no old release but still finishes safely.
+first_recovery="$test_root/first-install-recovery"
+mkdir -m 700 -- "$first_recovery" "$first_recovery/.codex-autoapprover-releases"
+printf 'codex-autoapprover-linux-installer-v1\n' > "$first_recovery/.codex-autoapprover-owned"
+mkdir -m 700 -- "$first_recovery/.codex-autoapprover-releases/$sha1"
+cp -- "$test_root/v1" "$first_recovery/.codex-autoapprover-releases/$sha1/codex-autoapprover"
+chmod 700 -- "$first_recovery/.codex-autoapprover-releases/$sha1/codex-autoapprover"
+printf '%s\nnone\n' "$sha1" > "$first_recovery/.codex-autoapprover-install-journal"
+status=$("$installer" status --install-dir "$first_recovery")
+[[ $status == *"Current: $sha1"* && $status == *"Previous: none"* ]]
+[[ ! -e $first_recovery/.codex-autoapprover-install-journal ]]
+"$installer" uninstall --install-dir "$first_recovery" >/dev/null
+
 unmanaged="$test_root/unmanaged"
 mkdir -m 700 -- "$unmanaged"
 printf 'unrelated\n' > "$unmanaged/codex-autoapprover"
 expect_fail "$installer" install --install-dir "$unmanaged" --binary "$test_root/v1" --sha256 "$sha1" --manifest "$manifest"
 [[ $(cat "$unmanaged/codex-autoapprover") == unrelated ]]
+journal_only="$test_root/journal-without-marker"
+mkdir -m 700 -- "$journal_only"
+printf '%s\nnone\n' "$sha1" > "$journal_only/.codex-autoapprover-install-journal"
+expect_fail "$installer" status --install-dir "$journal_only"
+[[ -f $journal_only/.codex-autoapprover-install-journal ]]
 ln -s "$unmanaged" "$test_root/symlinked"
 expect_fail "$installer" install --install-dir "$test_root/symlinked" --binary "$test_root/v1" --sha256 "$sha1" --manifest "$manifest"
 printf 'Linux artifact install/upgrade/rollback/uninstall tests passed.\n'

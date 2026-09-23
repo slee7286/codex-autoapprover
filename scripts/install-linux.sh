@@ -111,7 +111,9 @@ set_pointer() {
 }
 check_marker() {
   if [[ ! -e $marker && ! -L $marker ]]; then
-    [[ ! -e $current && ! -L $current && ! -e $previous && ! -L $previous && ! -e $release_root && ! -L $release_root ]] || die 'existing unmanaged installation; refusing to replace it'
+    [[ ! -e $current && ! -L $current && ! -e $previous && ! -L $previous &&
+       ! -e $release_root && ! -L $release_root && ! -e $journal && ! -L $journal &&
+       ! -e $install_journal && ! -L $install_journal && ! -e $uninstall_journal && ! -L $uninstall_journal ]] || die 'existing unmanaged installation; refusing to replace it'
     if [[ $action == install ]]; then printf 'codex-autoapprover-linux-installer-v1\n' > "$marker"; fi
     return
   fi
@@ -141,9 +143,35 @@ recover_rollback() {
   [[ ${#digests[@]} == 2 && ${digests[0]} =~ ^[0-9a-f]{64}$ && ${digests[1]} =~ ^[0-9a-f]{64}$ ]] || die 'invalid rollback journal'
   assert_release "${digests[0]}"
   assert_release "${digests[1]}"
+  local actual_current actual_previous
+  actual_current=$(pointer_digest "$current")
+  actual_previous=$(pointer_digest "$previous")
+  [[ ( $actual_current == "${digests[1]}" && $actual_previous == "${digests[0]}" ) ||
+     ( $actual_current == "${digests[0]}" && ( $actual_previous == "${digests[0]}" || $actual_previous == "${digests[1]}" ) ) ]] || die 'rollback pointers differ from journal'
   set_pointer "$current" "${digests[0]}"
   set_pointer "$previous" "${digests[1]}"
   rm -- "$journal"
+}
+recover_install() {
+  [[ -e $install_journal || -L $install_journal ]] || return 0
+  [[ -f $install_journal && ! -L $install_journal && $(stat -c %u -- "$install_journal") == "$current_uid" && $(stat -c %h -- "$install_journal") == 1 && $(stat -c %s -- "$install_journal") -le 130 ]] || die 'unsafe install journal'
+  local -a digests
+  mapfile -t digests < "$install_journal"
+  [[ ${#digests[@]} == 2 && ${digests[0]} =~ ^[0-9a-f]{64}$ && ( ${digests[1]} == none || ${digests[1]} =~ ^[0-9a-f]{64}$ ) && ${digests[0]} != "${digests[1]}" ]] || die 'invalid install journal'
+  assert_release "${digests[0]}"
+  local actual_current actual_previous
+  actual_current=$(pointer_digest "$current")
+  actual_previous=$(pointer_digest "$previous")
+  if [[ ${digests[1]} == none ]]; then
+    [[ -z $actual_previous && ( -z $actual_current || $actual_current == "${digests[0]}" ) ]] || die 'install pointers differ from journal'
+  else
+    assert_release "${digests[1]}"
+    [[ $actual_current == "${digests[1]}" || $actual_current == "${digests[0]}" ]] || die 'install current pointer differs from journal'
+    [[ $actual_current != "${digests[0]}" || $actual_previous == "${digests[1]}" ]] || die 'install previous pointer differs from journal'
+    set_pointer "$previous" "${digests[1]}"
+  fi
+  set_pointer "$current" "${digests[0]}"
+  rm -- "$install_journal"
 }
 validate_release_tree() {
   local allow_missing=$1 release digest entry
@@ -201,6 +229,7 @@ current="$install_dir/codex-autoapprover"
 previous="$install_dir/.codex-autoapprover-previous"
 marker="$install_dir/.codex-autoapprover-owned"
 journal="$install_dir/.codex-autoapprover-rollback-journal"
+install_journal="$install_dir/.codex-autoapprover-install-journal"
 uninstall_journal="$install_dir/.codex-autoapprover-uninstall-journal"
 lock="$install_dir/.codex-autoapprover.lock"
 [[ ! -L $lock && ( ! -e $lock || ( -f $lock && $(stat -c %u -- "$lock") == "$current_uid" && $(stat -c %h -- "$lock") == 1 ) ) ]] || die 'unsafe install lock'
@@ -215,8 +244,11 @@ elif [[ $action == install ]]; then
   mkdir -m 700 -- "$release_root"
 fi
 if [[ -d $release_root ]]; then cleanup_stages; fi
+if [[ -e $install_journal || -L $install_journal ]]; then
+  [[ ! -e $journal && ! -L $journal && ! -e $uninstall_journal && ! -L $uninstall_journal ]] || die 'conflicting recovery journals'
+fi
 if [[ -e $uninstall_journal || -L $uninstall_journal ]]; then
-  [[ ! -e $journal && ! -L $journal ]] || die 'conflicting recovery journals'
+  [[ ! -e $journal && ! -L $journal && ! -e $install_journal && ! -L $install_journal ]] || die 'conflicting recovery journals'
   finish_uninstall
   case "$action" in
     install) check_marker; mkdir -m 700 -- "$release_root" ;;
@@ -225,6 +257,7 @@ if [[ -e $uninstall_journal || -L $uninstall_journal ]]; then
     uninstall) printf 'Recovered interrupted uninstall.\n'; exit 0 ;;
   esac
 fi
+recover_install
 recover_rollback
 old=$(pointer_digest "$current")
 prior=$(pointer_digest "$previous")
@@ -250,8 +283,18 @@ case "$action" in
       mv -T -- "$stage" "$release_root/$expected"
       stage=''
     fi
+    journal_tmp=$(mktemp "$install_dir/.codex-autoapprover-install.XXXXXXXX")
+    if ! printf '%s\n%s\n' "$expected" "${old:-none}" > "$journal_tmp"; then
+      rm -- "$journal_tmp"
+      die 'could not write install journal'
+    fi
+    if ! mv -T -- "$journal_tmp" "$install_journal"; then
+      rm -- "$journal_tmp"
+      die 'could not commit install journal'
+    fi
     if [[ -n $old ]]; then set_pointer "$previous" "$old"; fi
     set_pointer "$current" "$expected"
+    rm -- "$install_journal"
     printf 'Installed: %s\n' "$expected"
     ;;
   rollback)
