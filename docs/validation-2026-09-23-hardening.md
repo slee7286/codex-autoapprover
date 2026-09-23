@@ -109,15 +109,15 @@ This is neither a signed consumer package nor a qualified production binary.
 Rebuilds after further source edits require recording a new digest.
 
 Latest local development archive:
-`/tmp/autoapprover-dev-package-20260923-v4/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
-SHA-256 `30c28df1179b3d766588211811ace91639477627205e02509aebfee157dfc73a`.
+`/tmp/autoapprover-dev-package-20260923-v5/codex-autoapprover-0.1.0-linux-x86_64-dev.tar.gz`,
+SHA-256 `7f2701c80f97a7830f086c42e58cf8a5be34eab311cdd137c4ff934c73e6592b`.
 Its recorded source digest is
-`af19f5430567a1ffed03cf25017441eee08370eaead6373e396cd6dbd8a8d170`.
+`9339179a6984bc7d2e11b1d5f8508cacf470043dd064456ed0d36c374ec2bf43`.
 It is unsigned, unqualified and stored only in temporary local storage.
 
 The matching preliminary locked-dependency inventory is
-`/tmp/autoapprover-locked-dependencies-v4.spdx.json`, SHA-256
-`1a9b640c5c17f7af8cf3971055621cdedc85df40fd962c4bbf93cde108d95e70`.
+`/tmp/autoapprover-locked-dependencies-v5.spdx.json`, SHA-256
+`b2cd3eba64601d7e20f5a3120e3065919d5e8ffadbbdceccc061db406309898b`.
 It passed the locally retained official SPDX 2.3 schema. It is not an
 attestation, a binary-specific SBOM or an independent dependency review.
 
