@@ -35,6 +35,10 @@ CHECKS = {
     "exact_consumer_artifact_rollback",
 }
 MAX_EVIDENCE_AGE = timedelta(days=30)
+MAX_NATIVE_REPORT_BYTES = 1024 * 1024
+MAX_RETAINED_ARTIFACTS = 128
+MAX_RETAINED_ARTIFACT_BYTES = 16 * 1024 * 1024
+MAX_TOTAL_RETAINED_BYTES = 128 * 1024 * 1024
 MAX_SBOM_BYTES = 16 * 1024 * 1024
 MAX_BUILD_RECORD_BYTES = 16 * 1024
 MAX_REPRODUCIBILITY_RECORD_BYTES = 16 * 1024
@@ -129,7 +133,9 @@ def regular_file(root, relative, directory=None):
     if not isinstance(relative, str):
         raise ValueError("file reference must be a string")
     path = PurePosixPath(relative)
-    if path.is_absolute() or any(part in {".", ".."} for part in relative.split("/")) or "\\" in relative:
+    if (path.is_absolute() or path.as_posix() != relative
+            or any(part in {".", ".."} for part in relative.split("/"))
+            or "\\" in relative or ":" in relative):
         raise ValueError("file reference must be a canonical relative path")
     full = root / path
     for parent in [full, *full.parents]:
@@ -142,6 +148,16 @@ def regular_file(root, relative, directory=None):
     if not full.is_file() or full.stat().st_nlink != 1:
         raise ValueError("referenced artifact must be a regular singly linked file")
     return full
+
+
+def bounded_bytes(path, limit, label):
+    if path.stat().st_size > limit:
+        raise ValueError(f"{label} exceeds the retention size limit")
+    with path.open("rb") as stream:
+        body = stream.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError(f"{label} exceeds the retention size limit")
+    return body
 
 
 def source_digest(root):
@@ -305,7 +321,7 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         if len(matches) != 1 or identifier in declared:
             raise ValueError("duplicate evidence or certificate absent from runtime manifest")
         path = regular_file(root, certificate["evidence"], "compatibility/evidence")
-        body = path.read_bytes()
+        body = bounded_bytes(path, MAX_NATIVE_REPORT_BYTES, "native report")
         if sha256(body) != certificate["sha256"]:
             raise ValueError("evidence digest mismatch")
         evidence = load_json(body)
@@ -331,13 +347,18 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError("missing native observation time") from error
         artifacts = evidence.get("artifacts", [])
-        if not isinstance(artifacts, list) or not artifacts:
-            raise ValueError("retained redacted artifacts required")
+        if not isinstance(artifacts, list) or not artifacts or len(artifacts) > MAX_RETAINED_ARTIFACTS:
+            raise ValueError("retained redacted artifacts missing or too numerous")
         retained = set()
+        retained_bytes = 0
         for artifact in artifacts:
             exact_keys(artifact, {"path", "sha256"}, "retained artifact")
             artifact_path = regular_file(root, artifact["path"], "compatibility/evidence")
-            if sha256(artifact_path.read_bytes()) != artifact["sha256"] or artifact["path"] in retained:
+            body = bounded_bytes(artifact_path, MAX_RETAINED_ARTIFACT_BYTES, "retained artifact")
+            retained_bytes += len(body)
+            if retained_bytes > MAX_TOTAL_RETAINED_BYTES:
+                raise ValueError("retained artifacts exceed the total size limit")
+            if sha256(body) != artifact["sha256"] or artifact["path"] in retained:
                 raise ValueError("artifact digest mismatch or duplicate")
             retained.add(artifact["path"])
         checks = evidence.get("checks", {})
@@ -353,25 +374,23 @@ def validate(root, policy, runtime=None, require_ready=False, binary_sha256=None
         if len(sbom_refs) != 1:
             raise ValueError("consumer binary check requires one retained SPDX document")
         sbom_path = regular_file(root, sbom_refs[0], "compatibility/evidence")
-        if sbom_path.stat().st_size > MAX_SBOM_BYTES:
-            raise ValueError("consumer binary SBOM exceeds attestation size limit")
-        validate_binary_sbom(sbom_path.read_bytes(), evidence, manifest["autoapprover_version"])
+        validate_binary_sbom(bounded_bytes(sbom_path, MAX_SBOM_BYTES, "consumer binary SBOM"),
+                             evidence, manifest["autoapprover_version"])
         record_refs = checks["consumer_build_record"]["artifacts"]
         if len(record_refs) != 1 or not isinstance(record_refs[0], str) \
                 or not record_refs[0].endswith("/build-record.json"):
             raise ValueError("consumer build check requires one retained build-record.json")
         record_path = regular_file(root, record_refs[0], "compatibility/evidence")
-        if record_path.stat().st_size > MAX_BUILD_RECORD_BYTES:
-            raise ValueError("consumer build record exceeds the retention size limit")
-        build_record = validate_build_record(record_path.read_bytes(), evidence, root)
+        build_record = validate_build_record(
+            bounded_bytes(record_path, MAX_BUILD_RECORD_BYTES, "consumer build record"), evidence, root)
         reproducibility_refs = checks["consumer_reproducibility"]["artifacts"]
         if (len(reproducibility_refs) != 1 or not isinstance(reproducibility_refs[0], str)
                 or not reproducibility_refs[0].endswith("/reproducibility.json")):
             raise ValueError("consumer reproducibility check requires one retained reproducibility.json")
         reproducibility_path = regular_file(root, reproducibility_refs[0], "compatibility/evidence")
-        if reproducibility_path.stat().st_size > MAX_REPRODUCIBILITY_RECORD_BYTES:
-            raise ValueError("consumer reproducibility record exceeds the retention size limit")
-        validate_reproducibility_record(reproducibility_path.read_bytes(), evidence, build_record)
+        validate_reproducibility_record(
+            bounded_bytes(reproducibility_path, MAX_REPRODUCIBILITY_RECORD_BYTES,
+                          "consumer reproducibility record"), evidence, build_record)
         declared.add(identifier)
     expected = {entry["evidence_id"] for entry in manifest["entries"]}
     if declared != expected:

@@ -6,6 +6,7 @@ import json
 from pathlib import Path, PureWindowsPath
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import release_gate as gate
 
@@ -252,6 +253,53 @@ class ReleaseGateTests(unittest.TestCase):
                     path.symlink_to(root / "Cargo.toml")
                 if change == "artifact-changed": (root / "compatibility/evidence/synthetic/log.txt").write_text("changed")
                 with self.assertRaises(ValueError):
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+    def test_retained_paths_and_evidence_size_are_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, runtime = self.fixture(root)
+            for path in (
+                "compatibility/evidence//synthetic/log.txt",
+                "compatibility/evidence/synthetic/log.txt/",
+                "compatibility/evidence/synthetic:log.txt",
+            ):
+                with self.subTest(path=path), self.assertRaisesRegex(ValueError, "canonical"):
+                    gate.regular_file(root, path, "compatibility/evidence")
+            policy["certifications"][0]["evidence"] = "compatibility/evidence//synthetic/report.json"
+            with self.assertRaisesRegex(ValueError, "canonical"):
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+        for filename, limit, label in (
+            ("report.json", gate.MAX_NATIVE_REPORT_BYTES, "native report"),
+            ("log.txt", gate.MAX_RETAINED_ARTIFACT_BYTES, "retained artifact"),
+        ):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy, runtime = self.fixture(root)
+                path = root / "compatibility/evidence/synthetic" / filename
+                with path.open("wb") as stream:
+                    stream.seek(limit)
+                    stream.write(b"x")
+                with self.assertRaisesRegex(ValueError, f"{label} exceeds"):
+                    gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, runtime = self.fixture(root)
+            self.rewrite_evidence(root, policy, lambda evidence: evidence["artifacts"].extend(
+                [evidence["artifacts"][0]] * gate.MAX_RETAINED_ARTIFACTS))
+            with self.assertRaisesRegex(ValueError, "too numerous"):
+                gate.validate(root, policy, runtime, True, "b" * 64, "windows")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, runtime = self.fixture(root)
+            first = root / "compatibility/evidence/synthetic/log.txt"
+            second = root / "compatibility/evidence/synthetic/binary.spdx.json"
+            with patch.object(gate, "MAX_TOTAL_RETAINED_BYTES",
+                              first.stat().st_size + second.stat().st_size - 1):
+                with self.assertRaisesRegex(ValueError, "total size limit"):
                     gate.validate(root, policy, runtime, True, "b" * 64, "windows")
 
     def test_binary_sbom_must_bind_the_reviewed_consumer_bytes(self):
