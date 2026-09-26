@@ -43,6 +43,14 @@ jobs:
           toolchain: "1.98.0"
           components: rustfmt, clippy
       - run: cargo fmt --check
+      - name: Report Windows ACL owner context
+        shell: pwsh
+        run: |
+          foreach ($path in @('C:\', $env:TEMP)) {
+            $owner = (Get-Acl -LiteralPath $path).Owner
+            $sid = ([System.Security.Principal.NTAccount]$owner).Translate([System.Security.Principal.SecurityIdentifier]).Value
+            Write-Output "$path owner=$owner sid=$sid"
+          }
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo build --locked
