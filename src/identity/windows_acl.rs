@@ -1,5 +1,6 @@
 //! Conservative NTFS owner/DACL validation for protected paths.
-//! A current-user, SYSTEM or Administrators owner may change its own DACL.
+//! A current-user, SYSTEM, Administrators or exact TrustedInstaller owner may
+//! change its own DACL.
 //! Other principals may only create new names in an ancestor. The protected
 //! leaf itself must grant them no create, write, delete or ACL rights.
 //! Unknown ACE forms fail closed until they have native review coverage.
