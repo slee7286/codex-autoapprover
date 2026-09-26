@@ -289,6 +289,16 @@ version spoofing, native-image replacement, symlink retargeting/hardlinks,
 hung probes/descendant-held output, session rebinding/replay and concurrent
 single-allow consumption. These results do not prove native Codex behavior.
 
+On 2026-09-26 the current branch again passed 86 Rust unit tests, 22 Rust
+integration tests, 101 Python tests, rustfmt, Clippy, Linux release build,
+Windows-target compile check, the Linux artifact lifecycle and deterministic
+archive rehearsal. The release policy gate still reports production BLOCKED.
+The first Rust test run used the default `TMPDIR` under a group-writable cache
+ancestor and correctly rejected that unsafe directory in 11 tests; rerunning
+with `TMPDIR=/home/siheon/.cache` (private ancestry) passed. This is a test
+environment constraint, not evidence of an approved release or native Windows
+execution.
+
 A disposable, unauthenticated local Codex 0.156.0 probe exposed a health-check
 CLI mismatch: `codex sandbox --cd` requires `--permission-profile`, while an
 explicit profile omits managed requirements unless `--include-managed-config`
@@ -409,9 +419,10 @@ The first checkpoint was committed locally as `7a33bd5`. A push of
 `feat/verified-release-foundation` to prepare a draft PR was rejected by
 automatic approval review: it classified transferring the full branch to the
 public repository as publication reserved for explicit user approval. No push
-or PR was completed. Do not retry through another tool or route without
-resolving that approval; continue independent local work. A reviewable PR body
-is prepared at `/tmp/autoapprover-release-foundation-pr.md`.
+or PR was completed then. On 2026-09-26 the user explicitly requested review,
+sequential commits and a push of the latest state to GitHub; that authorizes a
+branch push, not a production release or a merge to `main`. A reviewable PR body
+was prepared at `/tmp/autoapprover-release-foundation-pr.md`.
 
 The underlying Linux host reports Ubuntu 26.04, kernel
 `7.0.0-31-generic`, x86_64; available tool execution remains isolated;
@@ -458,7 +469,7 @@ neither proves hook compatibility, a long-path cause or a version regression.
 | 5. Default-branch detection/adaptation | Latest-full-release polling and bounded previous-tag scan read-only verified against 0.156.1; schema-3 records bind the Git tag object and source commit; exact native asset IDs/sizes/digests and seven npm tarball integrities retained; full prior asset/npm identity is rechecked on updates, with a read-only 0.156.0-to-0.156.1 rehearsal and drift-rejection fixtures; disposable Linux exact-lock install, signature audit and non-live probes passed; candidate code and trusted metadata tools are separate; candidate-branch metadata must equal a fresh official record; one remote commit is pinned through preflight/code checks/repair and the pushed repair commit is pinned for post-repair checks; preflight and setup failures cannot spend repair authority without a Rust-check failure artifact; only a newly opened PR is automatically repair-eligible, unchanged releases skip deleted-branch lookup and explicit dispatch can retry; candidate runners stream and compare downloads; source repair rejects a moved tag object or commit before running the agent; local multi-release fixtures queue one previously unhandled PR per poll and fail closed on missing baseline/history or changed open-PR metadata; prepared restricted-patch repair jobs separate the read-only agent from the write-token apply step | Activate and exercise reviewed workflow on main with a dedicated repair key; exercise oldest-first missed-release catch-up and moved/deleted tag refusal on the default branch, then measure backlog latency; exercise exact npm package verification on native Windows and in the actual workflow; verify changed/revoked assets end to end and deliver revocation to installed users; outage/rate-limit/recovery/schedule monitoring; demonstrate discovery-to-code-repair-to-native-validation PR; independent secret-boundary review and review-controlled promotion |
 | 6. Durable native evidence | Schema-2 gate requires full targets, fresh source/binary digests, retained artifacts and independent identities; the experimental verifier has a local request witness, requires a separately authenticated test home, runs its child from a private temporary home and can retain an opt-in redacted, unqualified diagnostic after broker shutdown, but no live native run | Replace legacy verifier with unattended bounded disposable harness; obtain actual PermissionRequest, one allow, independent outcome, no prompt, negative/isolation/clean-state/cleanup evidence; retain reviewed schema-2 native records; independent release review |
 | 7. Public distribution/protection | Development build and exact pending gate; ownership entries expanded; deterministic unqualified Linux archive with exact-byte install rehearsal; checksum-verified preliminary locked SPDX inventory and offline notice bundle with two missing top-level texts; exact-digest native build observation now required by the evidence gate and manual protected-environment candidate-provenance workflow prepared, with the Linux staging script rehearsed locally | Semantic release/changelog; final Linux and Windows consumer artifacts; reproducible inputs and linked component inventory; final per-artifact SBOM/notices and independent license/vulnerability review; execute/verify native provenance workflow; CI required review/branch and environment protections/private reporting/bot permissions; staged rollout/recovery/revocation; final exact-artifact installation and rollback |
-| 8. Authorized autonomous work and publication control | Work continues on requested branch; no live user configuration changes or public release; automatic approval review rejected the attempted public branch push | Continue independent local work; obtain explicit publication approval before pushing the branch or preparing a public draft PR; final publication remains with the user |
+| 8. Authorized autonomous work and publication control | Work continues on the review branch; no live user configuration changes or public release; an earlier public branch push was rejected, and the user subsequently authorized review, commits and a branch push | Verify the remote branch and CI after the authorized push; a PR, merge and production publication remain separate decisions |
 
 **Completion is unproven and contradicted by the open items above.** The goal
 must stay active. Do not turn this checkpoint, a cross-build or an empty
