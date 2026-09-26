@@ -18,7 +18,7 @@ use windows_sys::Win32::{
     Foundation::{GENERIC_ALL, GENERIC_WRITE, LocalFree},
     Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
-        Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+        Authorization::{ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT},
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, IsValidAcl, IsValidSid, IsWellKnownSid,
         OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, WinBuiltinAdministratorsSid,
         WinCreatorOwnerSid, WinLocalSystemSid,
@@ -208,6 +208,21 @@ fn trusted_owner(sid: PSID, user_sid: &[u8]) -> bool {
     same_user(sid, user_sid)
         || (unsafe { IsWellKnownSid(sid, WinLocalSystemSid) }) != 0
         || (unsafe { IsWellKnownSid(sid, WinBuiltinAdministratorsSid) }) != 0
+        || is_trusted_installer(sid)
+}
+
+fn is_trusted_installer(sid: PSID) -> bool {
+    // Windows can assign the system-drive root to this OS servicing account.
+    // Accept only its exact SID, never the entire NT SERVICE\* SID namespace.
+    const SID: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    let wide: Vec<u16> = SID.encode_utf16().chain([0]).collect();
+    let mut expected: PSID = null_mut();
+    if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut expected) } == 0 {
+        return false;
+    }
+    let matches = unsafe { EqualSid(sid, expected) } != 0;
+    unsafe { LocalFree(expected) };
+    matches
 }
 
 fn trusted_grantee(sid: PSID, user_sid: &[u8]) -> bool {
