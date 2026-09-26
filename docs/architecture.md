@@ -32,6 +32,12 @@ The broker uses Linux `SO_PEERCRED` through `rustix`. It records the child ident
 
 The default design intentionally does not allocate a second PTY. A normal child process inherits the terminal and avoids duplicating terminal emulation, raw-mode restoration, screen parsing, cursor tracking, and option-number assumptions.
 
+## Distribution startup boundary (design)
+
+The future installable distribution has a stable user-scoped `codexa` launcher and immutable versioned payloads. Startup update checks are enabled by default but installation is never automatic. Before the official Codex child starts, the wrapper resolves the actual Codex executable/version, checks for an applicable release when the version changed or compatibility is unresolved, coordinates concurrent checks, honors server-directed backoff, and offers Install, Continue this time, or Skip this release only in an interactive terminal. Noninteractive launches continue without a prompt. Explicit `update`, `update --check`, `diagnose`, `rollback`, and startup-check-disable controls remain wrapper operations and never run in the hook protocol process.
+
+The wrapper's pre-launch state machine ends in either a verified newly activated payload or a known-good installed payload. A failed check or activation does not prevent normal Codex startup. After the Codex child starts, only the existing session-scoped hook/broker path runs; hook success, no hook invocation, hook incompatibility, and command failure remain distinct local outcomes. The wrapper never replays a command or restarts a started session, and metadata from the release channel cannot change runtime authorization. The structured decision table, state transitions, platform floors, ownership paths, and trust model live in the canonical distribution roadmap.
+
 ## Interfaces
 
 Conceptual interfaces are (the names are design seams, not current public Rust APIs):

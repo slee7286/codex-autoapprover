@@ -22,6 +22,10 @@ A launcher-owned broker MUST validate kernel peer credentials, exact child ident
 
 The experimental verifier MUST be separate from general `run`, interactive and limited to a temporary repository plus the exact platform curl probe and expected tool. Candidate schema support MUST never broaden general approval. Zero observed permission events are inconclusive. Evidence MUST include one scoped event/allow, independently observed outcome, negative cases, clean configuration/worktree and cleanup. Synthetic fixtures and cross-compilation MUST NOT be labeled native live verification.
 
+## Distribution design (not yet implemented)
+
+The planned `codexa` or `codex-autoapprover run` entry point must not replace or shadow the official `codex` executable. Startup release checks may be automatic, but installation requires explicit interactive consent; noninteractive runs must not prompt or consume Codex input. A changed installed Codex version may trigger a bounded applicable-release check before starting the child, subject to backoff and coordination. If a check or activation fails, the launcher must retain its known-good payload and the current fail-closed admission policy; a check must never arm an uncertified Codex version. Once Codex starts, the wrapper must not replay a command or restart that session. Update metadata must not override certification or broker authorization. Windows and Linux x64 package formats and runtime floors in [the distribution roadmap](distribution-roadmap.json) are proposals, not validated installable support.
+
 ## Configuration and installation
 
 Normal `run`, `hook`, diagnostics and configuration printing MUST NOT write persistent settings. Explicit Windows sandbox repair MUST parse TOML, preserve unrelated values/comments and credentials, create protected exact backups, reject invalid settings and perform conflict-aware atomic replacement. Installation MUST preserve sandbox selection by default; a weaker fallback requires explicit selection and MUST be reversible. Managed requirements take precedence. Installer, reinstaller, updater, rollback and uninstaller MUST be tested on the declared matrix.

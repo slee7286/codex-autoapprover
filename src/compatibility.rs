@@ -3,6 +3,8 @@ use crate::arming;
 
 pub const SUPPORTED_HOOK_PROTOCOL: &str = arming::PROTOCOL_VERSION;
 
+use serde::{Deserialize, Serialize};
+
 #[cfg(windows)]
 const VERIFICATION_CURL: &str = "curl.exe";
 #[cfg(not(windows))]
@@ -46,7 +48,8 @@ pub(crate) fn verification_probe_command_fixture() -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
 pub enum OperatingSystem {
     Linux,
@@ -76,7 +79,9 @@ impl OperatingSystem {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum Surface {
     LocalCliLauncher,
 }

@@ -19,6 +19,11 @@ use crate::{
     child_tree::ChildTree,
     cli::{COMPATIBILITY_ENV, CompatibilityMode, RunArgs},
     codex, compatibility, interrupt, process,
+    update::{
+        manifest::StableVersion,
+        outcome,
+        state::{self, CompatibilityObservation, SystemClock},
+    },
     verification_probe::VerificationProbe,
 };
 
@@ -80,6 +85,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     admission.recheck()?;
 
     let session = Session::create()?;
+    let audit_path = session.audit_path().to_path_buf();
     let broker = Broker::start(
         &session,
         BrokerConfig {
@@ -88,7 +94,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
             expected_cwd: cwd,
             expected_command: None,
             expected_tool_name: None,
-            audit_path: None,
+            audit_path: Some(audit_path.clone()),
         },
     )?;
     let mut command = admission.executable.command();
@@ -100,7 +106,8 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         .arg("-c")
         .arg(codex::hook_command_value(&launcher))
         .args(&args.codex_args);
-    if let Err(error) = session.arm_child(&mut command) {
+    let arm_result = arm_production_child(&session, &mut command);
+    if let Err(error) = arm_result {
         let _ = broker.shutdown();
         let cleanup = session.cleanup();
         return Err(with_cleanup_error(error, cleanup));
@@ -161,6 +168,7 @@ pub fn run(args: &RunArgs) -> Result<i32> {
     let status = wait_for_bound_child(&mut child, &broker, &interrupted.flag, None)
         .with_context(|| format!("wait for official Codex at {}", installation.path.display()));
     let broker_result = broker.shutdown();
+    record_session_observation(&installation.version, &audit_path);
     let cleanup = session.cleanup();
     let status = status.and_then(|status| {
         broker_result.context("stop decision broker")?;
@@ -168,6 +176,67 @@ pub fn run(args: &RunArgs) -> Result<i32> {
         Ok(status)
     })?;
     Ok(codex::status_code(status))
+}
+
+fn arm_production_child(session: &Session, command: &mut Command) -> Result<()> {
+    session.arm_child(command)?;
+    // Child-controlled paths and inherited nested-launch paths are never
+    // evidence. Only the launcher-owned broker writes the observed audit.
+    command.env_remove(arming::AUDIT_PATH_ENV);
+    Ok(())
+}
+
+fn record_session_observation(codex_version: &str, audit_path: &Path) {
+    let mut audit = match outcome::read_audit(audit_path) {
+        Ok(audit) => audit,
+        Err(error) => {
+            eprintln!("codex-autoapprover: local compatibility observation unavailable ({error})");
+            return;
+        }
+    };
+    // A Codex child exit status is not independent command evidence. Keep the
+    // command outcome explicitly unknown unless a future trusted observer
+    // supplies a typed command result.
+    audit.record_command_outcome(outcome::CommandOutcome::Unknown);
+    let session = audit.finish();
+    let Some(path) = state::user_state_path() else {
+        eprintln!(
+            "codex-autoapprover: local compatibility observation unavailable (state storage path unavailable)"
+        );
+        return;
+    };
+
+    let autoapprover_version = match StableVersion::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) => version,
+        Err(_) => {
+            eprintln!(
+                "codex-autoapprover: local compatibility observation unavailable (autoapprover version unavailable)"
+            );
+            return;
+        }
+    };
+    let codex_version = match StableVersion::parse(codex_version) {
+        Ok(version) => version,
+        Err(_) => {
+            eprintln!(
+                "codex-autoapprover: local compatibility observation unavailable (Codex version unavailable)"
+            );
+            return;
+        }
+    };
+    let observation = CompatibilityObservation::from_session(
+        autoapprover_version,
+        codex_version,
+        compatibility::OperatingSystem::current(),
+        compatibility::Surface::LocalCliLauncher,
+        session,
+    );
+    if let Err(error) =
+        state::StateStore::new(path).record_compatibility_observation(observation, &SystemClock)
+        && !matches!(error, state::StateError::UnsafePersistence)
+    {
+        eprintln!("codex-autoapprover: local compatibility observation not recorded ({error})");
+    }
 }
 
 fn resolve_compatibility_mode(args: &RunArgs) -> Result<CompatibilityMode> {
@@ -291,7 +360,43 @@ pub fn diagnose() -> Result<i32> {
         }
     }
 
+    print_local_compatibility_observation();
+
     Ok(0)
+}
+
+fn print_local_compatibility_observation() {
+    let Some(path) = state::user_state_path() else {
+        println!("local compatibility observation: unavailable (state storage path unavailable)");
+        return;
+    };
+    match state::StateStore::new(path).load() {
+        Ok(state::LoadState::Missing) => {
+            println!("local compatibility observation: none recorded")
+        }
+        Ok(state::LoadState::Present(state)) => {
+            if let Some(observation) = state.compatibility_observations.last() {
+                println!(
+                    "local compatibility observation: codex={} autoapprover={} platform={} surface={} hook={} command={} entries={} validated_requests={} allows={} no_decisions={} emissions={}",
+                    observation.codex_version,
+                    observation.autoapprover_version,
+                    observation.operating_system.as_str(),
+                    observation.surface.as_str(),
+                    observation.hook_outcome.as_str(),
+                    observation.command_outcome.as_str(),
+                    observation.counts.entry_count,
+                    observation.counts.validated_request_count,
+                    observation.counts.allow_count,
+                    observation.counts.no_decision_count,
+                    observation.counts.structured_emission_count,
+                );
+                println!("local compatibility observation is not project-wide reviewed support");
+            } else {
+                println!("local compatibility observation: none recorded");
+            }
+        }
+        Err(error) => println!("local compatibility observation: unavailable ({error})"),
+    }
 }
 
 pub fn print_hook_config() -> Result<i32> {
@@ -1043,7 +1148,8 @@ impl VerificationState {
             fs::set_permissions(output.path(), fs::Permissions::from_mode(0o700))
                 .context("protect verification diagnostic directory")?;
         }
-        let audit = fs::read(&self.audit_path).context("read final redacted broker audit")?;
+        let audit = audit::read_bounded(&self.audit_path)
+            .context("read final bounded redacted broker audit")?;
         let audit_sha256 = sha256_hex(&audit);
         fs::write(output.path().join("hook-audit.log"), audit)
             .context("retain redacted broker audit")?;
@@ -1340,6 +1446,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn production_child_never_receives_the_broker_audit_path() {
+        let session = Session::create().unwrap();
+        let mut command = Command::new("codex");
+        command.env(arming::AUDIT_PATH_ENV, session.audit_path());
+        arm_production_child(&session, &mut command).unwrap();
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(key, _)| *key == arming::AUDIT_PATH_ENV),
+            Some((std::ffi::OsStr::new(arming::AUDIT_PATH_ENV), None))
+        );
+        session.cleanup().unwrap();
+    }
+
+    #[test]
     fn confirmation_requires_the_exact_generated_phrase() {
         if cfg!(unix) {
             let target = compatibility::resolved_verification_target("0.151.0")
@@ -1587,6 +1708,32 @@ mod tests {
             .expect("oversized auth fixture");
         assert!(stage_verification_auth(&auth, isolated.path()).is_err());
         assert!(!isolated.path().join("auth.json").exists());
+    }
+
+    #[test]
+    fn retained_diagnostic_rejects_oversized_audit_before_copying() {
+        let state = VerificationState::new().expect("temporary verification state");
+        let parent = TempDir::new().expect("diagnostic parent");
+        fs::File::create(&state.audit_path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let diagnostic = VerificationDiagnostic {
+            codex_version: "0.156.0",
+            command: "fixture",
+            child_exit_code: 0,
+            baseline_clean: true,
+            repository_clean: true,
+            attempt_count: 0,
+            invocation_count: 0,
+            exact_request_count: 0,
+            allow_count: 0,
+            emitted_allow_count: 0,
+            exact_head_requests: 0,
+            unexpected_requests: 0,
+        };
+        assert!(state.retain_diagnostic(parent.path(), &diagnostic).is_err());
+        state.cleanup().unwrap();
     }
 
     #[test]

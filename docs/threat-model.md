@@ -10,6 +10,36 @@ The hook input may include `session_id`, `cwd`, `hook_event_name`, `permission_m
 
 The experimental `verify-local-hook` path adds an exact local-version check, interactive confirmation, a temporary Git repository, `workspace-write` and `on-request` settings, a child-local hook override, a redacted temporary audit sink, and an exact loopback request witness. It requires a separately authenticated test home, refuses the live/default Codex home, and stages only a bounded private auth file into a temporary child home. Codex must review and trust the exact temporary hook definition; managed authentication requirements and hooks can still participate under Codex's documented composition rules. An opt-in hash-only diagnostic can be retained after a completed child observation, but it is not a native certification report. A complete native qualification harness must isolate hook composition and retain independently reviewed evidence.
 
+## Update state and startup-check coordination
+
+M2-T1 adds a separate user-scoped state file for future startup checks. Its
+version 1 schema contains only the installed autoapprover version, last-seen
+Codex version, successful-check timestamp/version, bounded HTTP validators,
+exact Codex/release skip scope, bounded backoff, and a fixed failure category.
+It cannot contain commands, hook payloads, credentials, session secrets, raw
+environments, or arbitrary machine identifiers. State parsing is bounded,
+rejects duplicate and unknown fields, validates stable versions and bounded
+validator text, and reports corrupt or unsupported state explicitly instead of
+silently resetting preferences.
+
+Writes use a same-directory temporary file, restrictive permissions where the
+platform supports them, flush/sync before replacement, and an atomic replace.
+An incomplete temporary file is ignored and cannot replace the previous valid
+state. The state path and coordination path reject symlinks and non-regular
+files in the checked path. Storage failures are recoverable outcomes; they do
+not arm a hook or prevent ordinary Codex fallback.
+
+Concurrent read/modify/write work must hold the user-scoped advisory check
+lease. On Linux, state and lock paths use descriptor-relative opens beneath a
+private directory, with a kernel-owned lock and bounded acquisition deadline.
+The lease is released by drop or process termination. This is not a security
+boundary against another process with the same user privileges; a narrow lock
+inode replacement race remains. On Windows, state read/write currently returns
+`UnsafePersistence` instead of using a raceable pathname flow. Native Windows
+state persistence and coordination require a new security review. Neither
+local state nor lock ownership can authorize a hook. No network check, TUF
+verification, installation, prompt, or hook protocol work is implemented here.
+
 ## Assets
 
 - user files and filesystem contents;
@@ -69,6 +99,27 @@ The design assumes the host, terminal, user account, official Codex executable, 
 Protections against a fully compromised host, malicious official Codex build, arbitrary model behavior, all prompt injection, and all network/filesystem side effects are explicitly out of scope.
 
 IDE-extension, desktop, remote, container, WSL, SSH-hosted IDE, and Codex cloud integration are independently unverified. A future IDE implementation must have its own persistent-hook composition, secure arming, session identity, and threat review; the current CLI child environment is not sufficient evidence.
+
+## Compatibility outcome observations
+
+M2-T3 records bounded fixed-category broker observations from a launcher-owned
+audit that is not passed to the production child. A broker allow is labeled
+`broker_allow_unconfirmed`: it does not prove that the hook emitted stdout or
+that Codex executed the command. A successful-exchange category is modeled but
+requires separate trusted evidence before it can be reported. Ambiguous broker
+denials (including invalid peer, secret, or replay) are conservatively protocol
+failures, not compatibility rejections. The wrapper never treats a successful
+child exit as command success; command outcome remains unknown.
+
+The hook and broker never put command text, raw payloads, credentials, session
+secrets, environments, child output, or arbitrary error text into this channel
+or the persistent state. Mixed requests aggregate conservatively, and records
+are keyed by autoapprover version, Codex version, operating system, and surface
+so a finishing older session cannot replace a newer observation. Same-user
+processes may still alter local diagnostic files, which never authorize a hook
+or populate the embedded certification manifest. Hook stdout remains the
+structured protocol response only; Windows observation persistence is disabled
+pending a secure implementation.
 
 ## Pre-release security gates
 

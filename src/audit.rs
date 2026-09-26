@@ -1,11 +1,12 @@
 use std::{
-    fs::OpenOptions,
-    io::{self, Write},
+    fs::{File, OpenOptions},
+    io::{self, Read, Write},
     path::Path,
 };
 
 use sha2::{Digest, Sha256};
 
+use crate::update::outcome::HookOutcome;
 pub fn json_hash(value: &serde_json::Value) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     let digest = Sha256::digest(bytes);
@@ -103,6 +104,55 @@ pub fn broker_attempt_at(path: &Path) -> io::Result<()> {
     append_private(path, b"broker connection\n")
 }
 
+/// Fixed labels only: never include a request, command, or error string.
+pub fn hook_stage(category: &str) -> io::Result<()> {
+    let Some(path) = std::env::var_os(crate::arming::AUDIT_PATH_ENV) else {
+        return Ok(());
+    };
+    hook_stage_at(Path::new(&path), category)
+}
+
+pub fn hook_stage_at(path: &Path, category: &str) -> io::Result<()> {
+    if !matches!(
+        category,
+        "entry"
+            | "stdin_read"
+            | "stdin_parse_error"
+            | "broker_connected"
+            | "broker_request_sent"
+            | "broker_response_received"
+            | "broker_response_parsed"
+            | "broker_allow"
+            | "broker_no_decision"
+            | "broker_error"
+            | "stdout_written"
+            | "stdout_error"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported hook diagnostic category",
+        ));
+    }
+    append_private(path, format!("hook stage={category}\n").as_bytes())
+}
+
+pub fn hook_outcome(outcome: HookOutcome) -> io::Result<()> {
+    let Some(path) = std::env::var_os(crate::arming::AUDIT_PATH_ENV) else {
+        return Ok(());
+    };
+    hook_outcome_at(Path::new(&path), outcome)
+}
+
+pub fn hook_outcome_at(path: &Path, outcome: HookOutcome) -> io::Result<()> {
+    let Some(category) = outcome.audit_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no-hook outcome is derived from an empty session audit",
+        ));
+    };
+    append_private(path, format!("hook outcome={category}\n").as_bytes())
+}
+
 fn append_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(file) => file,
@@ -120,7 +170,7 @@ fn append_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub fn allow_record_count(path: &Path) -> io::Result<usize> {
-    match std::fs::read_to_string(path) {
+    match read_bounded_string(path) {
         Ok(contents) => Ok(contents
             .lines()
             .filter(|line| {
@@ -135,7 +185,7 @@ pub fn allow_record_count(path: &Path) -> io::Result<usize> {
 }
 
 pub fn invocation_count(path: &Path) -> io::Result<usize> {
-    match std::fs::read_to_string(path) {
+    match read_bounded_string(path) {
         Ok(contents) => Ok(contents
             .lines()
             .filter(|line| line.starts_with("invoked event="))
@@ -174,11 +224,38 @@ pub fn emitted_allow_count(
 }
 
 fn count_matching_lines(path: &Path, predicate: impl Fn(&str) -> bool) -> io::Result<usize> {
-    match std::fs::read_to_string(path) {
+    match read_bounded_string(path) {
         Ok(contents) => Ok(contents.lines().filter(|line| predicate(line)).count()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error),
     }
+}
+
+const MAX_AUDIT_BYTES: u64 = 64 * 1024;
+
+pub fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_AUDIT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid audit size or type",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_AUDIT_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_AUDIT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "audit grew beyond limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_bounded_string(path: &Path) -> io::Result<String> {
+    String::from_utf8(read_bounded(path)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "audit is not UTF-8"))
 }
 
 fn short_hash(value: &str) -> String {
@@ -288,6 +365,34 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             "broker connection\nbroker connection\n"
+        );
+    }
+
+    #[test]
+    fn outcome_diagnostics_use_only_fixed_labels_and_never_accept_payloads() {
+        let directory = TempDir::new().expect("temporary audit directory");
+        let path = directory.path().join("audit.log");
+        hook_stage_at(&path, "entry").expect("fixed stage");
+        hook_outcome_at(&path, HookOutcome::ProtocolFailure).expect("fixed outcome");
+        assert!(hook_stage_at(&path, "entry\nsecret=do-not-log").is_err());
+        assert!(hook_outcome_at(&path, HookOutcome::NoHookInvocation).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read diagnostics"),
+            "hook stage=entry\nhook outcome=protocol_failure\n"
+        );
+    }
+
+    #[test]
+    fn oversized_audit_cannot_be_read_for_counts() {
+        let directory = TempDir::new().expect("temporary audit directory");
+        let path = directory.path().join("audit.log");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        assert_eq!(
+            broker_attempt_count(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
         );
     }
 

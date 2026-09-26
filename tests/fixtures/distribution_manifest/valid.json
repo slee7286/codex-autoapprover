@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "manifest_target": "metadata/releases/0.2.0.json",
+  "release_version": "0.2.0",
+  "release_notes": {
+    "title": "Synthetic release fixture",
+    "url": "https://example.invalid/releases/0.2.0"
+  },
+  "assets": [
+    {
+      "target_name": "assets/codexa-0.2.0-linux-x86_64.tar.gz",
+      "operating_system": "linux",
+      "architecture": "x86_64",
+      "runtime": {
+        "minimum": "glibc-2.31",
+        "libc": "glibc"
+      },
+      "archive_format": "tar-gz",
+      "length": 23456,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "download_origin": "https://example.invalid/releases/download/0.2.0/",
+      "provenance": {
+        "source_repository": "slee7286/codex-autoapprover",
+        "source_revision": "0123456789abcdef0123456789abcdef01234567",
+        "build_workflow": "synthetic-release",
+        "build_id": "fixture-linux-001"
+      }
+    },
+    {
+      "target_name": "assets/codexa-0.2.0-windows-x86_64.zip",
+      "operating_system": "windows",
+      "architecture": "x86_64",
+      "runtime": {
+        "minimum": "windows-10-22h2",
+        "libc": null
+      },
+      "archive_format": "zip",
+      "length": 12345,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "download_origin": "https://example.invalid/releases/download/0.2.0/",
+      "provenance": {
+        "source_repository": "slee7286/codex-autoapprover",
+        "source_revision": "0123456789abcdef0123456789abcdef01234567",
+        "build_workflow": "synthetic-release",
+        "build_id": "fixture-windows-001"
+      }
+    }
+  ],
+  "compatibility": [
+    {
+      "tuple": {
+        "codex_version": "0.154.0",
+        "operating_system": "windows",
+        "architecture": "x86_64",
+        "surface": "local-cli-launcher",
+        "hook_event": "PermissionRequest",
+        "hook_protocol": "permission-request-v1",
+        "required_tool": "Bash",
+        "tool_input_schema": "command-string-v1",
+        "response_behavior": "one-request-structured-allow"
+      },
+      "eligibility": {
+        "status": "reviewed",
+        "evidence_ref": "synthetic/windows-0.154.0"
+      }
+    },
+    {
+      "tuple": {
+        "codex_version": "0.153.0",
+        "operating_system": "linux",
+        "architecture": "x86_64",
+        "surface": "local-cli-launcher",
+        "hook_event": "PermissionRequest",
+        "hook_protocol": "permission-request-v1",
+        "required_tool": "Bash",
+        "tool_input_schema": "command-string-v1",
+        "response_behavior": "one-request-structured-allow"
+      },
+      "eligibility": {
+        "status": "experimental",
+        "basis": "capability-probe-only"
+      }
+    },
+    {
+      "tuple": {
+        "codex_version": "0.152.0",
+        "operating_system": "windows",
+        "architecture": "x86_64",
+        "surface": "local-cli-launcher",
+        "hook_event": "PermissionRequest",
+        "hook_protocol": "permission-request-v1",
+        "required_tool": "Bash",
+        "tool_input_schema": "command-string-v1",
+        "response_behavior": "one-request-structured-allow"
+      },
+      "eligibility": {
+        "status": "excluded",
+        "reason": "synthetic explicit exclusion"
+      }
+    }
+  ]
+}
