@@ -229,12 +229,18 @@ mod tests {
 
         let user = crate::process::launcher_user_sid().unwrap();
         for (name, expected) in [
-            ("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", true),
+            (
+                "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+                true,
+            ),
             ("S-1-5-80-111-222-333-444-555", false),
         ] {
             let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
             let mut sid: PSID = null_mut();
-            assert_ne!(unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) }, 0);
+            assert_ne!(
+                unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) },
+                0
+            );
             assert_eq!(trusted_owner(sid, &user), expected, "owner {name}");
             unsafe { LocalFree(sid) };
         }
