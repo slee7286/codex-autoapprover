@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/cross-platform-session-binding-v1, feat/auto-compatibility-reconciled]
+    branches: [main, feat/cross-platform-session-binding-v1, feat/auto-compatibility-reconciled, feat/verified-release-foundation]
   pull_request:
 
 permissions:
