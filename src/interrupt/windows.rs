@@ -4,8 +4,9 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use windows_sys::Win32::Foundation::{BOOL, FALSE, TRUE};
+use windows_sys::Win32::Foundation::{FALSE, TRUE};
 use windows_sys::Win32::System::Console::{CTRL_C_EVENT, CTRL_CLOSE_EVENT, SetConsoleCtrlHandler};
+use windows_sys::core::BOOL;
 
 static INTERRUPT_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
